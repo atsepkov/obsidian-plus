@@ -1,11 +1,11 @@
 {
-	"id": "sample-plugin",
-	"name": "Sample Plugin",
-	"version": "1.0.0",
+	"id": "obsidian-plus",
+	"name": "Obsidian Plus",
+	"version": "0.0.1",
 	"minAppVersion": "0.15.0",
-	"description": "Demonstrates some of the capabilities of the Obsidian API.",
-	"author": "Obsidian",
-	"authorUrl": "https://obsidian.md",
-	"fundingUrl": "https://obsidian.md/pricing",
+	"description": "Enhances Obsidian with additional features",
+	"author": "Alex Tsepkov",
+	"authorUrl": "https:/host,horse",
+	"fundingUrl": "https://host.horse",
 	"isDesktopOnly": false
 }

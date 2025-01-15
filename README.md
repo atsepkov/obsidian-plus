@@ -1,16 +1,26 @@
-# Obsidian Sample Plugin
+# Obsidian Plus Plugin
+NOTE: This plugin is currently a work in progress, and not yet recommended for public use.
 
-This is a sample plugin for Obsidian (https://obsidian.md).
+Here are the features it adds to Obsidian:
 
-This project uses TypeScript to provide type checking and documentation.
-The repo depends on the latest plugin API (obsidian.d.ts) in TypeScript Definition format, which contains TSDoc comments describing what it does.
+- utility logic to supercharge Dataview and Tasks plugins
+  - ability to select/differentiate bullets/tasks anywhere in the vault based on additional parameters (position of tag, bullet format, etc.)
+  - intelligently generate summaries based on info/context in child bullets
+  - ability to interact with child bullets/tasks in dataview to build custom tag-specific summary logic
+- ability to assign specific colors to your tags
+- ability to nominate special tags that are treated differently
+  - tags that must be tasks
+  - tags that fire side-effects / events
+  
+Work in Progress:
+- tags that fire webhooks
+  - ability to integrate w/ nocode solutions (Zapier, Bubble, Airtable, etc.)
+- ability to receive webhooks
+  - the idea is to create tasks automatically based on incoming requests
+- "multiplayer tags":
+  - ability to send/receive messages to other Obsidian Plus notebooks
 
-This sample plugin demonstrates some of the basic functionality the plugin API can do.
-- Adds a ribbon icon, which shows a Notice when clicked.
-- Adds a command "Open Sample Modal" which opens a Modal.
-- Adds a plugin setting tab to the settings page.
-- Registers a global click event and output 'click' to the console.
-- Registers a global interval which logs 'setInterval' to the console.
+- ability to generate webhooks from tasks/tags
 
 ## First time developing plugins?
 

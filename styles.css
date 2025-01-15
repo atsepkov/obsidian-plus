@@ -6,3 +6,31 @@ available in the app when your plugin is enabled.
 If your plugin does not need CSS, delete this file.
 
 */
+
+.cm-preview-code-block .block-language-dataviewjs ul > li {
+    line-height: 1.6;
+}
+
+.cm-flagged-line {
+    opacity: 0.5;
+    position: relative;
+    transition: opacity 0.2s;
+}
+  
+.cm-flagged-line:hover {
+    opacity: 1.0;
+}
+  
+/* You can show a tooltip on hover by using ::after content */
+.cm-flagged-line:hover::after {
+    content: "This line must be a task format!";
+    position: absolute;
+    left: 300px; /* adjust as needed */
+    background-color: var(--color-tooltip-bg);
+    color: var(--color-tooltip-text);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 0.8em;
+    z-index: 999;
+}
+  
