@@ -303,7 +303,7 @@ export function getSummary(dv, identifier, options = {}) {
 	const currentFile = options.currentFile ?? false;			// limit the query to current file
 	const includeLinks = options.includeLinks ?? !currentFile;	// include the file link in the results
 	const includeTags = options.includeTags ?? false;			// include the tag itself in the results
-	// const includeCheckboxes = options.includeCheckboxes ?? false;	// include checkboxes for tasks in the results
+	const includeCheckboxes = options.includeCheckboxes ?? false;	// include checkboxes for tasks in the results
 	const hideCompleted = options.hideCompleted ?? false;		// hide completed tasks
 	const hideTasks = options.hideTasks ?? false;				// hide tasks
 	const hideNonTasks = options.hideNonTasks ?? false;			// hide non-tasks
@@ -346,7 +346,7 @@ export function getSummary(dv, identifier, options = {}) {
 		}
 	}
 
-	dv.paragraph(results.filter(c => {
+	const filtered = results.filter(c => {
 		// filter
 		if (customFilter && !customFilter(c)) {
 			return false
@@ -371,7 +371,9 @@ export function getSummary(dv, identifier, options = {}) {
 			return false
 		}
 		return true
-	}).map(c => {
+	});
+
+	dv.paragraph(filtered.map(c => {
 		// format
 		if (customFormat) {
 			return customFormat(c)
@@ -394,12 +396,11 @@ export function getSummary(dv, identifier, options = {}) {
 				}
 			})
 		}
-		// if (includeCheckboxes && c.task) {
-		// 	text = `<input type="checkbox" 
-		// 		${c.status === "x" ? "checked" : ""}
-		// 		onclick="toggleTaskInFile(${c})">
-		// 	<span>${text}</span> ${text}`
-		// }
+		if (includeCheckboxes && c.task) {
+			text = `<input type="checkbox" class="task-list-item-checkbox" id="i${c.line}"
+				${c.status === "x" ? "checked" : ""}
+				onclick="window.toggleTaskInFile(${c})"><span>${text}</span>`
+		}
 		if (icon.url) {
 			text += ` [${icon.icon}](${icon.url})`
 		} else if (lineHasUrl(text)) {
@@ -419,4 +420,41 @@ export function getSummary(dv, identifier, options = {}) {
 			return `- ${text}`;
 		}
 	}).join('\n'));
+	// renderTaskList(dv, filtered)
+}
+
+function renderTaskList(dv, results) {
+	// DataviewJS code block
+	const container = dv.el('ul', '', { cls: 'my-custom-task-list' });
+
+	// Then loop through them:
+	results.forEach(c => {
+		// Create an <li> for each item
+		const listItem = container.createEl('li');
+
+		// Optionally: if it's a "task", create a checkbox
+		if (c.task) {
+			const checkbox = listItem.createEl('input', { type: 'checkbox' });
+			// Mark it checked if c.status === 'x'
+			if (c.status === 'x') checkbox.checked = true;
+
+			// Attach a real event listener
+			checkbox.addEventListener('click', async (evt) => {
+				// Here is where you'd call your logic or tasksAPI
+				// e.g., await tasksAPI.toggleTaskInFile(c) 
+				// or do some direct file edits to mark it done
+				console.log('Checkbox toggled for:', c);
+			});
+		}
+
+		// Then add the text content
+		// (or createSpan, createEl, etc.)
+		const textSpan = listItem.createEl('span');
+		textSpan.textContent = c.text;
+
+		// If you want to show the file link:
+		textSpan.appendText(' (');
+		textSpan.appendChild(dv.fileLink(c.path));
+		textSpan.appendText(')');
+	});
 }

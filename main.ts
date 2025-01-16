@@ -8,6 +8,8 @@ const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
 });
 
+// this effect will fire whenever user updates the plugin config
+export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 // Remember to rename these classes and interfaces!
 
@@ -85,8 +87,9 @@ export default class ObsidianPlus extends Plugin {
 
 		 // Attempt to load tags from the user-specified file
 		await this.loadTaskTagsFromFile();
+		console.log("Loaded tags:", this.settings.taskTags);
 		
-		// Listen for changes to any file in the vault
+		// Listen for changes to tags config file in the vault
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath) {
@@ -97,9 +100,9 @@ export default class ObsidianPlus extends Plugin {
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			console.log('click', evt);
-		});
+		// this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
+		// 	console.log('click', evt);
+		// });
 
 		// this.registerDomEvent(document, 'keyup', (evt: MouseEvent) => {
 		// 	// if current file is markdown
@@ -110,7 +113,7 @@ export default class ObsidianPlus extends Plugin {
 		// });
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
-		this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
+		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 
 		// Register the CodeMirror extension
 		this.flaggedLines = [];
@@ -141,7 +144,7 @@ export default class ObsidianPlus extends Plugin {
 		  for (const tag of this.settings.taskTags) {
 			if (line.includes(tag)) {
 				// If it doesn't match "proper task format," then highlight
-				const invalidRegex = new RegExp(`^[-*]\\s*${tag}\\b`);
+				const invalidRegex = new RegExp(`^[-*]\\s*${tag}\\s`);
 				if (invalidRegex.test(line.trim())) {
 					// Convert 0-based line number to a CodeMirror line range
 					const cmLine = state.doc.line(i + 1);
@@ -162,17 +165,25 @@ export default class ObsidianPlus extends Plugin {
 		return StateField.define<ReturnType<typeof Decoration.set>>({
 			// Called once when the editor state is created
 			create(state: EditorState) {
-			return self.buildDecorationSet(state, getFlaggedLines());
-		},
+				return self.buildDecorationSet(state, getFlaggedLines());
+			},
 	
-		// Called whenever the document changes
-		update(deco, transaction) {
-			// If doc changed or something else triggers a re-check,
-			// we can rebuild the decorations
-			if (transaction.docChanged) {
-				return self.buildDecorationSet(transaction.state, getFlaggedLines());
-			}
-			return deco;
+			// Called whenever the document changes
+			update(deco, transaction) {
+				// If doc changed or something else triggers a re-check,
+				// we can rebuild the decorations
+				if (transaction.docChanged) {
+					return self.buildDecorationSet(transaction.state, getFlaggedLines());
+				}
+
+				// also check if we got new config effect
+				for (let effect of transaction.effects) {
+					if (effect.is(setConfigEffect)) {
+						return self.buildDecorationSet(transaction.state, getFlaggedLines());
+					}
+				}
+
+				return deco;
 			},
 	
 			// Let CodeMirror know these are decorations
@@ -183,7 +194,12 @@ export default class ObsidianPlus extends Plugin {
 	// load list of tags from file that must be tasks
 	private async loadTaskTagsFromFile() {
 		const path = this.settings.tagListFilePath;
-		if (!path) return;
+		if (!path) {
+			this.settings.taskTags = [];
+			console.log("No tag list file specified, reset tags to empty");
+			this.updateFlaggedLines(this.app.workspace.getActiveFile());
+			return;
+		}
 	  
 		try {
 			const file = this.app.vault.getAbstractFileByPath(path);
@@ -202,6 +218,7 @@ export default class ObsidianPlus extends Plugin {
 				// Now store them in settings or just keep them in memory
 				this.settings.taskTags = [...new Set(foundTags)]; // deduplicate
 				console.log("Loaded tags from file:", this.settings.taskTags);
+				this.updateFlaggedLines(this.app.workspace.getActiveFile());
 		  	}
 		} catch (err) {
 		  	console.error(`Couldn't read tag list file at "${path}"`, err);
@@ -210,26 +227,9 @@ export default class ObsidianPlus extends Plugin {
 
 	// Example of a function that scans the file and updates flagged lines
 	private async updateFlaggedLines(file: TFile) {
-		const content = await this.app.vault.read(file);
-		const lines = content.split("\n");
-	
-		// We'll do a trivial check: if line includes "#taskTag" but doesn't start with - [ ]
-		// then it's flagged. Just an example:
-		const newFlagged: number[] = [];
-		lines.forEach((line, index) => {
-		  if (line.includes("#taskTag")) {
-			if (!/^[-*]\s*\[ \]\s*#taskTag/.test(line.trim())) {
-			  newFlagged.push(index); 
-			}
-		  }
-		});
-	
-		console.log("Flagged lines:", newFlagged, lines[newFlagged[0]]);
-		this.flaggedLines = newFlagged;
-	
 		// Now to force the extension to re-check decorations, 
 		// we can dispatch a doc change or a minimal transaction
-		// that triggers the `update()` method. Easiest approach is:
+		// that triggers the `update()` method.
 		const leaf = this.app.workspace.getActiveViewOfType(MarkdownView); 
 		const cm = leaf?.editor?.cm; 
 		// If using Obsidian 1.0 new API, you might need a different approach:
@@ -237,7 +237,7 @@ export default class ObsidianPlus extends Plugin {
 		if (cm) {
 		  // Force a reconfiguration or a no-op
 		  cm.dispatch({
-			effects: StateEffect.appendConfig.of([])
+			effects: setConfigEffect.of(this.settings),
 		  });
 		}
 	}
@@ -249,6 +249,7 @@ export default class ObsidianPlus extends Plugin {
 	async loadSettings() {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		this.updateTagStyles();
+		this.updateFlaggedLines(this.app.workspace.getActiveFile());
 	}
 
 	async saveSettings() {

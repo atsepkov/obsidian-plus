@@ -79,6 +79,7 @@ export class SettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.tagListFilePath = value;
             await this.plugin.saveSettings();
+            await this.plugin.loadTaskTagsFromFile();
           });
       });
     

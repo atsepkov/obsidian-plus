@@ -33,4 +33,8 @@ If your plugin does not need CSS, delete this file.
     font-size: 0.8em;
     z-index: 999;
 }
-  
+
+/* for rendering checkboxes */
+.block-language-dataviewjs ul > li:has(input[type="checkbox"]) {
+    margin-inline-start: unset;
+}
