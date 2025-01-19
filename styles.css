@@ -25,7 +25,7 @@ If your plugin does not need CSS, delete this file.
 .cm-flagged-line:hover::after {
     content: "This line must be a task format!";
     position: absolute;
-    left: 300px; /* adjust as needed */
+    right: 0px; /* adjust as needed */
     background-color: var(--color-tooltip-bg);
     color: var(--color-tooltip-text);
     padding: 2px 6px;

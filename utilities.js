@@ -1,78 +1,8 @@
+// BASIC UTILITY FUNCTIONS
+
 function escapeRegex(str) {
 	// Escape special characters in the identifier so they are treated literally
 	return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-function gatherTags(dv, identifier, options = {}) {
-	if (!dv) {
-		throw new Error("Dataview instance is required.");
-	}
-
-	const currentFile = options.currentFile ?? false;			// limit the query to current file
-	const path = options.path ?? null;							// limit the query to a specific path
-	const header = options.header ?? null;						// limit the query to a specific header
-	const afterDate = options.afterDate ?? null;				// filter tasks after a specific date
-	const beforeDate = options.beforeDate ?? null;				// filter tasks before a specific date
-	const partialMatch = options.partialMatch ?? false;			// allow partial matching of the identifier
-
-	if (!identifier && !currentFile) {
-		throw new Error("Identifier is required unless querying the current file.");
-	}
-
-	const safeIdentifier =  identifier ? escapeRegex(identifier) : '';
-	const pattern = new RegExp(
-		`(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_])`,
-		'g'
-	);
-
-	const pages = currentFile ? { values: [dv.current().file] } : dv.pages(path).file;
-	const results = [];
-	for (let file of pages.values) {
-		if (!file || !file.lists) {
-			continue;
-		}
-		if (afterDate || beforeDate) {
-			const fileDate = new Date(file.cday);
-			if (afterDate && fileDate < afterDate) {
-				continue;
-			}
-			if (beforeDate && fileDate > beforeDate) {
-				continue;
-			}
-		}
-		for (const line of file.lists) {
-			// if (header && line.header.subpath !== header) {
-			// 	continue;
-			// }
-			if (header) {
-				const isSubBullet = isPartOfHeader(line, header);
-				if (!isSubBullet) {
-					continue;
-				}
-			}
-
-			// make sure we don't pull in crap from next line
-			let text = line.text.split('\n')[0].trim()
-			if (!identifier) {
-				results.push(line);
-			} else if (text.includes(identifier)) {
-				if (!partialMatch) {
-					// make sure we match on whole words (e.g. #example should not match #example2)
-					const match = text.match(pattern);
-					if (!match || match.length > 1) {
-						continue;
-					}
-				}
-				results.push(line);
-			}
-		}
-	}
-	return results;
-}
-
-function listChildren(dv, identifier, options = {}) {
-	const lines = gatherTags(dv, identifier, options);
-	return lines.map(l => l.text);
 }
 
 const isUrl = (str) => {
@@ -189,35 +119,130 @@ function getIconForUrl(url) {
 	}
 	return ":LiLink:";
 }
+function generateId(length) {
+	return Math.random().toString(36).substring(2, length / 2) + Math.random().toString(36).substring(2, length / 2)
+}
+
+// strips any markdown formatting from a string
+export function normalizeConfigVal(value, stripUnderscores = true) {
+	// for underscores, only strip them if they surround the text
+	// if they're in the middle of the text or only one side, they're probably intentional
+	value = value.replace(/[*`"']/g, "").trim();
+	if (stripUnderscores && value.startsWith("_") && value.endsWith("_")) {
+		value = value.slice(1, -1);
+	}
+	return value;
+}
 
 let app;
 export function configure(instance) {
 	app = instance;
 }
 
-async function toggleTask(task) {
-	console.log("clik happend")
-	const tasksApi = app.plugins.getPlugin("obsidian-tasks-plugin")?.api;
+// TASK MANIPULATION LOGIC
+
+// toggles tasks generated within our own plugin's view
+// this will also trigger/affect the original task in the markdown file
+let taskCache = {}
+async function getFileLines(filePath) {
+	const file = app.vault.getAbstractFileByPath(filePath);
+	return (await app.vault.read(file)).split("\n");
+}
+async function saveFileLines(filePath, lines) {
+	const file = app.vault.getAbstractFileByPath(filePath);
+	await app.vault.modify(file, lines.join("\n"));
+}
+export async function toggleTask(id) {
+	const task = taskCache[id]
+	const tasksApi = app.plugins.getPlugin("obsidian-tasks-plugin")?.apiV1;
+
+	const file = app.metadataCache.getFirstLinkpathDest(task.path, "");
+	if (!file) return;
+	
+	const lines = await getFileLines(file.path);
+
 	if (tasksApi) {
-		tasksApi.apiV1.executeToggleTaskDoneCommand(task.text, task.path)
+		const originalLineText = lines[task.line];
+		const result = tasksApi.executeToggleTaskDoneCommand(originalLineText, task.path)
+		if (result) {
+			lines[task.line] = result;
+			await saveFileLines(file.path, lines);
+		}
 	} else {
-		const file = app.metadataCache.getFirstLinkpathDest(task.path, "");
-		if (!file) return;
-		
-		const content = await app.vault.read(file);
-		const lines = content.split("\n");
-	  
-		// Example: Replace first occurrence of "- [ ]" or "- [x]" in that line
+		// Replace first occurrence of "- [ ]" or "- [x]" in that line
 		// with the new status
 		let line = lines[task.line];
 		const newStatus = task.status === "x" ? " " : "x";
 		line = line.replace(/\[.\]/, `[${newStatus}]`);
 		lines[task.line] = line;
 	  
-		await app.vault.modify(file, lines.join("\n"));
+		await saveFileLines(file.path, lines);
 	}
 }
-window.toggleTaskInFile = toggleTask;
+export function clearTaskCache() {
+	taskCache = {}
+}
+
+// used to map completion toggle to the dataview representation of the task
+export function findDvTask(dvApi, taskDiff) {
+	const file = dvApi.page(taskDiff.file.path).file
+	for (let line of file.lists) {
+		if (taskDiff.taskText.includes(line.text) && line.line === taskDiff.lineNumber && line.tags.includes(taskDiff.tag.name)) {
+			return line
+		}
+	}
+}
+export async function changeDvTaskStatus(dvTask, status, error) {
+	// update the task status in the dataview representation
+	// this will also trigger/affect the original task in the markdown file
+	const newStatus = status === "error" ? "!" : status === "done" ? "x" : " ";
+	const lines = await getFileLines(dvTask.path);
+	let line = lines[dvTask.line];
+	line = line.replace(/\[.\]/, `[${newStatus}]`);
+	lines[dvTask.line] = line;
+	await saveFileLines(dvTask.path, lines);
+}
+export async function updateDvTask(dvTask, options) {
+	const {
+		append,				// add text to the end of dvTask text
+		prepend,			// add text to the beginning of dvText text (after the tag)
+		replace,	 		// replace dvTask text with new text
+		trimStart,			// remove text from the beginning of dvTask text
+		trimEnd,			// remove text from the end of dvTask text
+		appendChildren,		// add text to the end of dvTask children
+		prependChildren,	// add text to the beginning of dvTask children
+		replaceChildren,	// replace dvTask children with new text
+		removeChildren		// remove dvTask children
+	} = options
+
+	const lines = await getFileLines(dvTask.path);
+	let line = lines[dvTask.line];
+	if (replace) {
+		line = replace
+	} else if (append) {
+		let baseText = dvTask.text.split('✅')[0].trim()
+		line = line.replace(baseText, `${baseText} ${append}`)
+	} else if (prepend) {
+		let newDvTaskText = dvTask.text.replace(dvTask.tags[0], `${dvTask.tags[0]} ${prepend}`)
+		line = line.replace(dvTask.text, newDvTaskText)
+	} else if (replace) {
+		line = replace
+	} else if (trimStart) {
+		if (line.startsWith(trimStart)) {
+			line = line.slice(trimStart.length).trim()
+		}
+	} else if (trimEnd) {
+		let baseText = dvTask.text.split('✅')[0].trim()
+		if (baseText.endsWith(trimEnd)) {
+			let newBaseText = baseText.slice(0, -trimEnd.length).trim()
+			line = line.replace(baseText, newBaseText)
+		}
+	}
+	lines[dvTask.line] = line;
+	await saveFileLines(dvTask.path, lines);
+}
+
+// SEARCH LOGIC
 
 /**
  * Checks if the given bullet line is under a specific header (including sub-headers).
@@ -296,8 +321,88 @@ function isPartOfHeader(bullet, headerString) {
   
 	// If bullet’s line is >= startLine and < endLine, it is under that heading’s scope
 	return (bulletLine > startLine && bulletLine < endLine);
-}  
+}
 
+function gatherTags(dv, identifier, options = {}) {
+	if (!dv) {
+		throw new Error("Dataview instance is required.");
+	}
+
+	const currentFile = options.currentFile ?? false;			// limit the query to current file
+	const path = options.path ?? null;							// limit the query to a specific path
+	const header = options.header ?? null;						// limit the query to a specific header
+	const afterDate = options.afterDate ?? null;				// filter tasks after a specific date
+	const beforeDate = options.beforeDate ?? null;				// filter tasks before a specific date
+	const partialMatch = options.partialMatch ?? false;			// allow partial matching of the identifier
+
+	if (!identifier && !currentFile) {
+		throw new Error("Identifier is required unless querying the current file.");
+	}
+
+	const safeIdentifier =  identifier ? escapeRegex(identifier) : '';
+	const pattern = identifier === '#' ? new RegExp(
+		`(?:^|[^A-Za-z0-9_])${safeIdentifier}`,
+		'g'
+	) : new RegExp(
+		`(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_])`,
+		'g'
+	);
+
+	const getFile = (dv) => {
+		if (typeof currentFile === 'string') {
+			return dv.page(currentFile);
+		} else {
+			return dv.current();
+		}
+	}
+	const pages = currentFile ? { values: [getFile(dv).file] } : dv.pages(path).file;
+	const results = [];
+	for (let file of pages.values) {
+		if (!file || !file.lists) {
+			continue;
+		}
+		if (afterDate || beforeDate) {
+			const fileDate = new Date(file.cday);
+			if (afterDate && fileDate < afterDate) {
+				continue;
+			}
+			if (beforeDate && fileDate > beforeDate) {
+				continue;
+			}
+		}
+		for (const line of file.lists) {
+			// if (header && line.header.subpath !== header) {
+			// 	continue;
+			// }
+			if (header) {
+				const isSubBullet = isPartOfHeader(line, header);
+				if (!isSubBullet) {
+					continue;
+				}
+			}
+
+			// make sure we don't pull in crap from next line
+			let text = line.text.split('\n')[0].trim()
+			if (!identifier) {
+				results.push(line);
+			} else if (text.includes(identifier)) {
+				if (!partialMatch) {
+					// make sure we match on whole words (e.g. #example should not match #example2)
+					const match = text.match(pattern);
+					if (!match || match.length > 1) {
+						continue;
+					}
+				}
+				results.push(line);
+			}
+		}
+	}
+	return results;
+}
+
+// get summary of specifc tag
+// NOTE: this basically returns a list of objects matching the tag pretty-formatted
+// similar to tasks plugin but with more flexibility and ability to grab/summarize content from children
 export function getSummary(dv, identifier, options = {}) {
 
 	const currentFile = options.currentFile ?? false;			// limit the query to current file
@@ -373,6 +478,11 @@ export function getSummary(dv, identifier, options = {}) {
 		return true
 	});
 
+	// do not render, only return the data (useful when parsing config or wanting to programmatically use the data)
+	if (options.onlyReturn) {
+		return filtered;
+	}
+
 	dv.paragraph(filtered.map(c => {
 		// format
 		if (customFormat) {
@@ -397,9 +507,11 @@ export function getSummary(dv, identifier, options = {}) {
 			})
 		}
 		if (includeCheckboxes && c.task) {
-			text = `<input type="checkbox" class="task-list-item-checkbox" id="i${c.line}"
-				${c.status === "x" ? "checked" : ""}
-				onclick="window.toggleTaskInFile(${c})"><span>${text}</span>`
+			// generate a unique alphanumeric id and cache the task
+			const id = generateId(10)
+			taskCache[id] = c
+			text = `<input type="checkbox" class="task-list-item-checkbox op-get-summary" id="i${id}"
+				${c.status === "x" ? "checked" : ""}><span>${text}</span>`
 		}
 		if (icon.url) {
 			text += ` [${icon.icon}](${icon.url})`

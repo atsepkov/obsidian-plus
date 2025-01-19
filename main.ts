@@ -1,5 +1,17 @@
-import { App, Editor, MarkdownView, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile } from 'obsidian';
-import { configure, getSummary } from './utilities';
+import {
+	App, Editor, MarkdownView, MarkdownPostProcessorContext,
+	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile
+} from 'obsidian';
+import {
+	configure,
+	normalizeConfigVal,
+	findDvTask,
+	changeDvTaskStatus,
+	updateDvTask,
+	getSummary,
+	toggleTask,
+	clearTaskCache
+} from './utilities';
 import { SettingTab } from './settings';
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
@@ -21,7 +33,56 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
 	tagListFilePath: "TaskTags.md",
 	tagColors: [],
 	taskTags: [],
+	webTags: {},
 }
+
+interface TaskLineInfo {
+	lineNumber: number;
+	text: string;
+}
+  
+// Key by file path to an array of (lineNumber, text)
+let taskCache: Map<string, TaskLineInfo[]> = new Map();
+
+  
+// Compare old vs new tasks by line number
+function compareTaskLines(
+	oldTasks: TaskLineInfo[],
+	newTasks: TaskLineInfo[]
+): TaskLineInfo[] {
+	const changes: TaskLineInfo[] = [];
+	// You can do a more sophisticated comparison if tasks can be added/removed.
+	// For simplicity, we just check lines in both old and new sets:
+	//   1. Same lineNumber, different text => changed
+	//   2. New lineNumber not in old => new task
+	//   3. Old lineNumber missing => removed task
+	// etc.
+	// For brevity:
+	const oldMap = new Map(oldTasks.map(t => [t.lineNumber, t.text]));
+	const newMap = new Map(newTasks.map(t => [t.lineNumber, t.text]));
+  
+	// Check changed or removed
+	oldMap.forEach((oldText, lineNum) => {
+	  const newText = newMap.get(lineNum);
+	  if (!newText) {
+		// This line was removed
+		changes.push({ lineNumber: lineNum, oldText });
+	  } else if (oldText !== newText) {
+		// This line changed (possibly checkbox toggled)
+		changes.push({ lineNumber: lineNum, oldText, newText });
+	  }
+	});
+  
+	// Check newly added lines
+	newMap.forEach((newText, lineNum) => {
+	  if (!oldMap.has(lineNum)) {
+		// New line was added
+		changes.push({ lineNumber: lineNum, newText });
+	  }
+	});
+  
+	return changes;
+}  
 
 export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
@@ -95,22 +156,100 @@ export default class ObsidianPlus extends Plugin {
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath) {
 					await this.loadTaskTagsFromFile();
 				}
+				if (file instanceof TFile && file.extension === "md") {
+					let newTasks = await this.extractTaskLines(file);
+					const oldTasks = taskCache.get(file.path) ?? [];
+			  
+					// Compare old vs. new tasks
+					const changed = compareTaskLines(oldTasks, newTasks);
+					console.log(`Tasks changed in ${file.path}:`, changed);
+					if (changed.length === 1) {
+					  	// console.log(`Tasks changed in ${file.path}:`, changed);
+						for (const task of changed) {
+							if (task.oldText && task.newText) {
+								// for task status to change, it has to exist in both old and new
+								// console.log(`Task changed from "${task.oldText}" to "${task.newText}"`);
+								const oldTaskStatus = task.oldText.match(/\[([ xX!])\]/)[1];
+								const taskStatus = task.newText.match(/\[([ xX!])\]/)[1];
+								if (oldTaskStatus === taskStatus) {
+									continue; // only fire when task changes
+								}
+
+								const oldTaskTag = task.oldText.match(/#[\w-]+/)[0];
+								const taskTag = task.newText.match(/#[\w-]+/)[0];
+								if (oldTaskTag !== taskTag) {
+									continue; // user editing the line, not checking off a task
+								}
+
+								const oldTagPosition = task.oldText.indexOf(oldTaskTag);
+								const tagPosition = task.newText.indexOf(taskTag);
+								if (oldTagPosition !== tagPosition) {
+									continue; // tag misalignment implies user editing the line
+								}
+
+								const taskText = task.oldText.slice(oldTagPosition).trim();
+								// set the text to common text between old and new
+								// let taskText = '';
+								// for (let i = oldTagPosition; i < task.oldText.length; i++) {
+								// 	if (task.oldText[i] === task.newText[i]) {
+								// 		taskText += task.oldText[i];
+								// 	} else {
+								// 		break;
+								// 	}
+								// }
+
+								console.log(`Task ${taskStatus === 'x' ? 'completed' : 'incomplete'}: ${taskTag}`, task);
+								if (this.settings.webTags[taskTag]) {
+									const tagConnector = this.settings.webTags[taskTag];
+									const dataview = this.app.plugins.getPlugin("dataview");
+									if (!dataview) {
+										throw new Error("Dataview plugin not found");
+									}
+									const dvTask = findDvTask(dataview.api, { ...task, file, taskText, tag: {
+										pos: tagPosition,
+										name: taskTag,
+									}});
+									if (taskStatus === ' ') {
+										// reset trigger
+										await tagConnector.onReset(dvTask);
+										// if reset updated the task, we need to sync our cache
+										newTasks = await this.extractTaskLines(file);
+									} else if (taskStatus === 'x' && !dvTask.completed) {
+										// trigger the tag
+										try {
+											const response = await tagConnector.onTrigger(dvTask);
+											await tagConnector.onSuccess(dvTask, response);
+											// if success updated the task, we need to sync our cache
+											newTasks = await this.extractTaskLines(file);
+										} catch (e) {
+											console.error(e);
+											await tagConnector.onError(dvTask, e);
+											// if error updated the task, we need to sync our cache
+											newTasks = await this.extractTaskLines(file);
+										}
+									}
+								}
+							}
+						}
+					}
+			  
+					// Update the cache
+					taskCache.set(file.path, newTasks);
+				}
 			})
 		);
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
-		// this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-		// 	console.log('click', evt);
-		// });
-
-		// this.registerDomEvent(document, 'keyup', (evt: MouseEvent) => {
-		// 	// if current file is markdown
-		// 	const file = this.app.workspace.getActiveFile();
-		// 	if (file instanceof TFile && file.extension === "md") {
-		// 		this.updateFlaggedLines(file);
-		// 	}
-		// });
+		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
+			// console.log('click', evt);
+			const target = evt.target as HTMLElement;
+			if (target.matches('.op-get-summary')) {
+				// id=i${id}
+				const taskId = target.id.slice(1);
+				toggleTask(taskId);
+			}
+		});
 
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
@@ -120,18 +259,36 @@ export default class ObsidianPlus extends Plugin {
 		const extension = this.highlightFlaggedLinesExtension(() => this.flaggedLines);
 		this.registerEditorExtension(extension);
 	
-		// If you want to re-check flagged lines whenever a file is opened:
+		// re-check flagged lines whenever a file is opened:
 		this.registerEvent(
-			this.app.workspace.on("file-open", (file) => {
+			this.app.workspace.on("file-open", async (file) => {
 				if (file instanceof TFile && file.extension === "md") {
+					clearTaskCache();
 					this.updateFlaggedLines(file);
+				}
+				if (file instanceof TFile && file.extension === "md") {
+					const oldTasks = await this.extractTaskLines(file);
+					taskCache.set(file.path, oldTasks);
 				}
 			})
 		);
+		const currentFile = this.app.workspace.getActiveFile();
+		if (currentFile instanceof TFile && currentFile.extension === "md") {
+			const oldTasks = await this.extractTaskLines(currentFile);
+			taskCache.set(currentFile.path, oldTasks);
+		}
+		this.buildTagConnector('#test', { url: 'https://nocode.host.horse', method: 'POST' });
+	}
+
+	private buildTagConnector(tag: string, config: ConnectorConfig) {
+		const TagConnector = require('./tagConnector').TagConnector;
+		const connector = new TagConnector(tag, this, config);
+		this.settings.webTags[tag] = connector;
+		console.log('Built tag connector for', tag, config);
 	}
 
 	private buildDecorationSet(state: EditorState): DecorationSet {
-		console.log('STATE', state, this)
+		// console.log('STATE', state, this)
 		if (this.app.workspace.getActiveFile().path === this.settings.tagListFilePath) {
 			return Decoration.none;
 		}
@@ -196,6 +353,7 @@ export default class ObsidianPlus extends Plugin {
 		const path = this.settings.tagListFilePath;
 		if (!path) {
 			this.settings.taskTags = [];
+			this.settings.webTags = {};
 			console.log("No tag list file specified, reset tags to empty");
 			this.updateFlaggedLines(this.app.workspace.getActiveFile());
 			return;
@@ -204,7 +362,7 @@ export default class ObsidianPlus extends Plugin {
 		try {
 			const file = this.app.vault.getAbstractFileByPath(path);
 			if (file && file instanceof TFile) {
-				const fileContents = await this.app.vault.read(file);
+				// const fileContents = await this.app.vault.read(file);
 				
 				// Extract tags from the file
 				// For example, if you store them like:
@@ -212,8 +370,68 @@ export default class ObsidianPlus extends Plugin {
 				//   - #fixme
 				// you can use a regex or line-based parse to find them
 		
-				const foundTags = Array.from(fileContents.matchAll(/(^|\s)(#[\w/-]+)/g))
-				.map(match => match[2]);  // capture group #2 is the actual #tag
+				// const foundTags = Array.from(fileContents.matchAll(/(^|\s)(#[\w/-]+)/g))
+				// .map(match => match[2]);  // capture group #2 is the actual #tag
+
+				const dataview = this.app.plugins.getPlugin("dataview");
+				if (!dataview) {
+					throw new Error("Dataview plugin not found");
+				}
+				const basicTags = getSummary(dataview.api, '#', {
+					currentFile: file.path,
+					header: '### Basic Tags',
+					onlyPrefixTags: true,
+					onlyReturn: true,
+				})
+				const autoTags = getSummary(dataview.api, '#', {
+					currentFile: file.path,
+					header: '### Automated Tags',
+					onlyPrefixTags: true,
+					onlyReturn: true,
+				})
+				const recurringTags = getSummary(dataview.api, '#', {
+					currentFile: file.path,
+					header: '### Recurring Tags',
+					onlyPrefixTags: true,
+					onlyReturn: true,
+				})
+				const foundTags = [];
+				for (const line of basicTags) {
+					foundTags.push(line.tags[0]);
+				}
+				for (const line of autoTags) {
+					const tag = line.tags[0];
+					let config = {}
+					for (const prop of line.children) {
+						const cleanText = normalizeConfigVal(prop.text, false);
+						if (cleanText === 'config:') {
+							// found config bullet, parse it and exit
+							// if it has children, parse its children
+							if (prop.children.length) {
+								for (const child of prop.children) {
+									// there may be additional colons in the value, so split only once
+									const [key, ...rest] = child.text.split(':');
+									const value = rest.join(':');
+									config[normalizeConfigVal(key)] = normalizeConfigVal(value);
+								}
+							} else {
+								console.error('No config found for tag', tag);
+								break;
+							}
+						} else if (cleanText.startsWith('config:')) {
+							// found config bullet, let's eval it
+							const [key, ...rest] = cleanText.split(':');
+							const path = normalizeConfigVal(rest.join(':'));
+							const content = await this.app.vault.read(this.app.vault.getAbstractFileByPath(path));
+							config = JSON.parse(content);
+						}
+					}
+					foundTags.push(tag);
+					this.buildTagConnector(tag, config);
+				}
+				for (const line of recurringTags) {
+					foundTags.push(line.tags[0]);
+				}
 		
 				// Now store them in settings or just keep them in memory
 				this.settings.taskTags = [...new Set(foundTags)]; // deduplicate
@@ -221,11 +439,12 @@ export default class ObsidianPlus extends Plugin {
 				this.updateFlaggedLines(this.app.workspace.getActiveFile());
 		  	}
 		} catch (err) {
+			console.error(err)
 		  	console.error(`Couldn't read tag list file at "${path}"`, err);
 		}
 	}
 
-	// Example of a function that scans the file and updates flagged lines
+	// dispatches update effect post-config change
 	private async updateFlaggedLines(file: TFile) {
 		// Now to force the extension to re-check decorations, 
 		// we can dispatch a doc change or a minimal transaction
@@ -240,6 +459,19 @@ export default class ObsidianPlus extends Plugin {
 			effects: setConfigEffect.of(this.settings),
 		  });
 		}
+	}
+
+	// Helper to extract lines that contain a checkbox
+	private async extractTaskLines(file: string): TaskLineInfo[] {
+		const content = await this.app.vault.read(file);
+		const lines = content.split("\n");
+		const tasks: TaskLineInfo[] = [];
+		for (let i = 0; i < lines.length; i++) {
+		if (/\[([ xX!])\]/.test(lines[i])) {
+			tasks.push({ lineNumber: i, text: lines[i] });
+		}
+		}
+		return tasks;
 	}
 
 	onunload() {
@@ -279,6 +511,13 @@ export default class ObsidianPlus extends Plugin {
 		}
 	  
 		styleElement.textContent = this.generateTagCSS();
+	}
+
+	async changeTaskStatus(task, status, description): void {
+		await changeDvTaskStatus(task, status, description);
+	}
+	async updateTask(task, options): void {
+		await updateDvTask(task, options);
 	}
 }
 
