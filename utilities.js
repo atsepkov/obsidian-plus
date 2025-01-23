@@ -131,6 +131,20 @@ export function normalizeConfigVal(value, stripUnderscores = true) {
 	if (stripUnderscores && value.startsWith("_") && value.endsWith("_")) {
 		value = value.slice(1, -1);
 	}
+
+	// convert boolean-like strings to actual booleans
+	if (value === "true") {
+		return true;
+	} else if (value === "false") {
+		return false;
+	}
+
+	// convert number-like strings to actual numbers
+	const num = Number(value);
+	if (!isNaN(num)) {
+		return num;
+	}
+
 	return value;
 }
 
@@ -206,27 +220,32 @@ export async function updateDvTask(dvTask, options) {
 	const {
 		append,				// add text to the end of dvTask text
 		prepend,			// add text to the beginning of dvText text (after the tag)
-		replace,	 		// replace dvTask text with new text
+		replace,	 		// a function to run on to replace line text with new text
 		trimStart,			// remove text from the beginning of dvTask text
 		trimEnd,			// remove text from the end of dvTask text
+
 		appendChildren,		// add text to the end of dvTask children
 		prependChildren,	// add text to the beginning of dvTask children
 		replaceChildren,	// replace dvTask children with new text
-		removeChildren		// remove dvTask children
+		removeChildren,		// remove dvTask children
+
+		useBullet,
 	} = options
 
+	const bullet = useBullet ?? "-";
 	const lines = await getFileLines(dvTask.path);
-	let line = lines[dvTask.line];
+	let lineIndex = dvTask.line;
+	let line = lines[lineIndex];
+	const parentIndent = line.match(/^(\s*)/)?.[1] ?? "";
+
 	if (replace) {
-		line = replace
+		line = replace(line);
 	} else if (append) {
 		let baseText = dvTask.text.split('✅')[0].trim()
 		line = line.replace(baseText, `${baseText} ${append}`)
 	} else if (prepend) {
 		let newDvTaskText = dvTask.text.replace(dvTask.tags[0], `${dvTask.tags[0]} ${prepend}`)
 		line = line.replace(dvTask.text, newDvTaskText)
-	} else if (replace) {
-		line = replace
 	} else if (trimStart) {
 		if (line.startsWith(trimStart)) {
 			line = line.slice(trimStart.length).trim()
@@ -238,8 +257,135 @@ export async function updateDvTask(dvTask, options) {
 			line = line.replace(baseText, newBaseText)
 		}
 	}
-	lines[dvTask.line] = line;
+	lines[lineIndex] = line;
+
+    /**********************************************
+     * Part B: Handle modifications to children
+     **********************************************/
+    // If no child operation is requested, skip.
+    const wantsChildOps = (
+        appendChildren ||
+        prependChildren ||
+        replaceChildren ||
+        removeChildren
+    );
+    if (wantsChildOps) {
+        // 1. Identify the existing children range
+        let startChildIndex = lineIndex + 1;
+        let endChildIndex = startChildIndex;
+
+        while (endChildIndex < lines.length) {
+            const childLine = lines[endChildIndex];
+            const childIndent = childLine.match(/^(\s*)/)?.[1] ?? "";
+            // If we have reached a line whose indent is
+            // <= parentIndent, that means it's a sibling or higher level bullet
+            if (childIndent.length <= parentIndent.length) {
+                break;
+            }
+            endChildIndex++;
+        }
+
+        // existing children lines in [startChildIndex .. endChildIndex-1]
+        // Extract them (so we can reinsert or discard them)
+        const existingChildren = lines.slice(startChildIndex, endChildIndex);
+
+        // Remove them from the file lines
+        lines.splice(startChildIndex, endChildIndex - startChildIndex);
+
+        // We'll build a new array of final child lines
+        let finalChildLines = [];
+
+        // Helper to unify single string vs array
+        function toArray(val) {
+            if (!val) return [];
+            return Array.isArray(val) ? val : [val];
+        }
+
+        // Helper to create an indented bullet
+        // You can tweak the bullet marker: `-`, `+`, `- [ ]`, etc.
+        const childIndent = parentIndent + "    "; // or e.g. parentIndent + "\t"
+        function makeChildBullet(str) {
+			// if string already has a bullet, replace it instead of adding a new one
+			const trimmedStr = str.trim()
+			if (trimmedStr.startsWith("-")) {
+				return str.replace('-', childIndent + bullet)
+			}
+            return `${childIndent}${bullet} ${str}`;
+        }
+
+        // 2. Decide if we keep or discard existing children
+        if (removeChildren || replaceChildren) {
+            // If removeChildren is true, discard old children entirely
+            // If replaceChildren is provided, we also ignore old children
+            // so effectively "replaced" them
+        } else {
+            // Keep existing children as part of finalChildLines
+            finalChildLines = existingChildren;
+        }
+
+        // 3. Prepend children: these go before existing children
+        if (prependChildren) {
+            const prepends = toArray(prependChildren).map(makeChildBullet);
+            finalChildLines = [...prepends, ...finalChildLines];
+        }
+
+        // 4. If "replaceChildren" is set, we add those lines *instead* of old children
+        // Because we already removed them above, let's do that now:
+        if (replaceChildren) {
+            const replacements = toArray(replaceChildren).map(makeChildBullet);
+            finalChildLines = [...toArray(prependChildren).map(makeChildBullet), ...replacements];
+            // ^ The line above merges any 'prependChildren' we might want plus replacements
+            // If you truly want "replaceChildren" to ignore the 'prependChildren' too,
+            // you can adjust logic to skip it. Up to you.
+        }
+
+        // 5. Append children: these go after existing children
+        if (appendChildren) {
+            const appends = toArray(appendChildren).map(makeChildBullet);
+            finalChildLines = [...finalChildLines, ...appends];
+        }
+
+        // 6. Insert finalChildLines back into the file
+        //    at the original child position: startChildIndex
+        lines.splice(startChildIndex, 0, ...finalChildLines);
+    }
+
 	await saveFileLines(dvTask.path, lines);
+}
+/**
+ * Recursively processes list items to generate an array of entries representing the nested list structure.
+ * @param {object} listItem - The parent list item from Dataview.
+ * @returns {Array<{indent: number, offset: number, text: string}>} - Array of child entries.
+ */
+export function getDvTaskChildren(listItem) {
+    if (!listItem || !listItem.children) return [];
+
+    const parentIndent = listItem.indent || 0;
+    const currentLineStart = listItem.position.start.line;
+    const entries = [];
+
+    /**
+     * Recursively processes a child item and its descendants.
+     * @param {object} child - The current child item to process.
+     */
+    function processChild(child, parentIndent = 0) {
+        // Calculate relative indent compared to the original parent
+        const indent = parentIndent + 1;
+        // Calculate line offset from the original parent's line
+        const index = child.position.start.line - currentLineStart;
+		// Grab bullet type
+		const bullet = child.text.match(/^(\s*)/)?.[1] ?? "";
+        // Add the entry for this child
+        entries.push({ indent, index, bullet, text: child.text });
+
+        // Recursively process all nested children
+        child.children?.forEach(grandChild => processChild(grandChild, parentIndent + 1));
+    }
+
+    // Process all direct children of the parent list item
+    listItem.children.forEach(child => processChild(child, parentIndent));
+
+    return entries;
 }
 
 // SEARCH LOGIC

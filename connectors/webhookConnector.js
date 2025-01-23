@@ -1,8 +1,10 @@
-export class TagConnector {
-	constructor(tag, obsidianPlus, config) {
-        this.tag = tag;
-        this.obsidianPlus = obsidianPlus;
-        this.config = config;
+import { normalizeConfigVal } from '../utilities.js';
+import TagConnector from './tagConnector.js';
+
+export default class WebhookConnector extends TagConnector {
+    constructor(tag, obsidianPlus, config) {
+        super(tag, obsidianPlus, config);
+        console.log('DummyConnector initialized');
     }
 
     // fires when user clicks the checkbox next to the tag
@@ -20,7 +22,7 @@ export class TagConnector {
             const fields = this.config.fields;
             for (const field of fields) {
                 const [key, value] = field.split(':');
-                data[key.trim()] = task[value.trim()];
+                data[normalizeConfigVal(key)] = task[normalizeConfigVal(value)];
             }
         } else {
             data = task;
@@ -34,46 +36,25 @@ export class TagConnector {
         return response;
     }
 
-    // fires when user clears the checkbox next to the tag
-    async onReset(task) {
-        console.log('TagConnector reset', task);
-        await this.obsidianPlus.updateTask(task, { trimEnd: '✓' });
-    }
-
-    // fires after the transaction success is confirmed
-	async onSuccess(task, response) {
-        console.log('TagConnector transaction successful', task, response);
-        // update task visual to show success
-       await this.obsidianPlus.updateTask(task, { append: '✓' });
-    }
-
-    // fires after the transaction fails
-    async onError(task, error) {
-        console.error('TagConnector transaction failed', task, error);
-        await this.obsidianPlus.changeTaskStatus(task, 'error', error);
-    }
-
-    // function that runs to decide whether the task will be rendered in the getSummary view
-    defaultFilter(task) {
-    
-    }
-
-    // functions that formats the task for the getSummary view
-    defaultFormat(task) {
-    
-    }
-
     async sendWebhook(url, data, options = {}) {
-        // Default options
+        // Prepare fetch options
         const fetchOptions = {
-            method: options.method || 'POST', 
+            method: options.method || 'POST',
             headers: {
-            'Content-Type': 'application/json',
-            ...options.headers
+                'Content-Type': 'application/json',
+                ...this.config.headers,
+                ...options.headers,
             },
-            body: JSON.stringify(data),
-            // Add other options like timeout, etc., if needed.
         };
+
+        // Handle GET requests: append data as query parameters
+        if (method === 'GET' || method === 'HEAD') {
+            const urlParams = new URLSearchParams(data).toString();
+            url = `${url}?${urlParams}`;
+        } else {
+            // For other methods, include the body
+            fetchOptions.body = JSON.stringify(data);
+        }
 
         try {
             const response = await fetch(url, fetchOptions);

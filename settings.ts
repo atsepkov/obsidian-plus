@@ -22,8 +22,8 @@ export class SettingTab extends PluginSettingTab {
             .setValue(tagColor.tag)
             .onChange(async (value) => {
               this.plugin.settings.tagColors[index].tag = value;
-              await this.plugin.saveSettings();
               this.plugin.updateTagStyles();
+              await this.plugin.saveSettings();
             });
         })
         .addColorPicker((colorPicker: ColorComponent) => {
@@ -31,8 +31,8 @@ export class SettingTab extends PluginSettingTab {
               .setValue(tagColor.textColor)
               .onChange(async (value) => {
                 this.plugin.settings.tagColors[index].textColor = value;
-                await this.plugin.saveSettings();
                 this.plugin.updateTagStyles();
+                await this.plugin.saveSettings();
               });
           })
         .addColorPicker((colorPicker: ColorComponent) => {
@@ -40,8 +40,8 @@ export class SettingTab extends PluginSettingTab {
             .setValue(tagColor.color)
             .onChange(async (value) => {
               this.plugin.settings.tagColors[index].color = value;
-              await this.plugin.saveSettings();
               this.plugin.updateTagStyles();
+              await this.plugin.saveSettings();
             });
         })
         .addExtraButton((button: ButtonComponent) => {
@@ -50,9 +50,9 @@ export class SettingTab extends PluginSettingTab {
             .setTooltip('Delete')
             .onClick(async () => {
               this.plugin.settings.tagColors.splice(index, 1);
-              await this.plugin.saveSettings();
               this.display();
               this.plugin.updateTagStyles();
+              await this.plugin.saveSettings();
             });
         });
     });

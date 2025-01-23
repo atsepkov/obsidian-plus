@@ -20,6 +20,14 @@ If your plugin does not need CSS, delete this file.
 .cm-flagged-line:hover {
     opacity: 1.0;
 }
+
+.cm-error-line {
+    color: #f53;
+}
+
+.cm-response-line {
+    color: rgb(105, 151, 236);
+}
   
 /* You can show a tooltip on hover by using ::after content */
 .cm-flagged-line:hover::after {

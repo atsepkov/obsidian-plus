@@ -1,6 +1,8 @@
+import path from 'path';
 import {
 	App, Editor, MarkdownView, MarkdownPostProcessorContext,
-	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile
+	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile,
+	FileSystemAdapter
 } from 'obsidian';
 import {
 	configure,
@@ -8,6 +10,7 @@ import {
 	findDvTask,
 	changeDvTaskStatus,
 	updateDvTask,
+	getDvTaskChildren,
 	getSummary,
 	toggleTask,
 	clearTaskCache
@@ -44,6 +47,13 @@ interface TaskLineInfo {
 // Key by file path to an array of (lineNumber, text)
 let taskCache: Map<string, TaskLineInfo[]> = new Map();
 
+const connectorMap = {
+	'ai': require('./connectors/aiConnector').default,
+	'basic': require('./connectors/tagConnector').default,
+	'dummy': require('./connectors/dummyConnector').default,
+	'http': require('./connectors/httpConnector').default,
+	'webhook': require('./connectors/webhookConnector').default,
+}
   
 // Compare old vs new tasks by line number
 function compareTaskLines(
@@ -239,6 +249,12 @@ export default class ObsidianPlus extends Plugin {
 			})
 		);
 
+		this.registerEvent(
+            this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
+                this.handleBulletPreference(editor);
+            })
+        );
+
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
@@ -277,14 +293,20 @@ export default class ObsidianPlus extends Plugin {
 			const oldTasks = await this.extractTaskLines(currentFile);
 			taskCache.set(currentFile.path, oldTasks);
 		}
-		this.buildTagConnector('#test', { url: 'https://nocode.host.horse', method: 'POST' });
 	}
 
 	private buildTagConnector(tag: string, config: ConnectorConfig) {
-		const TagConnector = require('./tagConnector').TagConnector;
+		let connectorName = config.connector;
+		if (!connectorName && config.webhookUrl) {
+			connectorName = 'webhook';
+		}
+		if (!connectorName) {
+			connectorName = 'basic';
+		}
+		const TagConnector = connectorMap[connectorName];
 		const connector = new TagConnector(tag, this, config);
 		this.settings.webTags[tag] = connector;
-		console.log('Built tag connector for', tag, config);
+		console.log(`Built ${connectorName} connector for`, tag, config);
 	}
 
 	private buildDecorationSet(state: EditorState): DecorationSet {
@@ -295,24 +317,75 @@ export default class ObsidianPlus extends Plugin {
 
 		const lines = state.doc.toString().split("\n");
 		const decorations: Range<Decoration>[] = [];
-	  
+	
+		let prevLine = ''
 		for (let i = 0; i < lines.length; i++) {
-		  const line = lines[i];
-		  for (const tag of this.settings.taskTags) {
-			if (line.includes(tag)) {
-				// If it doesn't match "proper task format," then highlight
-				const invalidRegex = new RegExp(`^[-*]\\s*${tag}\\s`);
-				if (invalidRegex.test(line.trim())) {
-					// Convert 0-based line number to a CodeMirror line range
-					const cmLine = state.doc.line(i + 1);
-					decorations.push(
-						Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
-					);
+			const line = lines[i];
+			const cleanLine = line.trim();
+
+			// highlight tasks that don't match the proper task format
+			for (const tag of this.settings.taskTags) {
+				if (line.includes(tag)) {
+					// If it doesn't match "proper task format," then highlight
+					const invalidRegex = new RegExp(`^[-*]\\s*${tag}\\s`);
+					if (invalidRegex.test(line.trim())) {
+						// Convert 0-based line number to a CodeMirror line range
+						const cmLine = state.doc.line(i + 1);
+						decorations.push(
+							Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
+						);
+					}
 				}
 			}
-		  }
+
+			// highlight errors and responses
+			if (cleanLine.startsWith('+ ')) {
+				// - = outgoing request, + = incoming response
+				const cmLine = state.doc.line(i + 1);
+				decorations.push(
+					Decoration.line({ class: "cm-response-line" }).range(cmLine.from)
+				);
+			} else if (cleanLine.startsWith('* ')) {
+				const cmLine = state.doc.line(i + 1);
+				decorations.push(
+					Decoration.line({ class: "cm-error-line" }).range(cmLine.from)
+				);
+			} else {
+				let incrementPrev = true;
+				for (const tag in this.settings.webTags) {
+					if (prevLine.includes(tag) && this.settings.webTags[tag].config.errorFormat) {
+						// let errorRegex = new RegExp(this.settings.webTags[tag].errorFormat);
+						// if (errorRegex.test(line)) {
+						if (cleanLine.startsWith('- ' + this.settings.webTags[tag].config.errorFormat)) {
+							const cmLine = state.doc.line(i + 1);
+							decorations.push(
+								Decoration.line({ class: "cm-error-line" }).range(cmLine.from)
+							);
+							incrementPrev = false;
+							break;
+						}
+					}
+				}
+				if (incrementPrev) {
+					prevLine = line;
+				}
+			}
 		}
 		return Decoration.set(decorations);
+	}
+
+	private handleBulletPreference(editor: Editor) {
+		const cursor = editor.getCursor();
+		const line = editor.getLine(cursor.line);
+		const cleanLine = line.trimStart();
+
+		// Check if the line starts with a `+` bullet or `*` bullet
+		// Default to '-' bullet if it does
+		if (cleanLine === '+ ' || cleanLine === '* ') {
+			// Replace `+` with `-`
+			const newLine = line.replace(/[+*] /, '- ');
+			editor.setLine(cursor.line, newLine);
+		}
 	}
 
 	private highlightFlaggedLinesExtension(getFlaggedLines: () => number[]) {
@@ -379,25 +452,45 @@ export default class ObsidianPlus extends Plugin {
 				}
 				const basicTags = getSummary(dataview.api, '#', {
 					currentFile: file.path,
-					header: '### Basic Tags',
+					header: '### Basic Task Tags',
 					onlyPrefixTags: true,
 					onlyReturn: true,
 				})
 				const autoTags = getSummary(dataview.api, '#', {
 					currentFile: file.path,
-					header: '### Automated Tags',
+					header: '### Automated Task Tags',
 					onlyPrefixTags: true,
 					onlyReturn: true,
 				})
 				const recurringTags = getSummary(dataview.api, '#', {
 					currentFile: file.path,
-					header: '### Recurring Tags',
+					header: '### Recurring Task Tags',
 					onlyPrefixTags: true,
 					onlyReturn: true,
 				})
 				const foundTags = [];
 				for (const line of basicTags) {
 					foundTags.push(line.tags[0]);
+				}
+				console.log({basicTags, autoTags, recurringTags});
+				const parseChildren = (prop) => {
+					let config = {};
+					if (prop.children.length) {
+						for (const child of prop.children) {
+							// there may be additional colons in the value, so split only once
+							const [key, ...rest] = child.text.split(':');
+							if (!rest || !rest.length || !rest[0].length) {
+								config[normalizeConfigVal(key)] = parseChildren(child);
+							} else {
+								const value = rest.join(':');
+								config[normalizeConfigVal(key)] = normalizeConfigVal(value);
+							}
+						}
+					} else {
+						console.error('No config found for this bullet:', prop.text);
+						return {};
+					}
+					return config;
 				}
 				for (const line of autoTags) {
 					const tag = line.tags[0];
@@ -407,17 +500,7 @@ export default class ObsidianPlus extends Plugin {
 						if (cleanText === 'config:') {
 							// found config bullet, parse it and exit
 							// if it has children, parse its children
-							if (prop.children.length) {
-								for (const child of prop.children) {
-									// there may be additional colons in the value, so split only once
-									const [key, ...rest] = child.text.split(':');
-									const value = rest.join(':');
-									config[normalizeConfigVal(key)] = normalizeConfigVal(value);
-								}
-							} else {
-								console.error('No config found for tag', tag);
-								break;
-							}
+							config = parseChildren(prop);
 						} else if (cleanText.startsWith('config:')) {
 							// found config bullet, let's eval it
 							const [key, ...rest] = cleanText.split(':');
@@ -518,6 +601,9 @@ export default class ObsidianPlus extends Plugin {
 	}
 	async updateTask(task, options): void {
 		await updateDvTask(task, options);
+	}
+	getTaskChildren(task): any[] {
+		return getDvTaskChildren(task);
 	}
 }
 
