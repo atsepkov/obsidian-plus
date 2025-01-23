@@ -76,7 +76,7 @@ export default class AiConnector extends HttpConnector {
 
         // Extract the prompt from the task
         const prompt = task.text.replace(task.tags[0], '').trim();
-        const context = this.obsidianPlus.getTaskChildren(task);
+        const context = await this.obsidianPlus.getTaskContext(task);
         console.log('Prompt:', prompt, context);
 
         // Prepare the AI request payload

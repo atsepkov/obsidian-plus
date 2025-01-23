@@ -376,6 +376,53 @@ export function getDvTaskChildren(listItem) {
     return entries;
 }
 
+export async function getDvTaskParents(listItem) {
+    if (!listItem || !listItem.path) return [];
+
+    // Convert Dataview's 1-based line to 0-based
+    const currentLineStart = listItem.position.start.line;
+    const filePath = listItem.path;
+
+    // Read file lines
+    const lines = await getFileLines(filePath);
+    if (currentLineStart >= lines.length || currentLineStart < 0) return [];
+
+    // Get current line's indent
+    const currentLineText = lines[currentLineStart];
+    const currentIndent = (currentLineText.match(/^\s*/)?.[0] || "").length;
+
+    console.log(`[DEBUG] Current line: ${currentLineStart}\nText: "${currentLineText}"\nIndent: ${currentIndent}`);
+
+    const parents = [];
+    let lastParentIndent = currentIndent;
+
+    for (let lineNum = currentLineStart - 1; lineNum >= 0; lineNum--) {
+        const lineText = lines[lineNum];
+        const bulletMatch = lineText.match(/^(\s*)([-*+])\s/);
+        if (!bulletMatch) continue;
+
+        const indent = bulletMatch[1].length;
+        const bullet = bulletMatch[1] + bulletMatch[2];
+
+        console.log(`[DEBUG] Line ${lineNum}: "${lineText}"\nIndent: ${indent}, Last Parent Indent: ${lastParentIndent}`);
+
+        if (indent < lastParentIndent) {
+            parents.push({
+                indent: indent - currentIndent, // Relative to task
+                index: lineNum - currentLineStart,
+                bullet: bullet,
+                text: lineText.trim()
+            });
+            lastParentIndent = indent; // Update tracking
+            console.log(`[DEBUG] ADDED PARENT: "${lineText.trim()}"`);
+        }
+
+        if (indent === 0) break;
+    }
+
+    return parents.reverse();
+}
+
 // SEARCH LOGIC
 
 /**

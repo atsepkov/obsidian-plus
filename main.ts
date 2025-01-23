@@ -11,6 +11,7 @@ import {
 	changeDvTaskStatus,
 	updateDvTask,
 	getDvTaskChildren,
+	getDvTaskParents,
 	getSummary,
 	toggleTask,
 	clearTaskCache
@@ -602,8 +603,11 @@ export default class ObsidianPlus extends Plugin {
 	async updateTask(task, options): void {
 		await updateDvTask(task, options);
 	}
-	getTaskChildren(task): any[] {
-		return getDvTaskChildren(task);
+	async getTaskContext(task): any[] {
+		return {
+			parents: await getDvTaskParents(task),
+			children: getDvTaskChildren(task),
+		}
 	}
 }
 
