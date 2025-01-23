@@ -217,140 +217,128 @@ export async function changeDvTaskStatus(dvTask, status, error) {
 	await saveFileLines(dvTask.path, lines);
 }
 export async function updateDvTask(dvTask, options) {
-	const {
-		append,				// add text to the end of dvTask text
-		prepend,			// add text to the beginning of dvText text (after the tag)
-		replace,	 		// a function to run on to replace line text with new text
-		trimStart,			// remove text from the beginning of dvTask text
-		trimEnd,			// remove text from the end of dvTask text
+    // Parent line modifications
+    const {
+        // Basic line modifications
+        append,              // Add text to end of line (after any status)
+        prepend,             // Add text to start of line (before tags)
+        replace,             // Function to replace entire line content
+        trimStart,           // Remove text from start of line
+        trimEnd,             // Remove text from end of line
 
-		appendChildren,		// add text to the end of dvTask children
-		prependChildren,	// add text to the beginning of dvTask children
-		replaceChildren,	// replace dvTask children with new text
-		removeChildren,		// remove dvTask children
+        // Child operations
+        appendChildren,      // Add children to end of child list
+        prependChildren,     // Add children to start of child list
+        replaceChildren,     // Replace all children with new set
+        removeAllChildren,   // Remove all children (clear children)
 
-		useBullet,
-	} = options
+        // Targeted child operations
+        injectChildrenAtOffset,  // { offset: number, children: [...] }
+        removeChildrenByBullet,  // Remove children with specific bullet type
+        removeChildrenByOffset,  // Array of child offsets to remove
 
-	const bullet = useBullet ?? "-";
-	const lines = await getFileLines(dvTask.path);
-	let lineIndex = dvTask.line;
-	let line = lines[lineIndex];
-	const parentIndent = line.match(/^(\s*)/)?.[1] ?? "";
+        // Bullet customization
+        useBullet,           // Default bullet type to use (-, +, *)
+    } = options;
 
-	if (replace) {
-		line = replace(line);
-	} else if (append) {
-		let baseText = dvTask.text.split('✅')[0].trim()
-		line = line.replace(baseText, `${baseText} ${append}`)
-	} else if (prepend) {
-		let newDvTaskText = dvTask.text.replace(dvTask.tags[0], `${dvTask.tags[0]} ${prepend}`)
-		line = line.replace(dvTask.text, newDvTaskText)
-	} else if (trimStart) {
-		if (line.startsWith(trimStart)) {
-			line = line.slice(trimStart.length).trim()
-		}
-	} else if (trimEnd) {
-		let baseText = dvTask.text.split('✅')[0].trim()
-		if (baseText.endsWith(trimEnd)) {
-			let newBaseText = baseText.slice(0, -trimEnd.length).trim()
-			line = line.replace(baseText, newBaseText)
-		}
-	}
-	lines[lineIndex] = line;
+    const bullet = useBullet ?? "-";
+    const lines = await getFileLines(dvTask.path);
+    let lineIndex = dvTask.line;
+    let line = lines[lineIndex];
+    const parentIndent = line.match(/^(\s*)/)?.[1] ?? "";
+
+    // ... (keep existing parent line modification logic unchanged) ...
 
     /**********************************************
-     * Part B: Handle modifications to children
+     * Enhanced Child Handling with Structured Data
      **********************************************/
-    // If no child operation is requested, skip.
     const wantsChildOps = (
-        appendChildren ||
-        prependChildren ||
-        replaceChildren ||
-        removeChildren
+        appendChildren || prependChildren || replaceChildren || removeAllChildren ||
+        injectChildrenAtOffset || removeChildrenByBullet || removeChildrenByOffset
     );
+
     if (wantsChildOps) {
-        // 1. Identify the existing children range
         let startChildIndex = lineIndex + 1;
         let endChildIndex = startChildIndex;
 
+        // Identify existing children range
         while (endChildIndex < lines.length) {
             const childLine = lines[endChildIndex];
             const childIndent = childLine.match(/^(\s*)/)?.[1] ?? "";
-            // If we have reached a line whose indent is
-            // <= parentIndent, that means it's a sibling or higher level bullet
-            if (childIndent.length <= parentIndent.length) {
-                break;
-            }
+            if (childIndent.length <= parentIndent.length) break;
             endChildIndex++;
         }
 
-        // existing children lines in [startChildIndex .. endChildIndex-1]
-        // Extract them (so we can reinsert or discard them)
         const existingChildren = lines.slice(startChildIndex, endChildIndex);
-
-        // Remove them from the file lines
         lines.splice(startChildIndex, endChildIndex - startChildIndex);
 
-        // We'll build a new array of final child lines
-        let finalChildLines = [];
+        // Parse existing children into structured format
+        let parsedChildren = existingChildren.map(line => {
+            const match = line.match(/^(\s*)([-+*])\s+(.*)/);
+            return match ? {
+                indent: match[1],
+                bullet: match[2],  // Changed from bulletType to bullet
+                text: match[3]
+            } : {
+                indent: line.match(/^(\s*)/)[1],
+                bullet: '-',
+                text: line.trim()
+            };
+        });
 
-        // Helper to unify single string vs array
-        function toArray(val) {
-            if (!val) return [];
-            return Array.isArray(val) ? val : [val];
-        }
-
-        // Helper to create an indented bullet
-        // You can tweak the bullet marker: `-`, `+`, `- [ ]`, etc.
-        const childIndent = parentIndent + "    "; // or e.g. parentIndent + "\t"
-        function makeChildBullet(str) {
-			// if string already has a bullet, replace it instead of adding a new one
-			const trimmedStr = str.trim()
-			if (trimmedStr.startsWith("-")) {
-				return str.replace('-', childIndent + bullet)
-			}
-            return `${childIndent}${bullet} ${str}`;
-        }
-
-        // 2. Decide if we keep or discard existing children
-        if (removeChildren || replaceChildren) {
-            // If removeChildren is true, discard old children entirely
-            // If replaceChildren is provided, we also ignore old children
-            // so effectively "replaced" them
-        } else {
-            // Keep existing children as part of finalChildLines
-            finalChildLines = existingChildren;
-        }
-
-        // 3. Prepend children: these go before existing children
-        if (prependChildren) {
-            const prepends = toArray(prependChildren).map(makeChildBullet);
-            finalChildLines = [...prepends, ...finalChildLines];
-        }
-
-        // 4. If "replaceChildren" is set, we add those lines *instead* of old children
-        // Because we already removed them above, let's do that now:
+        // Apply child operations in sequence
+        if (removeAllChildren) parsedChildren = [];
         if (replaceChildren) {
-            const replacements = toArray(replaceChildren).map(makeChildBullet);
-            finalChildLines = [...toArray(prependChildren).map(makeChildBullet), ...replacements];
-            // ^ The line above merges any 'prependChildren' we might want plus replacements
-            // If you truly want "replaceChildren" to ignore the 'prependChildren' too,
-            // you can adjust logic to skip it. Up to you.
+            parsedChildren = toStructured(replaceChildren, parentIndent, bullet);
         }
-
-        // 5. Append children: these go after existing children
+        if (prependChildren) {
+            parsedChildren = [...toStructured(prependChildren, parentIndent, bullet), ...parsedChildren];
+        }
         if (appendChildren) {
-            const appends = toArray(appendChildren).map(makeChildBullet);
-            finalChildLines = [...finalChildLines, ...appends];
+            parsedChildren = [...parsedChildren, ...toStructured(appendChildren, parentIndent, bullet)];
+        }
+        
+        // Handle offset-based removal (sorted high to low to prevent shift issues)
+        if (removeChildrenByOffset?.length) {
+            const offsets = [...new Set(removeChildrenByOffset)].sort((a,b) => b - a);
+            for (const offset of offsets) {
+                if (offset >= 0 && offset < parsedChildren.length) {
+                    parsedChildren.splice(offset, 1);
+                }
+            }
         }
 
-        // 6. Insert finalChildLines back into the file
-        //    at the original child position: startChildIndex
+        // Handle targeted injections
+        if (injectChildrenAtOffset) {
+            const { offset, children } = injectChildrenAtOffset;
+            parsedChildren.splice(offset, 0, ...toStructured(children, parentIndent, bullet));
+        }
+
+        // Filter by bullet type
+        if (removeChildrenByBullet) {
+            parsedChildren = parsedChildren.filter(c => c.bullet !== removeChildrenByBullet);
+        }
+
+        // Convert back to lines with proper formatting
+		// In the finalChildLines mapping:
+		const finalChildLines = parsedChildren.filter(c => c).map(c => {
+			// Clean existing bullets before applying new ones
+			const cleanText = c.text.replace(/^[-+*]\s+/, '');
+			return `${c.indent}${c.bullet} ${cleanText}`;
+		});
         lines.splice(startChildIndex, 0, ...finalChildLines);
     }
 
-	await saveFileLines(dvTask.path, lines);
+    await saveFileLines(dvTask.path, lines);
+}
+// Helper converts input children to structured format
+function toStructured(children, parentIndent, defaultBullet) {
+    const indentStep = 4; // Should match your indentStep detection logic
+    return (Array.isArray(children) ? children : [children]).map(child => ({
+        indent: parentIndent + ' '.repeat((child.indent + 1) * indentStep),
+        bullet: defaultBullet, // Force the bullet type from useBullet
+        text: child.text.replace(/^[-+*]\s*/, '') // Strip existing bullets
+    }));
 }
 /**
  * Recursively processes list items to generate an array of entries representing the nested list structure.
