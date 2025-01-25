@@ -288,6 +288,11 @@ export async function updateDvTask(dvTask, options) {
 
         // Apply child operations in sequence
         if (removeAllChildren) parsedChildren = [];
+		// Filter by bullet type
+		if (removeChildrenByBullet) {
+			parsedChildren = parsedChildren.filter(c => !removeChildrenByBullet.includes(c.bullet));
+		}
+		
         if (replaceChildren) {
             parsedChildren = toStructured(replaceChildren, parentIndent, bullet);
         }
@@ -312,11 +317,6 @@ export async function updateDvTask(dvTask, options) {
         if (injectChildrenAtOffset) {
             const { offset, children } = injectChildrenAtOffset;
             parsedChildren.splice(offset, 0, ...toStructured(children, parentIndent, bullet));
-        }
-
-        // Filter by bullet type
-        if (removeChildrenByBullet) {
-            parsedChildren = parsedChildren.filter(c => c.bullet !== removeChildrenByBullet);
         }
 
         // Convert back to lines with proper formatting
@@ -345,24 +345,28 @@ function toStructured(children, parentIndent, defaultBullet) {
  * @param {object} listItem - The parent list item from Dataview.
  * @returns {Array<{indent: number, offset: number, text: string}>} - Array of child entries.
  */
-export function getDvTaskChildren(listItem) {
+export async function getDvTaskChildren(listItem) {
     if (!listItem || !listItem.children) return [];
 
     const parentIndent = listItem.indent || 0;
     const currentLineStart = listItem.position.start.line;
     const entries = [];
 
+	// Read file lines
+	const lines = await getFileLines(listItem.path);
+
     /**
      * Recursively processes a child item and its descendants.
      * @param {object} child - The current child item to process.
      */
     function processChild(child, parentIndent = 0) {
-        // Calculate relative indent compared to the original parent
-        const indent = parentIndent + 1;
-        // Calculate line offset from the original parent's line
-        const index = child.position.start.line - currentLineStart;
-		// Grab bullet type
-		const bullet = child.text.match(/^(\s*)/)?.[1] ?? "";
+		const childLineStart = child.position.start.line;
+        const index = childLineStart - currentLineStart;
+		const bulletMatch = lines[childLineStart].match(/^(\s*)([-+*])\s/);
+		const bullet = bulletMatch ? bulletMatch[2] : '-';
+		const indent = bulletMatch ? bulletMatch[1].length : 0;
+		console.log(`[DEBUG] Child line: ${lines[childLineStart]}\nText: "${child.text}"\nIndent: ${indent}`);
+
         // Add the entry for this child
         entries.push({ indent, index, bullet, text: child.text });
 
@@ -391,8 +395,6 @@ export async function getDvTaskParents(listItem) {
     const currentLineText = lines[currentLineStart];
     const currentIndent = (currentLineText.match(/^\s*/)?.[0] || "").length;
 
-    console.log(`[DEBUG] Current line: ${currentLineStart}\nText: "${currentLineText}"\nIndent: ${currentIndent}`);
-
     const parents = [];
     let lastParentIndent = currentIndent;
 
@@ -402,9 +404,7 @@ export async function getDvTaskParents(listItem) {
         if (!bulletMatch) continue;
 
         const indent = bulletMatch[1].length;
-        const bullet = bulletMatch[1] + bulletMatch[2];
-
-        console.log(`[DEBUG] Line ${lineNum}: "${lineText}"\nIndent: ${indent}, Last Parent Indent: ${lastParentIndent}`);
+        const bullet = bulletMatch[2];
 
         if (indent < lastParentIndent) {
             parents.push({
@@ -414,7 +414,6 @@ export async function getDvTaskParents(listItem) {
                 text: lineText.trim()
             });
             lastParentIndent = indent; // Update tracking
-            console.log(`[DEBUG] ADDED PARENT: "${lineText.trim()}"`);
         }
 
         if (indent === 0) break;

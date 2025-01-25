@@ -72,7 +72,7 @@ export default class HttpConnector extends TagConnector {
 
         await this.obsidianPlus.updateTask(task, {
             append: status,
-            appendChildren: children,
+            appendChildren: TagConnector.convertLinesToChildren(children),
             useBullet: '+'
         });
     }
@@ -98,7 +98,7 @@ export default class HttpConnector extends TagConnector {
             message += ` (${new Date().toLocaleString()})`;
         }
         await this.obsidianPlus.updateTask(task, {
-            appendChildren: [message],
+            appendChildren: TagConnector.convertLinesToChildren([message]),
             useBullet: '*'
         });
     }

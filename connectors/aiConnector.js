@@ -16,48 +16,13 @@ const systemPrompt = `
         - Aim for 1 sentence per bullet
         - If's ok to answer with a single bullet if the question asks for specific command or datapoint
         - If an item only has one sub-bullet, prefer "parent: sub-bullet" format instead
+    - If you're provided additional context
+        - Additional context represents parent bullets (previous conversation) prior to the question
+        - Usually, you can ignore it
+        - In some cases, the question doesn't make sense without it, so use it to clarify
+        - Even if you can answer the question without it, verify if the context changes the question
 - prompt: `
 
-/**
- * Converts an array of list item strings into structured entries with calculated indentation.
- * @param {string[]} lines - Array of list item strings.
- * @returns {Array<{indent: number, offset: number, text: string}>} - Processed entries.
- */
-function convertLinesToChildren(lines) {
-    if (!lines || lines.length === 0) return [];
-    
-    const entries = [];
-    let indentStep = 2; // Default step if detection fails
-    
-    // Calculate leading whitespace for a line (spaces only)
-    const getLeadingSpaces = line => (line.match(/^ */)?.[0]?.length || 0);
-
-    // Determine indentation step from first two lines
-    if (lines.length >= 2) {
-        const first = getLeadingSpaces(lines[0]);
-        const second = getLeadingSpaces(lines[1]);
-        indentStep = Math.abs(second - first) || 2;
-    }
-
-    const baseIndent = getLeadingSpaces(lines[0]);
-    
-    lines.forEach((line, index) => {
-        const leadingSpaces = getLeadingSpaces(line);
-        const text = line.trim();
-        
-        // Calculate relative indent level
-        let indent = Math.round((leadingSpaces - baseIndent) / indentStep);
-        indent = Math.max(indent, 0); // No negative indents
-        
-        entries.push({
-            indent,
-            offset: index + 1, // Lines are sequential after parent
-            text
-        });
-    });
-
-    return entries;
-}
 
 export default class AiConnector extends HttpConnector {
     constructor(tag, obsidianPlus, config) {
@@ -80,7 +45,7 @@ export default class AiConnector extends HttpConnector {
         console.log('Prompt:', prompt, context);
 
         // Prepare the AI request payload
-        const payload = this.prepareAiPayload(prompt);
+        const payload = this.prepareAiPayload(prompt, context);
 
         // Get the endpoint URL for the configured AI provider
         const endpoint = this.getAiEndpoint();
@@ -111,7 +76,6 @@ export default class AiConnector extends HttpConnector {
         if (this.config.stream) {
             this.gotResponse = false;
             await this.handleStreamingResponse(response, async (content) => {
-                console.log('Streaming content:', content);
                 // Update the task with the streaming content
                 await this.onStreamSuccess(task, content);
             });
@@ -143,7 +107,7 @@ export default class AiConnector extends HttpConnector {
 
         await this.obsidianPlus.updateTask(task, {
             append: status,
-            appendChildren: convertLinesToChildren(children),
+            appendChildren: HttpConnector.convertLinesToChildren(children),
             useBullet: '+'
         });
     }
@@ -177,20 +141,35 @@ export default class AiConnector extends HttpConnector {
         }
     }
 
-    prepareAiPayload(prompt) {
+    prepareAiPayload(prompt, context) {
         const { provider } = this.config.auth;
+
+        let finalPrompt = systemPrompt + prompt;
+        for (const child of context.children) {
+            if (child.bullet === '-' && child.text.trim()) { // only take user input
+                finalPrompt += `\n${' '.repeat(child.indent) + child.bullet} ${child.text}`;
+            }
+        }
+        if (context.parents.length > 0) {
+            finalPrompt += `\nAdditional context that may or may not be relevant:\n`;
+            // Add in reverse from parent to grandparent
+            for (let i = context.parents.length - 1; i >= 0; i--) {
+                finalPrompt += 'grand-'.repeat(context.parents.length - i - 1) + 'parent: ';
+                finalPrompt += context.parents[i].text + '\n';
+            }
+        }
 
         switch (provider) {
             case 'deepseek':
             case 'openai':
                 return {
                     model: this.config.model,
-                    messages: [{ role: 'user', content: systemPrompt + prompt }],
+                    messages: [{ role: 'user', content: finalPrompt }],
                     temperature: this.config.temperature || 0.7,
                 };
             case 'anthropic':
                 return {
-                    prompt: `\n\nHuman: ${prompt}\n\nAssistant:`,
+                    prompt: `\n\nHuman: ${finalPrompt}\n\nAssistant:`,
                     model: 'claude-3.5-sonnet',
                     max_tokens_to_sample: this.config.max_tokens || 1000,
                 };
@@ -277,10 +256,10 @@ export default class AiConnector extends HttpConnector {
             children.push(this.responseBuffer);
         }
 
-        console.log('Children:', children, this.completedLines, this.responseBuffer);
         await this.obsidianPlus.updateTask(task, {
             append: status,
-            replaceChildren: convertLinesToChildren(children),
+            removeChildrenByBullet: '+*',
+            appendChildren: HttpConnector.convertLinesToChildren(children),
             useBullet: '+'
         });
     }
@@ -338,7 +317,8 @@ export default class AiConnector extends HttpConnector {
 
         // Final update with all completed lines
         await this.obsidianPlus.updateTask(task, {
-            replaceChildren: convertLinesToChildren(this.completedLines.filter(l => l.trim() !== '')),
+            removeChildrenByBullet: '+*',
+            appendChildren: HttpConnector.convertLinesToChildren(this.completedLines.filter(l => l.trim() !== '')),
             useBullet: '+'
         });
     }

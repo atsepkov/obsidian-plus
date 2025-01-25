@@ -173,8 +173,8 @@ export default class ObsidianPlus extends Plugin {
 			  
 					// Compare old vs. new tasks
 					const changed = compareTaskLines(oldTasks, newTasks);
-					console.log(`Tasks changed in ${file.path}:`, changed);
 					if (changed.length === 1) {
+						console.log(`Task changed in ${file.path}:`, changed[0]);
 					  	// console.log(`Tasks changed in ${file.path}:`, changed);
 						for (const task of changed) {
 							if (task.oldText && task.newText) {
@@ -186,8 +186,8 @@ export default class ObsidianPlus extends Plugin {
 									continue; // only fire when task changes
 								}
 
-								const oldTaskTag = task.oldText.match(/#[\w-]+/)[0];
-								const taskTag = task.newText.match(/#[\w-]+/)[0];
+								const oldTaskTag = task.oldText.match(/#[\w/-]+/)[0];
+								const taskTag = task.newText.match(/#[\w/-]+/)[0];
 								if (oldTaskTag !== taskTag) {
 									continue; // user editing the line, not checking off a task
 								}
@@ -606,7 +606,7 @@ export default class ObsidianPlus extends Plugin {
 	async getTaskContext(task): any[] {
 		return {
 			parents: await getDvTaskParents(task),
-			children: getDvTaskChildren(task),
+			children: await getDvTaskChildren(task),
 		}
 	}
 }
