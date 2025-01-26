@@ -264,12 +264,40 @@ export default class ObsidianPlus extends Plugin {
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			// console.log('click', evt);
+			// 1. Handle Dataview clicks first
 			const target = evt.target as HTMLElement;
 			if (target.matches('.op-get-summary')) {
 				// id=i${id}
 				const taskId = target.id.slice(1);
 				toggleTask(taskId);
+			}
+
+			// 2. Handle code block triple-clicks
+			if (evt.detail === 3) {
+				const editor = this.app.workspace.activeEditor?.editor;
+				if (!editor) return;
+
+				const view = editor.cm;
+				const pos = view.posAtCoords({ x: evt.clientX, y: evt.clientY });
+				if (pos === null) return;
+
+				// Find the code block node in syntax tree
+				const tree = view.state.field(EditorState.syntaxTree);
+				const node = tree.resolveInner(pos, -1);
+				
+				const codeBlock = this.findCodeBlockParent(node);
+				if (!codeBlock) return;
+				console.log("Code block:", codeBlock);
+
+				evt.preventDefault();
+				evt.stopPropagation();
+
+				// Handle different code block types
+				if (codeBlock.name === "HyperMDCodeBlock") {
+				this.selectMultiLineCodeBlock(view, codeBlock);
+				} else if (codeBlock.name === "InlineCode") {
+				this.selectInlineCode(view, codeBlock);
+				}
 			}
 		});
 
@@ -548,6 +576,53 @@ export default class ObsidianPlus extends Plugin {
 			effects: setConfigEffect.of(this.settings),
 		  });
 		}
+	}
+
+	// Handle inline code
+	private selectInlineCode(view: EditorView, node: SyntaxNode) {
+		const doc = view.state.doc;
+		const text = doc.sliceString(node.from, node.to);
+		
+		// Find content between backticks (supports multiple backticks)
+		const tickMatch = text.match(/^`+/);
+		if (!tickMatch) return;
+		
+		const tickLength = tickMatch[0].length;
+		const from = node.from + tickLength;
+		const to = node.to - tickLength;
+		
+		view.dispatch({
+		selection: { anchor: from, head: to }
+		});
+	}
+
+	// Helper to find code block parent node
+	private findCodeBlockParent(node: SyntaxNode): SyntaxNode | null {
+		while (node) {
+		if (node.name === "HyperMDCodeBlock" || node.name === "InlineCode") {
+			return node;
+		}
+		node = node.parent;
+		}
+		return null;
+	}
+
+	// Handle multi-line code blocks
+	private selectMultiLineCodeBlock(view: EditorView, node: SyntaxNode) {
+		const state = view.state;
+		const doc = state.doc;
+		
+		// Find opening and closing backticks
+		const startLine = doc.lineAt(node.from);
+		const endLine = doc.lineAt(node.to);
+		
+		// Adjust selection to exclude the opening/closing ```
+		const from = startLine.from + startLine.text.match(/^```/)?.[0]?.length || 3;
+		const to = endLine.to - (endLine.text.match(/```$/)?.length || 3);
+		
+		view.dispatch({
+		selection: { anchor: from, head: to }
+		});
 	}
 
 	// Helper to extract lines that contain a checkbox
