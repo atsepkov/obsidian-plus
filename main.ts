@@ -12,6 +12,7 @@ import {
 	updateDvTask,
 	getDvTaskChildren,
 	getDvTaskParents,
+	getDvTaskLinks,
 	getSummary,
 	toggleTask,
 	clearTaskCache
@@ -220,6 +221,10 @@ export default class ObsidianPlus extends Plugin {
 										pos: tagPosition,
 										name: taskTag,
 									}});
+									if (!dvTask) {
+										console.error(`Could not find task in dataview for ${taskTag}`, task);
+										continue;
+									}
 									if (taskStatus === ' ') {
 										// reset trigger
 										await tagConnector.onReset(dvTask);
@@ -607,6 +612,7 @@ export default class ObsidianPlus extends Plugin {
 		return {
 			parents: await getDvTaskParents(task),
 			children: await getDvTaskChildren(task),
+			links: await getDvTaskLinks(task),
 		}
 	}
 }

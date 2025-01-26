@@ -72,6 +72,7 @@ export default class HttpConnector extends TagConnector {
 
         await this.obsidianPlus.updateTask(task, {
             append: status,
+            removeChildrenByBullet: this.config.clearErrorsOnSuccess ? '*' : undefined,
             appendChildren: TagConnector.convertLinesToChildren(children),
             useBullet: '+'
         });

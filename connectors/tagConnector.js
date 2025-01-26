@@ -22,7 +22,10 @@ export default class TagConnector {
         if (this.config.timestamps) {
             message += ` ${new Date().toLocaleString()}`;
         }
-        await this.obsidianPlus.updateTask(task, { append: message });
+        await this.obsidianPlus.updateTask(task, {
+            append: message,
+            removeChildrenByBullet: this.config.clearErrorsOnSuccess ? '*' : undefined,
+        });
     }
 
     // fires after the transaction fails
@@ -49,7 +52,10 @@ export default class TagConnector {
         console.log(`${this.tag} connector reset`, task);
         // we need to remove the checkmark from the task (timestamp too)
         const statusRegex = new RegExp(`✓.*$`, 'm');
-        await this.obsidianPlus.updateTask(task, { replace: (line) => line.replace(statusRegex, '') });
+        await this.obsidianPlus.updateTask(task, {
+            replace: (line) => line.replace(statusRegex, ''),
+            removeChildrenByBullet: this.config.clearErrorsOnReset ? '*' : undefined,
+        });
     }
 
     // fires when we receive a data feed from a resource

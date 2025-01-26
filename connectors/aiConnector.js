@@ -158,6 +158,15 @@ export default class AiConnector extends HttpConnector {
                 finalPrompt += context.parents[i].text + '\n';
             }
         }
+        if (Object.keys(context.links).length > 0) {
+            finalPrompt += `\n\nContents of Mentioned Links/Documents:\n`;
+            for (const attachment in context.links) {
+                finalPrompt += `<< LINK: ${attachment} >>\n`;
+                finalPrompt += context.links[attachment] + '\n';
+            }
+        }
+        console.log('Final prompt:', finalPrompt, context);
+        window.context = context;
 
         switch (provider) {
             case 'deepseek':

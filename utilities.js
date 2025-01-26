@@ -292,7 +292,16 @@ export async function updateDvTask(dvTask, options) {
 		if (removeChildrenByBullet) {
 			parsedChildren = parsedChildren.filter(c => !removeChildrenByBullet.includes(c.bullet));
 		}
-		
+		// Handle offset-based removal (sorted high to low to prevent shift issues)
+		if (removeChildrenByOffset?.length) {
+			const offsets = [...new Set(removeChildrenByOffset)].sort((a,b) => b - a);
+			for (const offset of offsets) {
+				if (offset >= 0 && offset < parsedChildren.length) {
+					parsedChildren.splice(offset, 1);
+				}
+			}
+		}
+
         if (replaceChildren) {
             parsedChildren = toStructured(replaceChildren, parentIndent, bullet);
         }
@@ -301,16 +310,6 @@ export async function updateDvTask(dvTask, options) {
         }
         if (appendChildren) {
             parsedChildren = [...parsedChildren, ...toStructured(appendChildren, parentIndent, bullet)];
-        }
-        
-        // Handle offset-based removal (sorted high to low to prevent shift issues)
-        if (removeChildrenByOffset?.length) {
-            const offsets = [...new Set(removeChildrenByOffset)].sort((a,b) => b - a);
-            for (const offset of offsets) {
-                if (offset >= 0 && offset < parsedChildren.length) {
-                    parsedChildren.splice(offset, 1);
-                }
-            }
         }
 
         // Handle targeted injections
@@ -365,7 +364,6 @@ export async function getDvTaskChildren(listItem) {
 		const bulletMatch = lines[childLineStart].match(/^(\s*)([-+*])\s/);
 		const bullet = bulletMatch ? bulletMatch[2] : '-';
 		const indent = bulletMatch ? bulletMatch[1].length : 0;
-		console.log(`[DEBUG] Child line: ${lines[childLineStart]}\nText: "${child.text}"\nIndent: ${indent}`);
 
         // Add the entry for this child
         entries.push({ indent, index, bullet, text: child.text });
@@ -420,6 +418,106 @@ export async function getDvTaskParents(listItem) {
     }
 
     return parents.reverse();
+}
+
+export async function getDvTaskLinks(listItem) {
+    const attachments = {};
+
+    if (!listItem) {
+        console.log('[DEBUG] No listItem provided');
+        return attachments;
+    }
+
+    console.log('[DEBUG] Starting processing for item:', listItem.text);
+
+    async function processItem(item, indent = 0) {
+        console.log(`[DEBUG] Processing item at indent ${indent}:`, item.text);
+        
+        // Extract URLs and links
+        const text = item.text;
+        console.log('[DEBUG] Raw text:', text);
+
+        // External URLs (including markdown links)
+        const externalUrls = [
+            ...extractPlainUrls(text),
+            ...extractMarkdownUrls(text)
+        ];
+        console.log('[DEBUG] Found external URLs:', externalUrls);
+
+        // Internal links
+        const internalLinks = extractInternalLinks(text);
+        console.log('[DEBUG] Found internal links:', internalLinks);
+
+        // Process external URLs
+        for (const url of externalUrls) {
+            if (!attachments[url]) {
+                console.log('[DEBUG] Fetching external URL:', url);
+                try {
+                    const response = await fetch(url);
+                    attachments[url] = await response.text();
+                } catch (e) {
+                    console.log('[DEBUG] Failed to fetch URL:', url, e);
+                    attachments[url] = null;
+                }
+            }
+        }
+
+        // Process internal links
+        for (const link of internalLinks) {
+            console.log('[DEBUG] Resolving internal link:', link);
+            const resolvedLink = app.metadataCache.getFirstLinkpathDest(link, listItem.path);
+            
+            if (resolvedLink) {
+                console.log('[DEBUG] Found linked file:', resolvedLink.path);
+                if (!attachments[link]) {
+                    try {
+                        attachments[link] = await app.vault.read(resolvedLink);
+                    } catch (e) {
+                        console.log('[DEBUG] Failed to read file:', resolvedLink.path, e);
+                        attachments[link] = null;
+                    }
+                }
+            } else {
+                console.log('[DEBUG] Link does not resolve:', link);
+                attachments[link] = null;
+            }
+        }
+
+        // Process children recursively
+        if (item.children) {
+            console.log(`[DEBUG] Processing ${item.children.length} children`);
+            for (const child of item.children) {
+                await processItem(child, indent + 1);
+            }
+        } else {
+            console.log('[DEBUG] No children found');
+        }
+    }
+
+    // Start processing with initial item
+    await processItem(listItem);
+    console.log('[DEBUG] Final attachments:', attachments);
+    return attachments;
+}
+
+// Helper functions with improved regex
+function extractPlainUrls(text) {
+    // Match URLs NOT preceded by "](" (avoids markdown links)
+    const plainUrlRegex = /(?<!\]\()\bhttps?:\/\/[^\s>)]+/g;
+    return (text.match(plainUrlRegex) || []).map(url => 
+        url.replace(/[)>.,]+$/, '') // Clean trailing punctuation
+    );
+}
+
+function extractMarkdownUrls(text) {
+    // Strict match for markdown links only
+    return [...text.matchAll(/\[[^\]]*?\]\((https?:\/\/[^\s)]+)\)/g)]
+        .map(match => match[1]);
+}
+
+function extractInternalLinks(text) {
+    return [...text.matchAll(/\[\[([^\]|#]+)/g)]
+        .map(match => match[1].trim());
 }
 
 // SEARCH LOGIC

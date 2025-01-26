@@ -38,8 +38,9 @@ export default class WebhookConnector extends TagConnector {
 
     async sendWebhook(url, data, options = {}) {
         // Prepare fetch options
+        const method = options.method || 'POST';
         const fetchOptions = {
-            method: options.method || 'POST',
+            method,
             headers: {
                 'Content-Type': 'application/json',
                 ...this.config.headers,
