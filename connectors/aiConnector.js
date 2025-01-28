@@ -291,7 +291,7 @@ export default class AiConnector extends HttpConnector {
 
             for (const event of events) {
                 const trimmed = event.trim();
-                if (!trimmed || trimmed === 'data: [DONE]') continue;
+                if (!trimmed || trimmed === 'data: [DONE]' || trimmed.startsWith(":")) continue;
 
                 // Extract JSON payload
                 const jsonStr = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed;

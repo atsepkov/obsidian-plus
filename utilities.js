@@ -201,7 +201,9 @@ export function clearTaskCache() {
 export function findDvTask(dvApi, taskDiff) {
 	const file = dvApi.page(taskDiff.file.path).file
 	for (let line of file.lists) {
-		if (taskDiff.taskText.includes(line.text) && line.line === taskDiff.lineNumber && line.tags.includes(taskDiff.tag.name)) {
+		// strip checkmark from task text
+		const lineText = line.text.split('✅')[0]
+		if (taskDiff.taskText.includes(lineText) && line.line === taskDiff.lineNumber && line.tags.includes(taskDiff.tag.name)) {
 			return line
 		}
 	}

@@ -278,25 +278,44 @@ export default class ObsidianPlus extends Plugin {
 				if (!editor) return;
 
 				const view = editor.cm;
-				const pos = view.posAtCoords({ x: evt.clientX, y: evt.clientY });
-				if (pos === null) return;
-
-				// Find the code block node in syntax tree
-				const tree = view.state.field(EditorState.syntaxTree);
-				const node = tree.resolveInner(pos, -1);
+				const contentRect = view.contentDOM.getBoundingClientRect();
+				const x = evt.clientX - contentRect.left + view.scrollDOM.scrollLeft;
+				const y = evt.clientY - contentRect.top + view.scrollDOM.scrollTop;
+				const pos = view.posAtCoords({ x, y }, false);
 				
-				const codeBlock = this.findCodeBlockParent(node);
-				if (!codeBlock) return;
-				console.log("Code block:", codeBlock);
+				if (pos === null) return;
+				console.log('pos', pos);
 
-				evt.preventDefault();
-				evt.stopPropagation();
+				// Get complete editor text
+				const fullText = view.state.doc.toString();
+				
+				// Handle multi-line code blocks first
+				const multiLineSelection = this.selectMultiLineCode(fullText, pos);
+				if (multiLineSelection) {
+					console.log('multiLineSelection', multiLineSelection);
+					evt.preventDefault();
+					evt.stopPropagation();
+					view.dispatch({
+						selection: {
+							anchor: multiLineSelection.start,
+							head: multiLineSelection.end
+						}
+					});
+					return;
+				}
 
-				// Handle different code block types
-				if (codeBlock.name === "HyperMDCodeBlock") {
-				this.selectMultiLineCodeBlock(view, codeBlock);
-				} else if (codeBlock.name === "InlineCode") {
-				this.selectInlineCode(view, codeBlock);
+				// Handle inline code blocks
+				const inlineSelection = this.selectInlineCode(fullText, pos);
+				if (inlineSelection) {
+					console.log('inlineSelection', inlineSelection);
+					evt.preventDefault();
+					evt.stopPropagation();
+					view.dispatch({
+						selection: {
+							anchor: inlineSelection.start,
+							head: inlineSelection.end
+						}
+					});
 				}
 			}
 		});
@@ -408,6 +427,8 @@ export default class ObsidianPlus extends Plugin {
 		return Decoration.set(decorations);
 	}
 
+	// our convention is to use - for user bullets, + for responses, and * for errors
+	// when user types, we want to default to - bullets
 	private handleBulletPreference(editor: Editor) {
 		const cursor = editor.getCursor();
 		const line = editor.getLine(cursor.line);
@@ -578,51 +599,53 @@ export default class ObsidianPlus extends Plugin {
 		}
 	}
 
-	// Handle inline code
-	private selectInlineCode(view: EditorView, node: SyntaxNode) {
-		const doc = view.state.doc;
-		const text = doc.sliceString(node.from, node.to);
-		
-		// Find content between backticks (supports multiple backticks)
-		const tickMatch = text.match(/^`+/);
-		if (!tickMatch) return;
-		
-		const tickLength = tickMatch[0].length;
-		const from = node.from + tickLength;
-		const to = node.to - tickLength;
-		
-		view.dispatch({
-		selection: { anchor: from, head: to }
-		});
-	}
-
-	// Helper to find code block parent node
-	private findCodeBlockParent(node: SyntaxNode): SyntaxNode | null {
-		while (node) {
-		if (node.name === "HyperMDCodeBlock" || node.name === "InlineCode") {
-			return node;
+	private selectMultiLineCode(fullText: string, clickPos: number) {
+		// Find previous ```
+		let start = clickPos;
+		while (start >= 0 && fullText.slice(start, start + 3) !== '```') {
+		  start--;
 		}
-		node = node.parent;
+		if (start < 0) return null;
+		console.log('start', start);
+	  
+		// Find next ``` after start
+		let end = start + 3;
+		const endLimit = Math.min(clickPos + 10000, fullText.length); // Search max 10k chars ahead
+		while (end < endLimit && fullText.slice(end, end + 3) !== '```') {
+		  end++;
 		}
-		return null;
+		if (end >= fullText.length) return null;
+		console.log('end', end);
+	  
+		// Adjust to exclude delimiters
+		return {
+		  start: start + 3,
+		  end: end
+		};
 	}
-
-	// Handle multi-line code blocks
-	private selectMultiLineCodeBlock(view: EditorView, node: SyntaxNode) {
-		const state = view.state;
-		const doc = state.doc;
-		
-		// Find opening and closing backticks
-		const startLine = doc.lineAt(node.from);
-		const endLine = doc.lineAt(node.to);
-		
-		// Adjust selection to exclude the opening/closing ```
-		const from = startLine.from + startLine.text.match(/^```/)?.[0]?.length || 3;
-		const to = endLine.to - (endLine.text.match(/```$/)?.length || 3);
-		
-		view.dispatch({
-		selection: { anchor: from, head: to }
-		});
+	  
+	private selectInlineCode(fullText: string, clickPos: number) {
+		// Find opening `
+		let start = clickPos;
+		while (start >= 0 && fullText[start] !== '`') {
+		  start--;
+		}
+		if (start < 0 || fullText[start] !== '`') return null;
+		console.log('start', start);
+	  
+		// Find closing `
+		let end = clickPos;
+		while (end < fullText.length && fullText[end] !== '`') {
+		  end++;
+		}
+		if (end >= fullText.length || fullText[end] !== '`') return null;
+		console.log('end', end);
+	  
+		// Adjust to exclude backticks
+		return {
+		  start: start + 1,
+		  end: end
+		};
 	}
 
 	// Helper to extract lines that contain a checkbox
