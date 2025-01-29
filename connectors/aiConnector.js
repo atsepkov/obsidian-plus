@@ -16,6 +16,7 @@ const systemPrompt = `
         - Aim for 1 sentence per bullet
         - If's ok to answer with a single bullet if the question asks for specific command or datapoint
         - If an item only has one sub-bullet, prefer "parent: sub-bullet" format instead
+        - If the root bullet restates the question, omit it in the answer
     - If you're provided additional context
         - Additional context represents parent bullets (previous conversation) prior to the question
         - Usually, you can ignore it
@@ -33,6 +34,11 @@ export default class AiConnector extends HttpConnector {
         this.currentLine = 0;
         this.completedLines = [];
         this.originalLines = [];
+
+        // status for long-running requests
+        this.lastActivityTime = Date.now();
+        this.queuedTimeout = null;
+        this.loadingStates = new Map(); // Track loading states per task
     }
 
     // Override onTrigger to handle AI-specific logic
@@ -62,6 +68,11 @@ export default class AiConnector extends HttpConnector {
         }
 
         console.log(`Sending AI request to ${endpoint} with payload:`, payload);
+        await this.obsidianPlus.updateTask(task, {
+            removeChildrenByBullet: '+*',
+            appendChildren: HttpConnector.convertLinesToChildren(['⌛ processing...']),
+            useBullet: '+'
+        });
 
         // Send the request to the AI provider
         const response = await this.sendRequest(endpoint, payload, authOptions);
@@ -75,7 +86,7 @@ export default class AiConnector extends HttpConnector {
         // Handle streaming or non-streaming responses
         if (this.config.stream) {
             this.gotResponse = false;
-            await this.handleStreamingResponse(response, async (content) => {
+            await this.handleStreamingResponse(task, response, async (content) => {
                 // Update the task with the streaming content
                 await this.onStreamSuccess(task, content);
             });
@@ -102,6 +113,7 @@ export default class AiConnector extends HttpConnector {
         let children = [];
         const result = response.split('\n')
         for (const bullet of result) {
+            if (!bullet.trim()) continue;
             children.push(bullet);
         }
 
@@ -220,6 +232,7 @@ export default class AiConnector extends HttpConnector {
 
     async onStreamSuccess(task, response) {
         console.log(`${this.tag} connector stream`, response);
+        this.loadingStates.delete(task.id);
         let status;
         if (!this.gotResponse) {
             status = '✓';
@@ -274,14 +287,28 @@ export default class AiConnector extends HttpConnector {
     }
 
     // Modified handleStreamingResponse (your existing method)
-    async handleStreamingResponse(response, streamingCallback) {
+    async handleStreamingResponse(task, response, streamingCallback) {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         let sseBuffer = '';
 
+        // Add timeout check every 2 seconds
+        const checkQueueStatus = async () => {
+            const elapsed = Date.now() - this.lastActivityTime;
+            if (elapsed > 180_000) {
+                await this.handleTimeout(task);
+            } else if (elapsed > 5000) { // 5 seconds without activity
+                await this.showQueueWarning(task);
+            }
+        };
+
         while (true) {
             const { done, value } = await reader.read();
             if (done) break;
+
+            this.lastActivityTime = Date.now();
+            if (this.queuedTimeout) clearTimeout(this.queuedTimeout);
+            this.queuedTimeout = setTimeout(checkQueueStatus, 5000);
 
             sseBuffer += decoder.decode(value, { stream: true });
             
@@ -291,7 +318,15 @@ export default class AiConnector extends HttpConnector {
 
             for (const event of events) {
                 const trimmed = event.trim();
-                if (!trimmed || trimmed === 'data: [DONE]' || trimmed.startsWith(":")) continue;
+                if (!trimmed || trimmed === 'data: [DONE]') {
+                    console.log('Stream completed');
+                    continue;
+                }
+
+                if (trimmed.startsWith(":")) {
+                    this.handleKeepAlive(task);
+                    continue;
+                }
 
                 // Extract JSON payload
                 const jsonStr = trimmed.startsWith('data: ') ? trimmed.slice(6) : trimmed;
@@ -304,6 +339,9 @@ export default class AiConnector extends HttpConnector {
                 }
             }
         }
+
+        // Clear timeout when stream completes
+        if (this.queuedTimeout) clearTimeout(this.queuedTimeout);
 
         // Process final chunk
         if (sseBuffer.trim()) {
@@ -318,17 +356,60 @@ export default class AiConnector extends HttpConnector {
 
     // Handle final cleanup
     async finalizeStream(task) {
+        console.log('Finalizing stream');
         // Process any remaining buffer content
         if (this.responseBuffer.trim() !== '') {
             this.completedLines.push(this.responseBuffer);
             this.responseBuffer = '';
         }
+        if (this.completedLines.length === 0) {
+            console.log('No content received');
+            // No content received
+            const error = 'No content received, server could be busy...';
+            await this.obsidianPlus.changeTaskStatus(task, 'error', error);
+            await this.obsidianPlus.updateTask(task, {
+                removeChildrenByBullet: '+*',
+                appendChildren: HttpConnector.convertLinesToChildren([error]),
+                useBullet: '*'
+            });
+        } else {
+            // Final update with all completed lines
+            await this.obsidianPlus.updateTask(task, {
+                removeChildrenByBullet: '+*',
+                appendChildren: HttpConnector.convertLinesToChildren(this.completedLines.filter(l => l.trim() !== '')),
+                useBullet: '+'
+            });
+        }
+    }
 
-        // Final update with all completed lines
+    // keep-alive handlers
+    async handleKeepAlive(task) {
+        this.loadingStates.set(task.id, true);
+        await this.showQueueStatus(task);
+    }
+    
+    async showQueueStatus(task) {
+        const status = this.loadingStates.has(task.id) ? '…' : '✓';
         await this.obsidianPlus.updateTask(task, {
             removeChildrenByBullet: '+*',
-            appendChildren: HttpConnector.convertLinesToChildren(this.completedLines.filter(l => l.trim() !== '')),
+            appendChildren: HttpConnector.convertLinesToChildren([status]),
             useBullet: '+'
+        });
+    }
+    
+    async showQueueWarning(task) {
+        await this.obsidianPlus.updateTask(task, {
+            removeChildrenByBullet: '+*',
+            appendChildren: HttpConnector.convertLinesToChildren(['⌛ (processing slow, still working...)']),
+            useBullet: '+'
+        });
+    }
+
+    async handleTimeout(task) {
+        await this.obsidianPlus.updateTask(task, {
+            removeChildrenByBullet: '+*',
+            appendChildren: HttpConnector.convertLinesToChildren(['Processing timeout, server could be busy...']),
+            useBullet: '*'
         });
     }
 }
