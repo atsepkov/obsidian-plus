@@ -39,6 +39,9 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
 	tagColors: [],
 	taskTags: [],
 	webTags: {},
+
+	aiConnector: null,
+	summarizeWithAi: false,
 }
 
 interface TaskLineInfo {
@@ -358,6 +361,9 @@ export default class ObsidianPlus extends Plugin {
 		}
 		const TagConnector = connectorMap[connectorName];
 		const connector = new TagConnector(tag, this, config);
+		if (connectorName === 'ai') {
+			this.settings.aiConnector = connector;
+		}
 		this.settings.webTags[tag] = connector;
 		console.log(`Built ${connectorName} connector for`, tag, config);
 	}

@@ -14,6 +14,25 @@ export class SettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Tag Color Settings' });
 
+    // add a toggle to use AI to summarize tasks
+    new Setting(containerEl)
+      .setName('Use AI to summarize tasks')
+      .setDesc('AI can reword the task to be more descriptive when seen out of context')
+      .addToggle((toggle) => {
+        toggle
+          .setValue(this.plugin.settings.useAI)
+          .onChange(async (value) => {
+            if (!this.plugin.settings.aiConnector && value) {
+              this.plugin.settings.summarizeWithAi = false;
+              this.display();
+              new Notice('Please set up AI connector first');
+              return;
+            }
+            this.plugin.settings.summarizeWithAi = value;
+            await this.plugin.saveSettings();
+          });
+      })
+
     this.plugin.settings.tagColors.forEach((tagColor, index) => {
       const setting = new Setting(containerEl)
         .addText((text: TextComponent) => {
