@@ -82,7 +82,7 @@ export class SettingTab extends PluginSettingTab {
           .setButtonText('Add Tag Color')
           .setCta()
           .onClick(async () => {
-            this.plugin.settings.tagColors.push({ tag: '', color: '#ffffff' });
+            this.plugin.settings.tagColors.push({ tag: '', color: '#ffffff', textColor: '#000000' });
             await this.plugin.saveSettings();
             this.display();
           });

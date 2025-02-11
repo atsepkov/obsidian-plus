@@ -1,11 +1,16 @@
 /*
-
-This CSS file will be included with your plugin, and
-available in the app when your plugin is enabled.
-
-If your plugin does not need CSS, delete this file.
-
+Obsidian Plus Theme
 */
+
+.theme-light {
+    --color-tooltip-bg: #333;
+    --color-tooltip-text: #fff;
+}
+  
+.theme-dark {
+    --color-tooltip-bg: #ccc;
+    --color-tooltip-text: #000;
+}
 
 .cm-preview-code-block .block-language-dataviewjs ul > li {
     line-height: 1.6;
@@ -31,7 +36,7 @@ If your plugin does not need CSS, delete this file.
   
 /* You can show a tooltip on hover by using ::after content */
 .cm-flagged-line:hover::after {
-    content: "This line must be a task format!";
+    content: "Not a valid task!";
     position: absolute;
     right: 0px; /* adjust as needed */
     background-color: var(--color-tooltip-bg);

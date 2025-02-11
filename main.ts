@@ -533,7 +533,7 @@ export default class ObsidianPlus extends Plugin {
 				for (const line of basicTags) {
 					foundTags.push(line.tags[0]);
 				}
-				console.log({basicTags, autoTags, recurringTags});
+				console.log({basicTags, autoTags, recurringTags, foundTags});
 				const parseChildren = (prop) => {
 					let config = {};
 					if (prop.children.length) {
@@ -566,8 +566,12 @@ export default class ObsidianPlus extends Plugin {
 							// found config bullet, let's eval it
 							const [key, ...rest] = cleanText.split(':');
 							const path = normalizeConfigVal(rest.join(':'));
-							const content = await this.app.vault.read(this.app.vault.getAbstractFileByPath(path));
-							config = JSON.parse(content);
+							try {
+								const content = await this.app.vault.read(this.app.vault.getAbstractFileByPath(path));
+								config = JSON.parse(content);
+							} catch (err1) {
+								console.error(`Config for "${tag}" failed to load.`)
+							}
 						}
 					}
 					foundTags.push(tag);
@@ -675,10 +679,13 @@ export default class ObsidianPlus extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 		this.updateTagStyles();
 		this.updateFlaggedLines(this.app.workspace.getActiveFile());
+		console.log('Settings loaded')
 	}
 
 	async saveSettings() {
 		await this.saveData(this.settings);
+		const loaded = await this.loadData()
+		console.log('Settings saved', this.settings, loaded)
 	}
 
 	generateTagCSS(): string {

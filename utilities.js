@@ -1,3 +1,5 @@
+// import { TurndownService } from 'turndown';
+
 // BASIC UTILITY FUNCTIONS
 
 function escapeRegex(str) {
@@ -202,7 +204,7 @@ export function findDvTask(dvApi, taskDiff) {
 	const file = dvApi.page(taskDiff.file.path).file
 	for (let line of file.lists) {
 		// strip checkmark from task text
-		const lineText = line.text.split('✅')[0]
+		const lineText = line.text.split('✅')[0].trim()
 		if (taskDiff.taskText.includes(lineText) && line.line === taskDiff.lineNumber && line.tags.includes(taskDiff.tag.name)) {
 			return line
 		}
@@ -455,8 +457,7 @@ export async function getDvTaskLinks(listItem) {
             if (!attachments[url]) {
                 console.log('[DEBUG] Fetching external URL:', url);
                 try {
-                    const response = await fetch(url);
-                    attachments[url] = await response.text();
+                    attachments[url] = await fetchExternalLinkContent(url);
                 } catch (e) {
                     console.log('[DEBUG] Failed to fetch URL:', url, e);
                     attachments[url] = null;
@@ -520,6 +521,16 @@ function extractMarkdownUrls(text) {
 function extractInternalLinks(text) {
     return [...text.matchAll(/\[\[([^\]|#]+)/g)]
         .map(match => match[1].trim());
+}
+
+async function fetchExternalLinkContent(url) {
+	return '';
+	// const response = await fetch(url);
+	// const html = await response.text();
+	// const turndown = new TurndownService();
+	// const markdown = turndown.turndown(html);
+	// console.log(markdown)
+	// return markdown;
 }
 
 // SEARCH LOGIC

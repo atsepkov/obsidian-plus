@@ -4,7 +4,7 @@ import TagConnector from './tagConnector.js';
 export default class WebhookConnector extends TagConnector {
     constructor(tag, obsidianPlus, config) {
         super(tag, obsidianPlus, config);
-        console.log('DummyConnector initialized');
+        console.log('WebhookConnector initialized');
     }
 
     // fires when user clicks the checkbox next to the tag
