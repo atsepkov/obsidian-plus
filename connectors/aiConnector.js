@@ -111,7 +111,7 @@ export default class AiConnector extends HttpConnector {
 
         // Take the response json and  convert each key value pair to a separate entry
         let children = [];
-        const result = response.split('\n')
+        const result = (response || '').split('\n')
         for (const bullet of result) {
             if (!bullet.trim()) continue;
             children.push(bullet);
@@ -173,12 +173,16 @@ export default class AiConnector extends HttpConnector {
         if (Object.keys(context.links).length > 0) {
             finalPrompt += `\n\nContents of Mentioned Links/Documents:\n`;
             for (const attachment in context.links) {
+                if (!context.links[attachment]) {
+                    throw new Error(`Couldn't fetch contents of ${attachment}`)
+                } else if (context.links[attachment].error) {
+                    throw new Error(context.links[attachment].error)
+                }
                 finalPrompt += `<< LINK: ${attachment} >>\n`;
                 finalPrompt += context.links[attachment] + '\n';
             }
         }
         console.log('Final prompt:', finalPrompt, context);
-        window.context = context;
 
         switch (provider) {
             case 'deepseek':

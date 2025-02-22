@@ -32,7 +32,7 @@ export class SettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       })
-
+    
     this.plugin.settings.tagColors.forEach((tagColor, index) => {
       const setting = new Setting(containerEl)
         .addText((text: TextComponent) => {

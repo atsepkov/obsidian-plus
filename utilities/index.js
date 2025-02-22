@@ -1,170 +1,20 @@
-// import { TurndownService } from 'turndown';
-
-// BASIC UTILITY FUNCTIONS
-
-function escapeRegex(str) {
-	// Escape special characters in the identifier so they are treated literally
-	return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-const isUrl = (str) => {
-	try {
-		new URL(str);
-		return true;
-	} catch (e) {
-		return false;
-	}
-}
-const urlRegex = /((https?|ftp):\/\/[^\s/$.?#].[^\s()]*)/i;
-const lineHasUrl = (line) => {
-	return urlRegex.test(line);
-}
-const extractUrl = (line) => {
-	const match = line.match(urlRegex);
-	return match ? match[0] : null;
-}
-const urlIcon = {
-	// General Websites
-	"google.com": ":LiSearch:",           // Search Engine
-	"youtube.com": ":LiYoutube:",         // Video-sharing platform
-	"facebook.com": ":LiFacebook:",       // Social Media Network
-	"instagram.com": ":LiCamera:",     // Social Media Network
-	"whatsapp.com": ":LiChat:",           // Messaging Service
-	"x.com": ":LiTwitter:",               // Social Media Network
-	"wikipedia.org": ":LiBook:",          // Encyclopedia
-	"chatgpt.com": ":LiBrain:",           // AI Chatbot
-	"reddit.com": ":LiReddit:",           // Social Media Network
-	"yahoo.com": ":LiYahoo:",             // Web Portal and Search Engine
-	"amazon.com": ":LiShoppingCart:",     // E-commerce Platform
-	"wayfair.com": ":LiShoppingCart:",
-	"homedepot.com": ":LiShoppingCart:",
-	"yandex.ru": ":LiSearch:",            // Search Engine
-	"baidu.com": ":LiSearch:",            // Search Engine
-	"netflix.com": ":LiFilm:",            // Streaming Service
-	"bing.com": ":LiSearch:",             // Search Engine
-	"linkedin.com": ":LiLinkedIn:",       // Professional Networking
-	"live.com": ":LiMail:",               // Email Service
-	"pinterest.com": ":LiCamera:",        // Social Media Network
-	"duckduckgo.com": ":LiSearch:",       // Search Engine
-	"telegram.org": ":LiTelegram:",       // Messaging Service
-	"twitch.tv": ":LiTwitch:",            // Live Streaming Platform
-	"weather.com": ":LiWeather:",         // Weather Information
-	"quora.com": ":LiQuestion:",          // Q&A Platform
-	"temu.com": ":LiShoppingCart:",       // E-commerce Platform
-	"ebay.com": ":LiShoppingCart:",       // E-commerce Platform
-  
-	// News Websites
-	"nytimes.com": ":LiNewspaper:",            // The New York Times
-	"cnn.com": ":LiNewspaper:",                // CNN
-	"bbc.com": ":LiNewspaper:",                // BBC News
-	"foxnews.com": ":LiNewspaper:",            // Fox News
-	"washingtonpost.com": ":LiNewspaper:",     // The Washington Post
-	"theguardian.com": ":LiNewspaper:",        // The Guardian
-	"wsj.com": ":LiNewspaper:",                // The Wall Street Journal
-	"usatoday.com": ":LiNewspaper:",           // USA Today
-	"latimes.com": ":LiNewspaper:",            // Los Angeles Times
-	"nbcnews.com": ":LiNewspaper:",            // NBC News
-	"dailymail.co.uk": ":LiNewspaper:",        // Daily Mail
-	"huffpost.com": ":LiNewspaper:",           // HuffPost
-	"reuters.com": ":LiNewspaper:",            // Reuters
-	"forbes.com": ":LiNewspaper:",             // Forbes
-	"bloomberg.com": ":LiNewspaper:",          // Bloomberg
-	"abcnews.go.com": ":LiNewspaper:",         // ABC News
-	"cbsnews.com": ":LiNewspaper:",            // CBS News
-	"npr.org": ":LiNewspaper:",                // NPR
-	"news.yahoo.com": ":LiNewspaper:",         // Yahoo News
-	"politico.com": ":LiNewspaper:",           // Politico
-
-	// Payment and Banking
-	"paypal.com": ":LiCreditCard:",             // Online Payment Platform
-	"venmo.com": ":LiCreditCard:",              // Mobile Payment Service
-	"cash.app": ":LiCreditCard:",               // Mobile Payment Service
-	"coinbase.com": ":LiBitcoin:",              // Cryptocurrency Exchange
-	"blockchain.com": ":LiBitcoin:",            // Cryptocurrency Wallet
-	"robinhood.com": ":LiDollarSign:",          // Stock Trading Platform
-	"coinmarketcap.com": ":LiBitcoin:",         // Cryptocurrency Market Data
-	"bankofamerica.com": ":LiDollarSign:",      // Bank
-
-	// Productivity
-	"mail.google.com": ":LiMail:",
-	"maps.google.com": ":LiMap:",
-	"drive.google.com": ":LiFile:",
-	"box.com": ":LiFile:",
-	"investomation.com": ":LiMap:",
-	'github.com': ':LiCode:',
-	'atlassian.com': ':LiCode:',
-	"stackoverflow.com": ":LiCode:",
-	"figma.com": ":LiFigma:",
-	"trello.com": ":LiTable:",
-	"notion.so": ":LiTable:",
-	"airtable.com": ":LiTable:",
-	"asana.com": ":LiTable:",
-  
-	// Educational and Government
-	"edu": ":LiLibrary:",                 // Educational Institutions
-	"gov": ":LiCrown:",                   // Government Websites
-};
-function getIconForUrl(url) {
-	// const baseHost = url.hostname.replace("www.", "")
-	// return urlIcon[baseHost] ?? ":LiLink:"
-	// try to apply subdomain first
-	if (url.hostname in urlIcon) {
-		return urlIcon[url.hostname]
-	}
-	// then start stripping subdomains
-	const parts = url.hostname.split('.')
-	for (let i = 1; i < parts.length; i++) {
-		const baseHost = parts.slice(i).join('.')
-		if (baseHost in urlIcon) {
-			return urlIcon[baseHost]
-		}
-	}
-	return ":LiLink:";
-}
-function generateId(length) {
-	return Math.random().toString(36).substring(2, length / 2) + Math.random().toString(36).substring(2, length / 2)
-}
-
-// strips any markdown formatting from a string
-export function normalizeConfigVal(value, stripUnderscores = true) {
-	// for underscores, only strip them if they surround the text
-	// if they're in the middle of the text or only one side, they're probably intentional
-	value = value.replace(/[*`"']/g, "").trim();
-	if (stripUnderscores && value.startsWith("_") && value.endsWith("_")) {
-		value = value.slice(1, -1);
-	}
-
-	// convert boolean-like strings to actual booleans
-	if (value === "true") {
-		return true;
-	} else if (value === "false") {
-		return false;
-	}
-
-	// convert number-like strings to actual numbers
-	const num = Number(value);
-	if (!isNaN(num)) {
-		return num;
-	}
-
-	return value;
-}
+import { requestUrl } from "obsidian";
+import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from "./basic"
+export { normalizeConfigVal } from './basic'
 
 let app;
 export function configure(instance) {
 	app = instance;
 }
 
-// TASK MANIPULATION LOGIC
-
 // toggles tasks generated within our own plugin's view
 // this will also trigger/affect the original task in the markdown file
 let taskCache = {}
-async function getFileLines(filePath) {
+export async function getFileLines(filePath) {
 	const file = app.vault.getAbstractFileByPath(filePath);
 	return (await app.vault.read(file)).split("\n");
 }
-async function saveFileLines(filePath, lines) {
+export async function saveFileLines(filePath, lines) {
 	const file = app.vault.getAbstractFileByPath(filePath);
 	await app.vault.modify(file, lines.join("\n"));
 }
@@ -334,7 +184,7 @@ export async function updateDvTask(dvTask, options) {
 
     await saveFileLines(dvTask.path, lines);
 }
-// Helper converts input children to structured format
+// Helper function converts input children to structured format
 function toStructured(children, parentIndent, defaultBullet) {
     const indentStep = 4; // Should match your indentStep detection logic
     return (Array.isArray(children) ? children : [children]).map(child => ({
@@ -460,7 +310,7 @@ export async function getDvTaskLinks(listItem) {
                     attachments[url] = await fetchExternalLinkContent(url);
                 } catch (e) {
                     console.log('[DEBUG] Failed to fetch URL:', url, e);
-                    attachments[url] = null;
+                    attachments[url] = { error: `Error fetching ${url} (${e})` };
                 }
             }
         }
@@ -486,11 +336,19 @@ export async function getDvTaskLinks(listItem) {
             }
         }
 
+		// Read file lines
+		const lines = await getFileLines(listItem.path);
+
         // Process children recursively
         if (item.children) {
             console.log(`[DEBUG] Processing ${item.children.length} children`);
             for (const child of item.children) {
-                await processItem(child, indent + 1);
+				const childLineStart = child.position.start.line;
+				const bulletMatch = lines[childLineStart].match(/^(\s*)([-+*])\s/);
+				const bullet = bulletMatch ? bulletMatch[2] : '-';
+				if (bullet === '-') {
+					await processItem(child, indent + 1);
+				}
             }
         } else {
             console.log('[DEBUG] No children found');
@@ -523,14 +381,45 @@ function extractInternalLinks(text) {
         .map(match => match[1].trim());
 }
 
+// sanitize HTML input to remove non-readable content
+async function getCleanContent(html) {
+	// Create a DOM parser
+	const parser = new DOMParser();
+	const doc = parser.parseFromString(html, 'text/html');
+  
+	// Remove unwanted elements
+	const elementsToRemove = [
+	  'script', 'style', 'nav', 'header', 'footer', 
+	  'iframe', 'noscript', 'svg', 'form', 'button',
+	  'input', 'meta', 'link', 'figure'
+	//   'input', 'meta', 'link', 'img', 'figure'
+	];
+	
+	elementsToRemove.forEach(tag => {
+	  doc.querySelectorAll(tag).forEach(element => element.remove());
+	});
+  
+	// Optional: Focus on main content areas
+	const mainContent = doc.querySelector('article, main, .content') || doc.body;
+	
+	return mainContent.innerHTML;
+}
+
 async function fetchExternalLinkContent(url) {
-	return '';
-	// const response = await fetch(url);
-	// const html = await response.text();
-	// const turndown = new TurndownService();
-	// const markdown = turndown.turndown(html);
-	// console.log(markdown)
-	// return markdown;
+	const response = await requestUrl({
+		url,
+		headers: {
+		  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+		  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+		  'Accept-Language': 'en-US,en;q=0.5',
+		  'Referer': 'https://www.google.com/',
+		  'DNT': '1'
+		}
+	  });
+	const html = await getCleanContent(await response.text);
+	const turndown = new window.TurndownService();
+	const markdown = turndown.turndown(html);
+	return markdown;
 }
 
 // SEARCH LOGIC

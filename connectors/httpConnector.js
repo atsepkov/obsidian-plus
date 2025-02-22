@@ -99,6 +99,7 @@ export default class HttpConnector extends TagConnector {
             message += ` (${new Date().toLocaleString()})`;
         }
         await this.obsidianPlus.updateTask(task, {
+            removeChildrenByBullet: '+*',
             appendChildren: TagConnector.convertLinesToChildren([message]),
             useBullet: '*'
         });
