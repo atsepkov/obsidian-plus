@@ -58,6 +58,7 @@ const connectorMap = {
 	'dummy': require('./connectors/dummyConnector').default,
 	'http': require('./connectors/httpConnector').default,
 	'webhook': require('./connectors/webhookConnector').default,
+	// 'web': require('./connectors/webConnector').default,
 }
   
 // Compare old vs new tasks by line number
@@ -236,13 +237,16 @@ export default class ObsidianPlus extends Plugin {
 									} else if (taskStatus === 'x' && !dvTask.completed) {
 										// trigger the tag
 										try {
+											await this.changeTaskStatus(dvTask, '/');
 											const response = await tagConnector.onTrigger(dvTask);
 											await tagConnector.onSuccess(dvTask, response);
+        									await this.changeTaskStatus(dvTask, 'x');
 											// if success updated the task, we need to sync our cache
 											newTasks = await this.extractTaskLines(file);
 										} catch (e) {
 											console.error(e);
 											await tagConnector.onError(dvTask, e);
+        									await this.changeTaskStatus(dvTask, 'error', e);
 											// if error updated the task, we need to sync our cache
 											newTasks = await this.extractTaskLines(file);
 										}

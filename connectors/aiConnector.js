@@ -11,6 +11,7 @@ const systemPrompt = `
         - Use bullets for your answer in the same format as these instructions
         - Each bullet should represent a separate idea/event/concept
         - Use 4 spaces for indentation
+        - Response format is Markdown, if you need to render images, use ![name](url)
     - If you need to provide additional context for a given idea/bullet, use sub-bullets nested under it
     - Be concise
         - Aim for 1 sentence per bullet
@@ -22,6 +23,9 @@ const systemPrompt = `
         - Usually, you can ignore it
         - In some cases, the question doesn't make sense without it, so use it to clarify
         - Even if you can answer the question without it, verify if the context changes the question
+        - Any linked documents are in Markdown format:
+            - When images are referenced, look for elements with ![name](url) format
+            - If the linked document is from a website, assume earlier images on the page are more significant
 - prompt: `
 
 
@@ -70,7 +74,7 @@ export default class AiConnector extends HttpConnector {
         console.log(`Sending AI request to ${endpoint} with payload:`, payload);
         await this.obsidianPlus.updateTask(task, {
             removeChildrenByBullet: '+*',
-            appendChildren: HttpConnector.convertLinesToChildren(['⌛ processing...']),
+            appendChildren: await this.convertLinesToChildren(['⌛ processing...']),
             useBullet: '+'
         });
 
@@ -119,7 +123,7 @@ export default class AiConnector extends HttpConnector {
 
         await this.obsidianPlus.updateTask(task, {
             append: status,
-            appendChildren: HttpConnector.convertLinesToChildren(children),
+            appendChildren: await this.convertLinesToChildren(children),
             useBullet: '+'
         });
     }
@@ -285,7 +289,7 @@ export default class AiConnector extends HttpConnector {
         await this.obsidianPlus.updateTask(task, {
             append: status,
             removeChildrenByBullet: '+*',
-            appendChildren: HttpConnector.convertLinesToChildren(children),
+            appendChildren: await this.convertLinesToChildren(children),
             useBullet: '+'
         });
     }
@@ -322,7 +326,8 @@ export default class AiConnector extends HttpConnector {
 
             for (const event of events) {
                 const trimmed = event.trim();
-                if (!trimmed || trimmed === 'data: [DONE]') {
+                if (!trimmed) continue;
+                if (trimmed === 'data: [DONE]') {
                     console.log('Stream completed');
                     continue;
                 }
@@ -373,14 +378,14 @@ export default class AiConnector extends HttpConnector {
             await this.obsidianPlus.changeTaskStatus(task, 'error', error);
             await this.obsidianPlus.updateTask(task, {
                 removeChildrenByBullet: '+*',
-                appendChildren: HttpConnector.convertLinesToChildren([error]),
+                appendChildren: await this.convertLinesToChildren([error]),
                 useBullet: '*'
             });
         } else {
             // Final update with all completed lines
             await this.obsidianPlus.updateTask(task, {
                 removeChildrenByBullet: '+*',
-                appendChildren: HttpConnector.convertLinesToChildren(this.completedLines.filter(l => l.trim() !== '')),
+                appendChildren: await this.convertLinesToChildren(this.completedLines.filter(l => l.trim() !== ''), { downloadImages: this.config.downloadImages }),
                 useBullet: '+'
             });
         }
@@ -396,7 +401,7 @@ export default class AiConnector extends HttpConnector {
         const status = this.loadingStates.has(task.id) ? '…' : '✓';
         await this.obsidianPlus.updateTask(task, {
             removeChildrenByBullet: '+*',
-            appendChildren: HttpConnector.convertLinesToChildren([status]),
+            appendChildren: await this.convertLinesToChildren([status]),
             useBullet: '+'
         });
     }
@@ -404,7 +409,7 @@ export default class AiConnector extends HttpConnector {
     async showQueueWarning(task) {
         await this.obsidianPlus.updateTask(task, {
             removeChildrenByBullet: '+*',
-            appendChildren: HttpConnector.convertLinesToChildren(['⌛ (processing slow, still working...)']),
+            appendChildren: await this.convertLinesToChildren(['⌛ (processing slow, still working...)']),
             useBullet: '+'
         });
     }
@@ -412,7 +417,7 @@ export default class AiConnector extends HttpConnector {
     async handleTimeout(task) {
         await this.obsidianPlus.updateTask(task, {
             removeChildrenByBullet: '+*',
-            appendChildren: HttpConnector.convertLinesToChildren(['Processing timeout, server could be busy...']),
+            appendChildren: await this.convertLinesToChildren(['Processing timeout, server could be busy...']),
             useBullet: '*'
         });
     }

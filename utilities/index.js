@@ -63,7 +63,7 @@ export function findDvTask(dvApi, taskDiff) {
 export async function changeDvTaskStatus(dvTask, status, error) {
 	// update the task status in the dataview representation
 	// this will also trigger/affect the original task in the markdown file
-	const newStatus = status === "error" ? "!" : status === "done" ? "x" : " ";
+	const newStatus = status === "error" ? "!" : status === "done" ? "x" : status;
 	const lines = await getFileLines(dvTask.path);
 	let line = lines[dvTask.line];
 	line = line.replace(/\[.\]/, `[${newStatus}]`);
@@ -382,7 +382,9 @@ function extractInternalLinks(text) {
 }
 
 // sanitize HTML input to remove non-readable content
-async function getCleanContent(html) {
+async function getCleanContent(response, hostname) {
+	const html = await response.text;
+
 	// Create a DOM parser
 	const parser = new DOMParser();
 	const doc = parser.parseFromString(html, 'text/html');
@@ -391,16 +393,26 @@ async function getCleanContent(html) {
 	const elementsToRemove = [
 	  'script', 'style', 'nav', 'header', 'footer', 
 	  'iframe', 'noscript', 'svg', 'form', 'button',
-	  'input', 'meta', 'link', 'figure'
+	  'input', 'meta', 'link'
 	//   'input', 'meta', 'link', 'img', 'figure'
 	];
 	
 	elementsToRemove.forEach(tag => {
 	  doc.querySelectorAll(tag).forEach(element => element.remove());
 	});
+
+	// update image src to absolute path
+	const images = doc.querySelectorAll('img');
+	images.forEach(image => {
+		const src = image.getAttribute('src');
+		if (src && !src.startsWith('http')) {
+			image.setAttribute('src', `${hostname}${src}`);
+		}
+	});
   
 	// Optional: Focus on main content areas
-	const mainContent = doc.querySelector('article, main, .content') || doc.body;
+	const mainContent = doc.body;
+	// const mainContent = doc.querySelector('article, main, .content') || doc.body;
 	
 	return mainContent.innerHTML;
 }
@@ -416,7 +428,8 @@ async function fetchExternalLinkContent(url) {
 		  'DNT': '1'
 		}
 	  });
-	const html = await getCleanContent(await response.text);
+	const hostname = url.split('/').slice(0, 3).join('/');
+	const html = await getCleanContent(response, hostname);
 	const turndown = new window.TurndownService();
 	const markdown = turndown.turndown(html);
 	return markdown;

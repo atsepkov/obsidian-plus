@@ -72,8 +72,8 @@ export default class HttpConnector extends TagConnector {
 
         await this.obsidianPlus.updateTask(task, {
             append: status,
-            removeChildrenByBullet: this.config.clearErrorsOnSuccess ? '*' : undefined,
-            appendChildren: TagConnector.convertLinesToChildren(children),
+            removeChildrenByBullet: this.config.clearErrorsOnSuccess ? '*+' : '+',
+            appendChildren: await this.convertLinesToChildren(children),
             useBullet: '+'
         });
     }
@@ -81,7 +81,6 @@ export default class HttpConnector extends TagConnector {
     // fires after the transaction fails
     async onError(task, error) {
         console.log(`${this.tag} connector transaction failed`, task, error);
-        await this.obsidianPlus.changeTaskStatus(task, 'error', error);
         if (this.config.retry) {
             for (let i = 0; i < parseInt(this.config.retry); i++) {
                 // retry the transaction
@@ -100,7 +99,7 @@ export default class HttpConnector extends TagConnector {
         }
         await this.obsidianPlus.updateTask(task, {
             removeChildrenByBullet: '+*',
-            appendChildren: TagConnector.convertLinesToChildren([message]),
+            appendChildren: await this.convertLinesToChildren([message]),
             useBullet: '*'
         });
     }

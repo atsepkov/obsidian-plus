@@ -9,7 +9,7 @@ export default class WebhookConnector extends TagConnector {
 
     // fires when user clicks the checkbox next to the tag
 	async onTrigger(task) {
-        console.log('TagConnector triggered', task);
+        console.log('WebhookConnector triggered', task);
         // Get the tag from the task
         const tag = task.tag;
 
@@ -29,11 +29,39 @@ export default class WebhookConnector extends TagConnector {
         }
 
         // Send the webhook
-        const response = this.sendWebhook(webhookUrl, data)
+        const response = await this.sendWebhook(webhookUrl, data)
         if (response.ok) {
             console.log('Webhook sent successfully');
         }
         return response;
+    }
+
+    async onSuccess(task, response) {
+        console.log(`${this.tag} connector transaction successful`, task, response);
+        // update task visual to show success
+        let message = '✓';
+        if (this.config.timestamps) {
+            message += ` ${new Date().toLocaleString()}`;
+        }
+
+        if (this.config.printResponse) {
+            const json = await response.json();
+            const lines = [];
+            for (const key in json) {
+                lines.push(`${key}: ${json[key]}`);
+            }
+            await this.obsidianPlus.updateTask(task, {
+                append: message,
+                removeChildrenByBullet: '*+',
+                prependChildren: await this.convertLinesToChildren(lines),
+                useBullet: '+',
+            });
+        } else {
+            await this.obsidianPlus.updateTask(task, {
+                append: message,
+                removeChildrenByBullet: '+*',
+            });
+        }
     }
 
     async sendWebhook(url, data, options = {}) {

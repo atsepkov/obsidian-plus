@@ -17,6 +17,7 @@ export default class TagConnector {
     // fires after the transaction success is confirmed
 	async onSuccess(task, response) {
         console.log(`${this.tag} connector transaction successful`, task, response);
+
         // update task visual to show success
         let message = '✓';
         if (this.config.timestamps) {
@@ -31,7 +32,6 @@ export default class TagConnector {
     // fires after the transaction fails
     async onError(task, error) {
         console.log(`${this.tag} connector transaction failed`, task, error);
-        await this.obsidianPlus.changeTaskStatus(task, 'error', error);
         if (this.config.retry) {
             for (let i = 0; i < parseInt(this.config.retry); i++) {
                 // retry the transaction
@@ -43,7 +43,7 @@ export default class TagConnector {
             message += ` (${new Date().toLocaleString()})`;
         }
         await this.obsidianPlus.updateTask(task, {
-            prependChildren: TagConnector.convertLinesToChildren([message])
+            prependChildren: await this.convertLinesToChildren([message])
         });
     }
 
@@ -78,7 +78,7 @@ export default class TagConnector {
      * @param {string[]} lines - Array of list item strings.
      * @returns {Array<{indent: number, offset: number, text: string}>} - Processed entries.
      */
-    static convertLinesToChildren(lines) {
+    async convertLinesToChildren(lines, options = {}) {
         if (!lines || lines.length === 0) return [];
         
         const entries = [];
@@ -95,6 +95,9 @@ export default class TagConnector {
         }
 
         const baseIndent = getLeadingSpaces(lines[0]);
+        if (options.downloadImages) {
+            lines = await this.downloadImages(lines);
+        }
         
         lines.forEach((line, index) => {
             const leadingSpaces = getLeadingSpaces(line);
@@ -112,5 +115,71 @@ export default class TagConnector {
         });
 
         return entries;
+    }
+
+    async downloadImages(lines) {
+        let index = 0;
+        for await (const line of lines) {
+            const match = line.match(/!\[(.*?)\]\((.*?)\)/);
+            if (match) {
+                const [_, altText, url] = match;
+                try {
+                    await this.downloadImage(url);
+                    lines[index] = line.replace(match[0], `[${altText}](${url})`);
+                } catch (error) {
+                    console.error(`Failed to download image ${url}: ${error}`);
+                    lines[index] = line + ' (download failed)';
+                }
+            }
+            index++;
+        }
+        return lines;
+    }
+
+    async downloadImage(url) {
+        const vault = this.obsidianPlus.app.vault;
+        const noteFile = this.obsidianPlus.app.workspace.getActiveFile();
+
+        const filename = this.createFilename(url);
+        const attachmentPath = await this.obsidianPlus.app.fileManager.getAvailablePathForAttachment(filename)
+        const noteDir = noteFile?.path || '/';
+        
+        // Resolve absolute vs relative attachment path
+        const isAbsolute = attachmentPath.startsWith('/');
+        const destFolder = attachmentPath;
+        console.log('Downloading image:', url, 'to', attachmentPath);
+
+        // Create folder if needed
+        if (!(await vault.adapter.exists(destFolder))) {
+            await vault.createFolder(destFolder);
+        }
+
+        // Generate filename and full path
+        const destPath = `${destFolder}/${filename}`;
+
+        // Download and save image
+        try {
+            const response = await fetch(url);
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            
+            const arrayBuffer = await response.arrayBuffer();
+            const file = await vault.createBinary(destPath, arrayBuffer);
+            return vault.getResourcePath(file);
+        } catch (e) {
+            console.error('Failed to download image:', e);
+            throw new Error(`Image download failed: ${url}`);
+        }
+    }
+
+    createFilename(url) {
+        const urlObj = new URL(url);
+        const baseName = urlObj.pathname.split('/').pop() || 'image';
+        const timestamp = Date.now();
+        return `${baseName}-${timestamp}${this.getExtension(url)}`;
+    }
+
+    getExtension(url) {
+        const match = url.match(/\.(jpe?g|png|gif|bmp|webp|svg)/i);
+        return match ? match[0] : '.png';
     }
 }
