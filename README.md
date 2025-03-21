@@ -5,8 +5,10 @@ Here are the features it adds to Obsidian:
 
 - utility logic to supercharge Dataview and Tasks plugins
   - ability to select/differentiate bullets/tasks anywhere in the vault based on additional parameters (position of tag, bullet format, etc.)
+	- not just tasks, but regular bullets too
   - intelligently generate summaries based on info/context in child bullets
   - ability to interact with child bullets/tasks in dataview to build custom tag-specific summary logic
+  - ability to expand/preview bullet content without needing to navigate to original page
 - ability to assign specific colors to your tags
 - ability to nominate special tags that are treated differently
   - tags that must be tasks
