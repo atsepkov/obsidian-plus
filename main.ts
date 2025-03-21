@@ -268,16 +268,35 @@ export default class ObsidianPlus extends Plugin {
             })
         );
 
+		function expandIfNeeded(evt: MouseEvent) {
+			const target = evt.target.closest('.op-expandable-item');
+			if (target) {
+				const parentId = target.dataset.parentId;
+				const childrenList = document.getElementById(parentId);
+				if (childrenList) {
+					// Collapse all other expandable children
+					document.querySelectorAll('.op-expandable-children').forEach(el => {
+						if (el !== childrenList) el.style.display = 'none';
+					});
+					// Toggle current
+					childrenList.style.display = 
+						childrenList.style.display === 'none' ? 'block' : 'none';
+				}
+			}
+		}
+
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
 		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
 			// 1. Handle Dataview clicks first
 			const target = evt.target as HTMLElement;
-			if (target.matches('.op-get-summary')) {
+			if (target.matches('.op-toggle-task')) {
 				// id=i${id}
 				const taskId = target.id.slice(1);
 				toggleTask(taskId);
 			}
+			// tasks expand to show child bullets on click
+			expandIfNeeded(evt);
 
 			// 2. Handle code block triple-clicks
 			if (evt.detail === 3) {

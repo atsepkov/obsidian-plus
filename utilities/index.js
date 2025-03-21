@@ -1,4 +1,4 @@
-import { requestUrl } from "obsidian";
+import { MarkdownRenderer, requestUrl } from "obsidian";
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from "./basic"
 export { normalizeConfigVal } from './basic'
 
@@ -596,7 +596,7 @@ function gatherTags(dv, identifier, options = {}) {
 // get summary of specifc tag
 // NOTE: this basically returns a list of objects matching the tag pretty-formatted
 // similar to tasks plugin but with more flexibility and ability to grab/summarize content from children
-export function getSummary(dv, identifier, options = {}) {
+/*export function getSummary(dv, identifier, options = {}) {
 
 	const currentFile = options.currentFile ?? false;			// limit the query to current file
 	const includeLinks = options.includeLinks ?? !currentFile;	// include the file link in the results
@@ -679,7 +679,7 @@ export function getSummary(dv, identifier, options = {}) {
 	dv.paragraph(filtered.map(c => {
 		// format
 		if (customFormat) {
-			return customFormat(c)
+			return customFormat(c, dv)
 		}
 		let text = c.text
 		let icon = {}
@@ -725,41 +725,381 @@ export function getSummary(dv, identifier, options = {}) {
 			return `- ${text}`;
 		}
 	}).join('\n'));
-	// renderTaskList(dv, filtered)
-}
+}*/
+// get summary of specifc tag
+// NOTE: this basically returns a list of objects matching the tag pretty-formatted
+// similar to tasks plugin but with more flexibility and ability to grab/summarize content from children
+/*export function getSummary(dv, identifier, options = {}) {
 
-function renderTaskList(dv, results) {
-	// DataviewJS code block
-	const container = dv.el('ul', '', { cls: 'my-custom-task-list' });
+	const currentFile = options.currentFile ?? false;			// limit the query to current file
+	const includeLinks = options.includeLinks ?? !currentFile;	// include the file link in the results
+	const includeTags = options.includeTags ?? false;			// include the tag itself in the results
+	const includeCheckboxes = options.includeCheckboxes ?? false;	// include checkboxes for tasks in the results
+	const hideCompleted = options.hideCompleted ?? false;		// hide completed tasks
+	const hideTasks = options.hideTasks ?? false;				// hide tasks
+	const hideNonTasks = options.hideNonTasks ?? false;			// hide non-tasks
 
-	// Then loop through them:
-	results.forEach(c => {
-		// Create an <li> for each item
-		const listItem = container.createEl('li');
+	const hideChildren = options.hideChildren ?? false;			// hide children
+	const onlyChildren = options.onlyChildren ?? false;			// only show children
 
-		// Optionally: if it's a "task", create a checkbox
-		if (c.task) {
-			const checkbox = listItem.createEl('input', { type: 'checkbox' });
-			// Mark it checked if c.status === 'x'
-			if (c.status === 'x') checkbox.checked = true;
+	const onlyPrefixTags = options.onlyPrefixTags ?? false;		// only show tags that are at the beginning of the line
+	const onlySuffixTags = options.onlySuffixTags ?? false;		// only show tags that are at the end of the line
+	const onlyMiddleTags = options.onlyMiddleTags ?? false;		// only show tags that are in the middle of the line
 
-			// Attach a real event listener
-			checkbox.addEventListener('click', async (evt) => {
-				// Here is where you'd call your logic or tasksAPI
-				// e.g., await tasksAPI.toggleTaskInFile(c) 
-				// or do some direct file edits to mark it done
-				console.log('Checkbox toggled for:', c);
+	const customFormat = options.customFormat ?? null;			// custom format function
+	const customFilter = options.customFilter ?? null;			// custom filter function
+
+	const expandOnClick = options.expandOnClick ?? false;		// toggle children on click
+
+	if (onlyChildren && hideChildren) {
+		throw new Error("onlyChildren and hideChildren cannot be used together.");
+	}
+
+	const lines = gatherTags(dv, identifier, options);
+	let results = [];
+	for (let line of lines) {
+		if (!identifier) {
+			let text = line.text.split('\n')[0].trim();
+			results.push({
+				...line,
+				text
+			});
+		} else if (line.text === identifier && !hideChildren) {
+			results = results.concat(line.children);
+		} else if (line.text.length > identifier.length && !onlyChildren) {
+      		let text = line.text.split('\n')[0].trim();
+			if (!includeTags) {
+				text = text.replace(identifier, "").trim();
+			}
+			results.push({
+				...line,
+				tagPosition: line.text.indexOf(identifier),
+				text
+			});
+		}
+	}
+
+	const filtered = results.filter(c => {
+		// filter
+		if (customFilter && !customFilter(c)) {
+			return false;
+		}
+		if (hideCompleted && c.task && c.status === "x") {
+			return false;
+		}
+		if (hideTasks && c.task) {
+			return false;
+		}
+		if (hideNonTasks && !c.task) {
+			return false;
+		}
+		if (onlyPrefixTags && c.tagPosition !== 0) {
+			return false;
+		}
+		if (onlySuffixTags && c.tagPosition < c.text.length) {
+			return false;
+		}
+		const tagOffset = includeTags ? identifier?.length : 0;
+		if (onlyMiddleTags && (c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
+			return false;
+		}
+		return true;
+	});
+
+	// do not render, only return the data
+	if (options.onlyReturn) {
+		return filtered;
+	}
+
+	// Build up the final string of bullets
+	const output = filtered.map(c => {
+		// format
+		if (customFormat) {
+			return customFormat(c, dv);
+		}
+
+		let text = c.text;
+		let icon = {};
+		let tasks = { total: 0, done: 0 };
+
+		// gather url icons or tasks stats among children if present
+		if (c.children) {
+			c.children.forEach((child, i) => {
+				if (!i && isUrl(child.text)) {
+					const url = new URL(child.text);
+					icon.url = child.text;
+					icon.icon = getIconForUrl(url);
+				}
+				if (child.task) {
+					tasks.total++;
+					if (child.status === "x") {
+						tasks.done++;
+					}
+				}
 			});
 		}
 
-		// Then add the text content
-		// (or createSpan, createEl, etc.)
-		const textSpan = listItem.createEl('span');
-		textSpan.textContent = c.text;
+		// handle checkboxes if requested
+		if (includeCheckboxes && c.task) {
+			const id = generateId(10);
+			taskCache[id] = c;
+			text = `<input type="checkbox" class="task-list-item-checkbox op-get-summary" id="i${id}"
+				${c.status === "x" ? "checked" : ""}><span>${text}</span>`;
+		}
 
-		// If you want to show the file link:
-		textSpan.appendText(' (');
-		textSpan.appendChild(dv.fileLink(c.path));
-		textSpan.appendText(')');
+		// handle icon if we found a child link
+		if (icon.url) {
+			text += ` [${icon.icon}](${icon.url})`;
+		} else if (lineHasUrl(text)) {
+			const url = extractUrl(text);
+			let iconSymbol = getIconForUrl(new URL(url));
+			text = text.replace(url, `[${iconSymbol}](${url})`);
+		}
+
+		// handle any child tasks info
+		if (tasks.total > 0) {
+			text += ` (${tasks.done}/${tasks.total})`;
+		}
+
+		let bulletLine = `- ${text}`;
+		if (includeLinks) {
+			bulletLine += ` (${dv.fileLink(c.path)})`;
+		}
+
+		// If expandOnClick is set and we have children, wrap the parent and create a hidden sub-list
+		if (expandOnClick && c.children && c.children.length > 0) {
+			// Make the parent text clickable
+			bulletLine = bulletLine.replace('- ', '- <span class="opgs-toggle">') + '</span>';
+
+			// Build sub-bullet HTML
+			let childLines = c.children.map(child => {
+				// Minimal child formatting; you can add more if needed
+				return `\t- ${child.text}`;
+			}).join('\n');
+
+			bulletLine += `\n<ul class="opgs-children" style="display: none;">\n${childLines}\n</ul>`;
+		}
+
+		return bulletLine;
+	}).join('\n');
+
+	// Render the paragraph
+	dv.paragraph(output);
+
+	// If expandOnClick is true, attach a click handler that toggles one sub-list at a time
+	if (expandOnClick) {
+		// Use a small delay so the elements are in the DOM
+		requestAnimationFrame(() => {
+			const toggles = dv.container?.querySelectorAll('.opgs-toggle');
+			if (!toggles) return;
+
+			toggles.forEach(toggle => {
+				toggle.addEventListener('click', e => {
+					e.stopPropagation();
+					
+					// Collapse all other open children first
+					toggles.forEach(other => {
+						if (other !== toggle) {
+							const otherList = other.nextElementSibling;
+							if (otherList && otherList.classList.contains('opgs-children')) {
+								otherList.style.display = 'none';
+							}
+						}
+					});
+
+					// Toggle this one
+					const childList = toggle.nextElementSibling;
+					if (childList && childList.classList.contains('opgs-children')) {
+						childList.style.display = (childList.style.display === 'none') ? 'block' : 'none';
+					}
+				});
+			});
+		});
+	}
+}*/
+
+// get summary of specific tag
+export function getSummary(dv, identifier, options = {}) {
+
+	const currentFile = options.currentFile ?? false;			// limit the query to current file
+	const includeLinks = options.includeLinks ?? !currentFile;	// include the file link in the results
+	const includeTags = options.includeTags ?? false;			// include the tag itself in the results
+	const includeCheckboxes = options.includeCheckboxes ?? false;	// include checkboxes for tasks in the results
+	const hideCompleted = options.hideCompleted ?? false;		// hide completed tasks
+	const hideTasks = options.hideTasks ?? false;				// hide tasks
+	const hideNonTasks = options.hideNonTasks ?? false;			// hide non-tasks
+
+	const hideChildren = options.hideChildren ?? false;			// hide children
+	const onlyChildren = options.onlyChildren ?? false;			// only show children
+
+	const onlyPrefixTags = options.onlyPrefixTags ?? false;		// only show tags that are at the beginning of the line
+	const onlySuffixTags = options.onlySuffixTags ?? false;		// only show tags that are at the end of the line
+	const onlyMiddleTags = options.onlyMiddleTags ?? false;		// only show tags that are in the middle of the line
+
+	const customFormat = options.customFormat ?? null;			// custom format function
+	const customFilter = options.customFilter ?? null;			// custom filter function
+
+	const expandOnClick = options.expandOnClick ?? false;		// toggle children on click
+
+	if (onlyChildren && hideChildren) {
+		throw new Error("onlyChildren and hideChildren cannot be used together.");
+	}
+
+	const lines = gatherTags(dv, identifier, options);
+	let results = [];
+	for (let line of lines) {
+		if (!identifier) {
+			let text = line.text.split('\n')[0].trim();
+			results.push({
+				...line,
+				text
+			});
+		} else if (line.text === identifier && !hideChildren) {
+			results = results.concat(line.children);
+		} else if (line.text.length > identifier.length && !onlyChildren) {
+      		let text = line.text.split('\n')[0].trim();
+			if (!includeTags) {
+				text = text.replace(identifier, "").trim();
+			}
+			results.push({
+				...line,
+				tagPosition: line.text.indexOf(identifier),
+				text
+			});
+		}
+	}
+
+	const filtered = results.filter(c => {
+		// filter
+		if (customFilter && !customFilter(c)) {
+			return false;
+		}
+		if (hideCompleted && c.task && c.status === "x") {
+			return false;
+		}
+		if (hideTasks && c.task) {
+			return false;
+		}
+		if (hideNonTasks && !c.task) {
+			return false;
+		}
+		if (onlyPrefixTags && c.tagPosition !== 0) {
+			return false;
+		}
+		if (onlySuffixTags && c.tagPosition < c.text.length) {
+			return false;
+		}
+		const tagOffset = includeTags ? identifier?.length : 0;
+		if (onlyMiddleTags && (c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
+			return false;
+		}
+		return true;
 	});
+
+    // Modify the rendering section
+    if (options.onlyReturn) {
+        return filtered;
+    }
+
+    // Function to format a single item (reused for children)
+    const formatItem = (item, isChild = false) => {
+        let text = item.text;
+        let icon = {};
+        let tasks = { total: 0, done: 0 };
+        if (item.children) {
+            item.children.forEach((child, i) => {
+                if (!i && isUrl(child.text)) {
+                    const url = new URL(child.text);
+                    icon.url = child.text;
+                    icon.icon = getIconForUrl(url);
+                }
+                if (child.task) {
+                    tasks.total++;
+                    if (child.status === "x") tasks.done++;
+                }
+            });
+        }
+        if (includeCheckboxes && item.task) {
+            const id = generateId(10);
+            taskCache[id] = item;
+            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}><span>${text}</span>`;
+        }
+        if (icon.url) {
+            text += ` [${icon.icon}](${icon.url})`;
+        } else if (lineHasUrl(text)) {
+            const url = extractUrl(text);
+            const icon = getIconForUrl(new URL(url));
+            text = text.replace(url, `[${icon}](${url})`);
+        }
+        if (tasks.total > 0) {
+            text += ` (${tasks.done}/${tasks.total})`;
+        }
+        if (includeLinks) {
+            text += ` (${dv.fileLink(item.path)})`;
+        }
+        return isChild ? text : `- ${text}`;
+    };
+
+    if (expandOnClick) {
+		// 1. Create a top-level <ul> as the container for your list
+		const listEl = dv.el("ul", "", { cls: "op-expandable-list" });
+
+		// 2. For each item 'c', create an <li> and render the Markdown
+		filtered.forEach(async (c) => {
+			// Create <li>
+			const liEl = listEl.createEl("li");
+			
+			// The actual markdown content (no bullet markdown)
+			const itemContent = formatItem(c).replace(/^- /, "");
+	
+			if (c.children?.length > 0) {
+				// Generate a unique ID for the child <ul>
+				const parentId = generateId(10);
+	
+				// Create a <span> (the clickable part)
+				const spanEl = liEl.createEl("span", {
+					cls: "op-expandable-item",
+					attr: { "data-parent-id": parentId },
+				});
+				spanEl.style.cursor = "pointer";
+	
+				// Render the parent item's Markdown into the <span>
+				await MarkdownRenderer.renderMarkdown(
+					itemContent,
+					spanEl,
+					app.workspace.getActiveFile()?.path ?? "",
+					null
+				);
+	
+				// Create the children <ul> (initially hidden)
+				const childrenUl = liEl.createEl("ul", {
+					attr: { id: parentId },
+					cls: "op-expandable-children",
+				});
+				childrenUl.style.display = "none";
+	
+				// For each child, create an <li> and render Markdown
+				c.children.forEach(async (child) => {
+					const childLi = childrenUl.createEl("li");
+					await MarkdownRenderer.renderMarkdown(
+						child.text,
+						childLi,
+						app.workspace.getActiveFile()?.path ?? "",
+						null
+					);
+				});
+			} else {
+				// If no children, just render the Markdown directly in the <li>
+				await MarkdownRenderer.renderMarkdown(
+					itemContent,
+					liEl,
+					app.workspace.getActiveFile()?.path ?? "",
+					null
+				);
+			}
+		});
+    } else {
+        // Existing markdown rendering
+        dv.paragraph(filtered.map(c => formatItem(c)).join('\n'));
+    }
 }
