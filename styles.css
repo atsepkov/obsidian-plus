@@ -51,3 +51,10 @@ Obsidian Plus Theme
 .block-language-dataviewjs ul > li:has(input[type="checkbox"]) {
     margin-inline-start: unset;
 }
+
+.my-search-wrapper input {
+    margin-top: 5px;
+    margin-left: 10px;
+    margin-bottom: -5px;
+    width: 90%;
+}

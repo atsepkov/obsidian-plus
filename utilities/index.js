@@ -616,138 +616,6 @@ function gatherTags(dv, identifier, options = {}) {
 	const customFormat = options.customFormat ?? null;			// custom format function
 	const customFilter = options.customFilter ?? null;			// custom filter function
 
-	if (onlyChildren && hideChildren) {
-		throw new Error("onlyChildren and hideChildren cannot be used together.");
-	}
-
-	const lines = gatherTags(dv, identifier, options);
-	let results = [];
-	for (let line of lines) {
-		if (!identifier) {
-			let text = line.text.split('\n')[0].trim()
-			results.push({
-				...line,
-				text
-			})
-		} else if (line.text === identifier && !hideChildren) {
-			results = results.concat(line.children)
-		} else if (line.text.length > identifier.length && !onlyChildren) {
-      		let text = line.text.split('\n')[0].trim()
-			if (!includeTags) {
-				text = text.replace(identifier, "").trim()
-			}
-			results.push({
-				...line,
-				tagPosition: line.text.indexOf(identifier),
-				text
-			})
-		}
-	}
-
-	const filtered = results.filter(c => {
-		// filter
-		if (customFilter && !customFilter(c)) {
-			return false
-		}
-		if (hideCompleted && c.task && c.status === "x") {
-			return false
-		}
-		if (hideTasks && c.task) {
-			return false
-		}
-		if (hideNonTasks && !c.task) {
-			return false
-		}
-		if (onlyPrefixTags && c.tagPosition !== 0) {
-			return false
-		}
-		if (onlySuffixTags && c.tagPosition < c.text.length) {
-			return false
-		}
-		const tagOffset = includeTags ? identifier?.length : 0
-		if (onlyMiddleTags && (c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
-			return false
-		}
-		return true
-	});
-
-	// do not render, only return the data (useful when parsing config or wanting to programmatically use the data)
-	if (options.onlyReturn) {
-		return filtered;
-	}
-
-	dv.paragraph(filtered.map(c => {
-		// format
-		if (customFormat) {
-			return customFormat(c, dv)
-		}
-		let text = c.text
-		let icon = {}
-		let tasks = { total: 0, done: 0 }
-		if (c.children) {
-			c.children.forEach((child, i) => {
-				if (!i && isUrl(child.text)) {
-					const url = new URL(child.text)
-					icon.url = child.text
-					icon.icon = getIconForUrl(url)
-				}
-				if (child.task) {
-					tasks.total++
-					if (child.status === "x") {
-						tasks.done++
-					}
-				}
-			})
-		}
-		if (includeCheckboxes && c.task) {
-			// generate a unique alphanumeric id and cache the task
-			const id = generateId(10)
-			taskCache[id] = c
-			text = `<input type="checkbox" class="task-list-item-checkbox op-get-summary" id="i${id}"
-				${c.status === "x" ? "checked" : ""}><span>${text}</span>`
-		}
-		if (icon.url) {
-			text += ` [${icon.icon}](${icon.url})`
-		} else if (lineHasUrl(text)) {
-			const url = extractUrl(text)
-			let icon = getIconForUrl(new URL(url))
-			// url might be inside parens or follow a colon, normalize
-			// const urlChunk = text.includes(`(${url})`) ? `(${url})` : text.includes(`: ${url}`) ? `: ${url}` : url
-			text = text.replace(url, `[${icon}](${url})`)
-		}
-		if (tasks.total > 0) {
-			text += ` (${tasks.done}/${tasks.total})`
-		}
-
-		if (includeLinks) {
-			return `- ${text} (${dv.fileLink(c.path)})`;
-		} else {
-			return `- ${text}`;
-		}
-	}).join('\n'));
-}*/
-
-// get summary of specific tag
-export function getSummary(dv, identifier, options = {}) {
-
-	const currentFile = options.currentFile ?? false;			// limit the query to current file
-	const includeLinks = options.includeLinks ?? !currentFile;	// include the file link in the results
-	const includeTags = options.includeTags ?? false;			// include the tag itself in the results
-	const includeCheckboxes = options.includeCheckboxes ?? false;	// include checkboxes for tasks in the results
-	const hideCompleted = options.hideCompleted ?? false;		// hide completed tasks
-	const hideTasks = options.hideTasks ?? false;				// hide tasks
-	const hideNonTasks = options.hideNonTasks ?? false;			// hide non-tasks
-
-	const hideChildren = options.hideChildren ?? false;			// hide children
-	const onlyChildren = options.onlyChildren ?? false;			// only show children
-
-	const onlyPrefixTags = options.onlyPrefixTags ?? false;		// only show tags that are at the beginning of the line
-	const onlySuffixTags = options.onlySuffixTags ?? false;		// only show tags that are at the end of the line
-	const onlyMiddleTags = options.onlyMiddleTags ?? false;		// only show tags that are in the middle of the line
-
-	const customFormat = options.customFormat ?? null;			// custom format function
-	const customFilter = options.customFilter ?? null;			// custom filter function
-
 	const expandOnClick = options.expandOnClick ?? false;		// toggle children on click
 
 	if (onlyChildren && hideChildren) {
@@ -915,4 +783,263 @@ export function getSummary(dv, identifier, options = {}) {
         // Existing markdown rendering
         dv.paragraph(filtered.map(c => formatItem(c)).join('\n'));
     }
+}*/
+
+export function getSummary(dv, identifier, options = {}) {
+
+    const currentFile = options.currentFile ?? false;            // limit the query to current file
+    const includeLinks = options.includeLinks ?? !currentFile;   // include the file link in the results
+    const includeTags = options.includeTags ?? false;            // include the tag itself in the results
+    const includeCheckboxes = options.includeCheckboxes ?? false;// include checkboxes for tasks in the results
+    const hideCompleted = options.hideCompleted ?? false;        // hide completed tasks
+    const hideTasks = options.hideTasks ?? false;                // hide tasks
+    const hideNonTasks = options.hideNonTasks ?? false;          // hide non-tasks
+
+    const hideChildren = options.hideChildren ?? false;          // hide children
+    const onlyChildren = options.onlyChildren ?? false;          // only show children
+
+    const onlyPrefixTags = options.onlyPrefixTags ?? false;      // only show tags that are at the beginning of the line
+    const onlySuffixTags = options.onlySuffixTags ?? false;      // only show tags that are at the end of the line
+    const onlyMiddleTags = options.onlyMiddleTags ?? false;      // only show tags that are in the middle of the line
+
+    const customFormat = options.customFormat ?? null;           // custom format function
+    const customFilter = options.customFilter ?? null;           // custom filter function
+	const customSearch = options.customSearch ?? null;           // custom search function
+
+    const expandOnClick = options.expandOnClick ?? false;        // toggle children on click
+    const showSearchbox = options.showSearchbox ?? false;        // whether to show a search box
+
+    if (onlyChildren && hideChildren) {
+        throw new Error("onlyChildren and hideChildren cannot be used together.");
+    }
+
+    // 1) Gather lines
+    const lines = gatherTags(dv, identifier, options);
+
+    // 2) Process lines into results
+    let results = [];
+    for (let line of lines) {
+        if (!identifier) {
+            let text = line.text.split('\n')[0].trim();
+            results.push({
+                ...line,
+                text
+            });
+        } else if (line.text === identifier && !hideChildren) {
+            results = results.concat(line.children);
+        } else if (line.text.length > identifier.length && !onlyChildren) {
+            let text = line.text.split('\n')[0].trim();
+            if (!includeTags) {
+                text = text.replace(identifier, "").trim();
+            }
+            results.push({
+                ...line,
+                tagPosition: line.text.indexOf(identifier),
+                text
+            });
+        }
+    }
+
+    // 3) Filter results
+    const filtered = results.filter(c => {
+        // custom filter
+        if (customFilter && !customFilter(c)) return false;
+        // hide completed tasks
+        if (hideCompleted && c.task && c.status === "x") return false;
+        // hide tasks
+        if (hideTasks && c.task) return false;
+        // hide non-tasks
+        if (hideNonTasks && !c.task) return false;
+        // prefix-only tags
+        if (onlyPrefixTags && c.tagPosition !== 0) return false;
+        // suffix-only tags
+        if (onlySuffixTags && c.tagPosition < c.text.length) return false;
+        // middle-only tags
+        const tagOffset = includeTags ? identifier?.length : 0;
+        if (onlyMiddleTags && (c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
+            return false;
+        }
+        return true;
+    });
+
+    // 4) If asked to onlyReturn results (no rendering), do so
+    if (options.onlyReturn) {
+        return filtered;
+    }
+
+    // ---------------------------------------------------------
+    // 5) Helper function to render a single item (and children)
+    // ---------------------------------------------------------
+    const formatItem = (item, isChild = false) => {
+        if (customFormat) {
+            return customFormat(item, dv, isChild);
+        }
+
+        let text = item.text;
+        let icon = {};
+        let tasks = { total: 0, done: 0 };
+
+        if (item.children) {
+            item.children.forEach((child, i) => {
+                // Example: if the first child is a URL, we store an icon
+                if (!i && isUrl(child.text)) {
+                    const url = new URL(child.text);
+                    icon.url = child.text;
+                    icon.icon = getIconForUrl(url);
+                }
+                if (child.task) {
+                    tasks.total++;
+                    if (child.status === "x") tasks.done++;
+                }
+            });
+        }
+
+        // If this line is a task, optionally show a checkbox
+        if (includeCheckboxes && item.task) {
+            const id = generateId(10);
+            taskCache[id] = item;  // store in some global or higher scope
+            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}>` +
+                   `<span>${text}</span>`;
+        }
+
+        // If we extracted a URL icon above, append it
+        if (icon.url) {
+            text += ` [${icon.icon}](${icon.url})`;
+        } 
+        // Otherwise, check if there's a URL in the line
+        else if (lineHasUrl(text)) {
+            const url = extractUrl(text);
+            const linkIcon = getIconForUrl(new URL(url));
+            text = text.replace(url, `[${linkIcon}](${url})`);
+        }
+
+        // Append a (done/total) tasks count if relevant
+        if (tasks.total > 0) {
+            text += ` (${tasks.done}/${tasks.total})`;
+        }
+
+        // Append a link back to the file if requested
+        if (includeLinks) {
+            text += ` (${dv.fileLink(item.path)})`;
+        }
+
+        return isChild ? text : `- ${text}`;
+    };
+
+    // ---------------------------------------------------------
+    // 6) Helper function to render entire list to the DOM
+    //    (used in both initial and search-updated rendering)
+    // ---------------------------------------------------------
+    const renderResults = async (items, containerEl) => {
+        containerEl.empty(); // clear previous items
+
+        if (expandOnClick) {
+            // Create a top-level <ul> for the items
+            const listEl = containerEl.createEl("ul", { cls: "op-expandable-list" });
+
+            // For each item, create an <li> + optional nested <ul>
+            for (const c of items) {
+                const liEl = listEl.createEl("li");
+                const itemContent = formatItem(c).replace(/^- /, ""); // remove leading '- '
+
+                if (c.children?.length > 0) {
+                    // Generate a unique ID for the child <ul>
+                    const parentId = generateId(10);
+
+                    // Create a <span> for clickable parent
+                    const spanEl = liEl.createEl("span", {
+                        cls: "op-expandable-item",
+                        attr: { "data-parent-id": parentId },
+                    });
+                    spanEl.style.cursor = "pointer";
+
+                    // Render the parent item
+                    await MarkdownRenderer.renderMarkdown(
+                        itemContent,
+                        spanEl,
+                        app.workspace.getActiveFile()?.path ?? "",
+                        null
+                    );
+
+                    // Create the children <ul> (initially hidden)
+                    const childrenUl = liEl.createEl("ul", {
+                        attr: { id: parentId },
+                        cls: "op-expandable-children",
+                    });
+                    childrenUl.style.display = "none";
+
+                    // Render each child in that <ul>
+                    for (const child of c.children) {
+                        const childLi = childrenUl.createEl("li");
+                        await MarkdownRenderer.renderMarkdown(
+                            child.text,
+                            childLi,
+                            app.workspace.getActiveFile()?.path ?? "",
+                            null
+                        );
+                    }
+                } else {
+                    // If no children, just render the item
+                    await MarkdownRenderer.renderMarkdown(
+                        itemContent,
+                        liEl,
+                        app.workspace.getActiveFile()?.path ?? "",
+                        null
+                    );
+                }
+            }
+        } else {
+            // Simpler: just a paragraph with lines
+            dv.paragraph(items.map(c => formatItem(c)).join('\n'), containerEl);
+        }
+    };
+
+    // ---------------------------------------------------------
+    // 7) Render the results (with optional search box)
+    // ---------------------------------------------------------
+    if (showSearchbox) {
+        // Create a main container
+        const wrapper = dv.el("div", "", { cls: "my-search-wrapper" });
+
+        // Create the input box
+        const searchEl = wrapper.createEl("input", {
+            type: "text",
+            placeholder: "Search..."
+        });
+        // Create a container for results
+        const resultsEl = wrapper.createEl("div");
+
+        // Initial rendering with all filtered items
+        let currentItems = filtered;
+        renderResults(currentItems, resultsEl);
+
+        // Add real-time filtering
+        searchEl.addEventListener("input", async (e) => {
+            const query = e.target.value.toLowerCase();
+
+            // Filter your original "filtered" array
+            currentItems = filtered.filter(item => {
+				if (customSearch) {
+					return customSearch(item, query);
+				}
+                const hasQuery = item.text.toLowerCase().includes(query)
+				const hasChild = item.children?.some(child => child.text.toLowerCase().includes(query));
+				return hasQuery || hasChild;
+			});
+            // Re-render
+            await renderResults(currentItems, resultsEl);
+        });
+    }
+    else {
+        // Normal rendering (no search box)
+        if (expandOnClick) {
+            // same approach as above
+            const containerEl = dv.el("div", "");
+            renderResults(filtered, containerEl);
+        } else {
+            // direct paragraph approach
+            dv.paragraph(filtered.map(c => formatItem(c)).join('\n'));
+        }
+    }
 }
+
