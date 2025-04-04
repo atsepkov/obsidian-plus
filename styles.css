@@ -79,6 +79,11 @@ Obsidian Plus Theme
   box-sizing: border-box;
 }
 
+.obsidian-plus-sticky-header > p {
+    margin-block-start: 4px;
+    margin-block-end: 4px;
+}
+
 .obsidian-plus-sticky-header--visible {
   display: block; /* Make it visible when needed */
 }
