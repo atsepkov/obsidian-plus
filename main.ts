@@ -280,6 +280,11 @@ export default class ObsidianPlus extends Plugin {
 					document.querySelectorAll('.op-expandable-children').forEach(el => {
 						if (el !== childrenList) el.style.display = 'none';
 					});
+				if (childrenList) {
+					// Collapse all other expandable children
+					document.querySelectorAll('.op-expandable-children').forEach(el => {
+						if (el !== childrenList) el.style.display = 'none';
+					});
 					// Toggle current
 					childrenList.style.display = 
 						childrenList.style.display === 'none' ? 'block' : 'none';
