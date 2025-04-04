@@ -3,6 +3,7 @@ import {
 	App, Editor, MarkdownView, MarkdownPostProcessorContext,
 	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile,
 } from 'obsidian';
+import { EditorView, Decoration } from "@codemirror/view";
 import {
 	configure,
 	normalizeConfigVal,

@@ -62,26 +62,3 @@ Obsidian Plus Theme
 .op-expandable-item:hover {
     text-decoration: underline;
 }
-
-#top-context-bar {
-    /* Positioning */
-    position: fixed;
-    top: 41px; /* Adjust based on your Obsidian header */
-    left: 0;
-    right: 0;
-    z-index: 500;
-
-    /* Styling */
-    background: var(--background-primary);
-    border-bottom: 1px solid var(--background-modifier-border);
-    padding: 6px 20px;
-    font-size: 0.9em;
-    opacity: 0.92;
-    backdrop-filter: blur(8px);
-    
-    /* Text handling */
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: opacity 0.2s ease;
-}
