@@ -2,7 +2,6 @@ import path from 'path';
 import {
 	App, Editor, MarkdownView, MarkdownPostProcessorContext,
 	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile,
-	FileSystemAdapter
 } from 'obsidian';
 import {
 	configure,
@@ -162,7 +161,7 @@ export default class ObsidianPlus extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
 
-		 // Attempt to load tags from the user-specified file
+		// Attempt to load tags from the user-specified file
 		await this.loadTaskTagsFromFile();
 		console.log("Loaded tags:", this.settings.taskTags);
 		
