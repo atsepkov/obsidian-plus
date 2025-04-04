@@ -268,7 +268,11 @@ export default class ObsidianPlus extends Plugin {
 
 		this.registerEvent(
             this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
-                this.handleBulletPreference(editor);
+                if (info instanceof MarkdownView) {
+                    this.handleBulletPreference(editor);
+                    // Also trigger sticky header update on cursor activity
+                    this.updateStickyHeader(info);
+                }
             })
         );
 
