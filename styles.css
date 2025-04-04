@@ -25,14 +25,6 @@ Obsidian Plus Theme
 .cm-flagged-line:hover {
     opacity: 1.0;
 }
-
-.cm-error-line {
-    color: #f53;
-}
-
-.cm-response-line {
-    color: rgb(105, 151, 236);
-}
   
 /* You can show a tooltip on hover by using ::after content */
 .cm-flagged-line:hover::after {
@@ -47,6 +39,14 @@ Obsidian Plus Theme
     z-index: 999;
 }
 
+.cm-error-line {
+    color: #f53;
+}
+
+.cm-response-line {
+    color: rgb(105, 151, 236);
+}
+
 /* for rendering checkboxes */
 .block-language-dataviewjs ul > li:has(input[type="checkbox"]) {
     margin-inline-start: unset;
@@ -57,4 +57,31 @@ Obsidian Plus Theme
     margin-left: 10px;
     margin-bottom: -5px;
     width: 90%;
+}
+
+.op-expandable-item:hover {
+    text-decoration: underline;
+}
+
+#top-context-bar {
+    /* Positioning */
+    position: fixed;
+    top: 41px; /* Adjust based on your Obsidian header */
+    left: 0;
+    right: 0;
+    z-index: 500;
+
+    /* Styling */
+    background: var(--background-primary);
+    border-bottom: 1px solid var(--background-modifier-border);
+    padding: 6px 20px;
+    font-size: 0.9em;
+    opacity: 0.92;
+    backdrop-filter: blur(8px);
+    
+    /* Text handling */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: opacity 0.2s ease;
 }

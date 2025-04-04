@@ -596,195 +596,6 @@ function gatherTags(dv, identifier, options = {}) {
 // get summary of specifc tag
 // NOTE: this basically returns a list of objects matching the tag pretty-formatted
 // similar to tasks plugin but with more flexibility and ability to grab/summarize content from children
-/*export function getSummary(dv, identifier, options = {}) {
-
-	const currentFile = options.currentFile ?? false;			// limit the query to current file
-	const includeLinks = options.includeLinks ?? !currentFile;	// include the file link in the results
-	const includeTags = options.includeTags ?? false;			// include the tag itself in the results
-	const includeCheckboxes = options.includeCheckboxes ?? false;	// include checkboxes for tasks in the results
-	const hideCompleted = options.hideCompleted ?? false;		// hide completed tasks
-	const hideTasks = options.hideTasks ?? false;				// hide tasks
-	const hideNonTasks = options.hideNonTasks ?? false;			// hide non-tasks
-
-	const hideChildren = options.hideChildren ?? false;			// hide children
-	const onlyChildren = options.onlyChildren ?? false;			// only show children
-
-	const onlyPrefixTags = options.onlyPrefixTags ?? false;		// only show tags that are at the beginning of the line
-	const onlySuffixTags = options.onlySuffixTags ?? false;		// only show tags that are at the end of the line
-	const onlyMiddleTags = options.onlyMiddleTags ?? false;		// only show tags that are in the middle of the line
-
-	const customFormat = options.customFormat ?? null;			// custom format function
-	const customFilter = options.customFilter ?? null;			// custom filter function
-
-	const expandOnClick = options.expandOnClick ?? false;		// toggle children on click
-
-	if (onlyChildren && hideChildren) {
-		throw new Error("onlyChildren and hideChildren cannot be used together.");
-	}
-
-	const lines = gatherTags(dv, identifier, options);
-	let results = [];
-	for (let line of lines) {
-		if (!identifier) {
-			let text = line.text.split('\n')[0].trim();
-			results.push({
-				...line,
-				text
-			});
-		} else if (line.text === identifier && !hideChildren) {
-			results = results.concat(line.children);
-		} else if (line.text.length > identifier.length && !onlyChildren) {
-      		let text = line.text.split('\n')[0].trim();
-			if (!includeTags) {
-				text = text.replace(identifier, "").trim();
-			}
-			results.push({
-				...line,
-				tagPosition: line.text.indexOf(identifier),
-				text
-			});
-		}
-	}
-
-	const filtered = results.filter(c => {
-		// filter
-		if (customFilter && !customFilter(c)) {
-			return false;
-		}
-		if (hideCompleted && c.task && c.status === "x") {
-			return false;
-		}
-		if (hideTasks && c.task) {
-			return false;
-		}
-		if (hideNonTasks && !c.task) {
-			return false;
-		}
-		if (onlyPrefixTags && c.tagPosition !== 0) {
-			return false;
-		}
-		if (onlySuffixTags && c.tagPosition < c.text.length) {
-			return false;
-		}
-		const tagOffset = includeTags ? identifier?.length : 0;
-		if (onlyMiddleTags && (c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
-			return false;
-		}
-		return true;
-	});
-
-    // Modify the rendering section
-    if (options.onlyReturn) {
-        return filtered;
-    }
-
-    // Function to format a single item (reused for children)
-    const formatItem = (item, isChild = false) => {
-		if (customFormat) {
-			return customFormat(item, dv, isChild);
-		}
-
-        let text = item.text;
-        let icon = {};
-        let tasks = { total: 0, done: 0 };
-        if (item.children) {
-            item.children.forEach((child, i) => {
-                if (!i && isUrl(child.text)) {
-                    const url = new URL(child.text);
-                    icon.url = child.text;
-                    icon.icon = getIconForUrl(url);
-                }
-                if (child.task) {
-                    tasks.total++;
-                    if (child.status === "x") tasks.done++;
-                }
-            });
-        }
-        if (includeCheckboxes && item.task) {
-            const id = generateId(10);
-            taskCache[id] = item;
-            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}><span>${text}</span>`;
-        }
-        if (icon.url) {
-            text += ` [${icon.icon}](${icon.url})`;
-        } else if (lineHasUrl(text)) {
-            const url = extractUrl(text);
-            const icon = getIconForUrl(new URL(url));
-            text = text.replace(url, `[${icon}](${url})`);
-        }
-        if (tasks.total > 0) {
-            text += ` (${tasks.done}/${tasks.total})`;
-        }
-        if (includeLinks) {
-            text += ` (${dv.fileLink(item.path)})`;
-        }
-        return isChild ? text : `- ${text}`;
-    };
-
-    if (expandOnClick) {
-		// 1. Create a top-level <ul> as the container for your list
-		const listEl = dv.el("ul", "", { cls: "op-expandable-list" });
-
-		// 2. For each item 'c', create an <li> and render the Markdown
-		filtered.forEach(async (c) => {
-			// Create <li>
-			const liEl = listEl.createEl("li");
-			
-			// The actual markdown content (no bullet markdown)
-			const itemContent = formatItem(c).replace(/^- /, "");
-	
-			if (c.children?.length > 0) {
-				// Generate a unique ID for the child <ul>
-				const parentId = generateId(10);
-	
-				// Create a <span> (the clickable part)
-				const spanEl = liEl.createEl("span", {
-					cls: "op-expandable-item",
-					attr: { "data-parent-id": parentId },
-				});
-				spanEl.style.cursor = "pointer";
-	
-				// Render the parent item's Markdown into the <span>
-				await MarkdownRenderer.renderMarkdown(
-					itemContent,
-					spanEl,
-					app.workspace.getActiveFile()?.path ?? "",
-					null
-				);
-	
-				// Create the children <ul> (initially hidden)
-				const childrenUl = liEl.createEl("ul", {
-					attr: { id: parentId },
-					cls: "op-expandable-children",
-				});
-				childrenUl.style.display = "none";
-	
-				// For each child, create an <li> and render Markdown
-				c.children.forEach(async (child) => {
-					const childLi = childrenUl.createEl("li");
-					await MarkdownRenderer.renderMarkdown(
-						child.text,
-						childLi,
-						app.workspace.getActiveFile()?.path ?? "",
-						null
-					);
-				});
-			} else {
-				// If no children, just render the Markdown directly in the <li>
-				await MarkdownRenderer.renderMarkdown(
-					itemContent,
-					liEl,
-					app.workspace.getActiveFile()?.path ?? "",
-					null
-				);
-			}
-		});
-    } else {
-        // Existing markdown rendering
-        dv.paragraph(filtered.map(c => formatItem(c)).join('\n'));
-    }
-}*/
-
 export function getSummary(dv, identifier, options = {}) {
 
     const currentFile = options.currentFile ?? false;            // limit the query to current file
@@ -820,6 +631,7 @@ export function getSummary(dv, identifier, options = {}) {
     let results = [];
     for (let line of lines) {
         if (!identifier) {
+            // identifier was not specified
             let text = line.text.split('\n')[0].trim();
             results.push({
                 ...line,
@@ -931,6 +743,8 @@ export function getSummary(dv, identifier, options = {}) {
     //    (used in both initial and search-updated rendering)
     // ---------------------------------------------------------
     const renderResults = async (items, containerEl) => {
+        console.log("RENDER RESULTS", dv)
+        global.dv = dv
         containerEl.empty(); // clear previous items
 
         if (expandOnClick) {
@@ -954,11 +768,12 @@ export function getSummary(dv, identifier, options = {}) {
                     spanEl.style.cursor = "pointer";
 
                     // Render the parent item
-                    await MarkdownRenderer.renderMarkdown(
+                    await MarkdownRenderer.render(
+                        app,
                         itemContent,
                         spanEl,
                         app.workspace.getActiveFile()?.path ?? "",
-                        null
+                        dv.component
                     );
 
                     // Create the children <ul> (initially hidden)
@@ -970,21 +785,24 @@ export function getSummary(dv, identifier, options = {}) {
 
                     // Render each child in that <ul>
                     for (const child of c.children) {
+                        console.log(child);
                         const childLi = childrenUl.createEl("li");
-                        await MarkdownRenderer.renderMarkdown(
+                        await MarkdownRenderer.render(
+                            app,
                             child.text,
                             childLi,
                             app.workspace.getActiveFile()?.path ?? "",
-                            null
+                            dv.component
                         );
                     }
                 } else {
                     // If no children, just render the item
-                    await MarkdownRenderer.renderMarkdown(
+                    await MarkdownRenderer.render(
+                        app,
                         itemContent,
                         liEl,
                         app.workspace.getActiveFile()?.path ?? "",
-                        null
+                        dv.component
                     );
                 }
             }

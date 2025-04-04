@@ -166,12 +166,15 @@ export default class ObsidianPlus extends Plugin {
 		await this.loadTaskTagsFromFile();
 		console.log("Loaded tags:", this.settings.taskTags);
 		
-		// Listen for changes to tags config file in the vault
+		// Listen for changes to tags config file and checked off tasks in current file
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
+				// Listen for changes to tags config file in the vault
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath) {
 					await this.loadTaskTagsFromFile();
 				}
+
+				// Listen for changes to tasks in the current file (if task was marked completed)
 				if (file instanceof TFile && file.extension === "md") {
 					let newTasks = await this.extractTaskLines(file);
 					const oldTasks = taskCache.get(file.path) ?? [];
@@ -391,6 +394,7 @@ export default class ObsidianPlus extends Plugin {
 		console.log(`Built ${connectorName} connector for`, tag, config);
 	}
 
+	// Called to mark/color-code lines based on type/error for user's attention
 	private buildDecorationSet(state: EditorState): DecorationSet {
 		// console.log('STATE', state, this)
 		if (this.app.workspace.getActiveFile().path === this.settings.tagListFilePath) {
@@ -419,6 +423,8 @@ export default class ObsidianPlus extends Plugin {
 					}
 				}
 			}
+
+			// TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
 
 			// highlight errors and responses
 			if (cleanLine.startsWith('+ ')) {
@@ -695,7 +701,6 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	onunload() {
-
 	}
 
 	async loadSettings() {
