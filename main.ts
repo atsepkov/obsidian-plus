@@ -1,6 +1,6 @@
 import path from 'path';
 import {
-	App, Editor, MarkdownView, MarkdownPostProcessorContext,
+	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
 	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
@@ -437,13 +437,20 @@ export default class ObsidianPlus extends Plugin {
 	 * Creates and appends the sticky header element if it doesn't exist for the view.
 	 */
 	private setupStickyHeaderForView(view: MarkdownView): void {
-		if (!view?.editor?.cm?.scrollDOM) return; // Ensure view and CM elements are ready
+		// if (!view?.editor?.cm?.scrollDOM) return; // Ensure view and CM elements are ready
+		// Target the parent of the CodeMirror editor element within the view's container
+        const editorParentEl = view.containerEl.querySelector('.cm-editor')?.parentElement;
+        if (!editorParentEl) {
+            // console.warn('Could not find editor parent element for sticky header in view:', view.file?.path);
+            return; // Cannot place header if parent isn't found
+        }
 
 		if (!this.stickyHeaderMap.has(view)) {
 			const headerEl = document.createElement('div');
 			headerEl.className = 'obsidian-plus-sticky-header';
 			// Prepend to the scrollDOM so it's the first child and 'sticky' works correctly
-			view.editor.cm.scrollDOM.prepend(headerEl);
+			// view.editor.cm.scrollDOM.prepend(headerEl);
+			editorParentEl.prepend(headerEl);
 			this.stickyHeaderMap.set(view, headerEl);
 			console.log('Sticky header created for view:', view.file?.path);
 		}
@@ -452,81 +459,163 @@ export default class ObsidianPlus extends Plugin {
 	/**
 	 * Updates the visibility and content of the sticky header for the given view.
 	 */
-	private updateStickyHeader(view: MarkdownView): void {
-		const headerEl = this.stickyHeaderMap.get(view);
-		if (!headerEl || !view.editor) {
-			// console.log('No header element or editor found for view');
-			return; // No header element for this view or editor not ready
-		}
+	// private updateStickyHeader(view: MarkdownView): void {
+	// 	const headerEl = this.stickyHeaderMap.get(view);
+	// 	if (!headerEl || !view.editor) {
+	// 		// console.log('No header element or editor found for view');
+	// 		return; // No header element for this view or editor not ready
+	// 	}
 
-		const editor = view.editor;
-		const cm = editor.cm;
-		if (!cm) return; // CodeMirror view not ready
+	// 	const editor = view.editor;
+	// 	const cm = editor.cm;
+	// 	if (!cm) return; // CodeMirror view not ready
 
-		try {
-			const cursor = editor.getCursor();
-			const currentLineNumber = cursor.line;
-			const currentLineText = editor.getLine(currentLineNumber);
-			const currentIndentMatch = currentLineText.match(/^\s*/);
-			const currentIndent = currentIndentMatch ? currentIndentMatch[0].length : 0;
+	// 	try {
+	// 		const cursor = editor.getCursor();
+	// 		const currentLineNumber = cursor.line;
+	// 		const currentLineText = editor.getLine(currentLineNumber);
+	// 		const currentIndentMatch = currentLineText.match(/^\s*/);
+	// 		const currentIndent = currentIndentMatch ? currentIndentMatch[0].length : 0;
 
-			let rootParentLineNumber = -1;
-			let rootParentText = '';
+	// 		let rootParentLineNumber = -1;
+	// 		let rootParentText = '';
 
-			// Only proceed if the cursor is on an indented line
-			if (currentIndent > 0) {
-				let parentLineNum = currentLineNumber - 1;
-				let lastFoundIndent = currentIndent;
+	// 		// Only proceed if the cursor is on an indented line
+	// 		if (currentIndent > 0) {
+	// 			let parentLineNum = currentLineNumber - 1;
+	// 			let lastFoundIndent = currentIndent;
 
-				// Walk upwards to find the root parent (indentation 0)
-				while (parentLineNum >= 0) {
-					const lineText = editor.getLine(parentLineNum);
-					const indentMatch = lineText.match(/^\s*/);
-					const indent = indentMatch ? indentMatch[0].length : 0;
+	// 			// Walk upwards to find the root parent (indentation 0)
+	// 			while (parentLineNum >= 0) {
+	// 				const lineText = editor.getLine(parentLineNum);
+	// 				const indentMatch = lineText.match(/^\s*/);
+	// 				const indent = indentMatch ? indentMatch[0].length : 0;
 
-					if (indent < lastFoundIndent) {
-						// Found a parent at a lower indent level
-						if (indent === 0) {
-							// This is the root parent
-							rootParentLineNumber = parentLineNum;
-							rootParentText = lineText.trim();
-							break; // Found the root, stop searching
-						}
-						lastFoundIndent = indent; // Continue searching for the level 0 parent
-					}
-					parentLineNum--;
-				}
-			}
+	// 				if (indent < lastFoundIndent) {
+	// 					// Found a parent at a lower indent level
+	// 					if (indent === 0) {
+	// 						// This is the root parent
+	// 						rootParentLineNumber = parentLineNum;
+	// 						rootParentText = lineText.trim();
+	// 						break; // Found the root, stop searching
+	// 					}
+	// 					lastFoundIndent = indent; // Continue searching for the level 0 parent
+	// 				}
+	// 				parentLineNum--;
+	// 			}
+	// 		}
 
-			// Now check if the root parent (if found) is scrolled out of view
-			if (rootParentLineNumber !== -1) {
-				const rootLinePos = cm.state.doc.line(rootParentLineNumber + 1).from;
-				const lineBlock = cm.lineBlockAt(rootLinePos);
-				const editorScrollTop = cm.scrollDOM.scrollTop;
-				const lineTop = lineBlock.top; // Position relative to the document start
+	// 		// Now check if the root parent (if found) is scrolled out of view
+	// 		if (rootParentLineNumber !== -1) {
+	// 			const rootLinePos = cm.state.doc.line(rootParentLineNumber + 1).from;
+	// 			const lineBlock = cm.lineBlockAt(rootLinePos);
+	// 			const editorScrollTop = cm.scrollDOM.scrollTop;
+	// 			const lineTop = lineBlock.top; // Position relative to the document start
 
-				// Check if the top of the root line is above the visible area
-				if (lineTop < editorScrollTop) {
-					// Root parent is scrolled off screen, show the header
-					headerEl.textContent = rootParentText;
-					headerEl.classList.add('obsidian-plus-sticky-header--visible');
-					// console.log('Showing sticky header:', rootParentText);
-				} else {
-					// Root parent is visible, hide the header
-					headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-					// console.log('Hiding sticky header, root is visible');
-				}
-			} else {
-				// Cursor is not in a nested list or no root found, hide the header
-				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-				// console.log('Hiding sticky header, not in nested list');
-			}
-		} catch (error) {
-			console.error("Error updating sticky header:", error);
-			// Ensure header is hidden on error
-			headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-		}
-	}
+	// 			// Check if the top of the root line is above the visible area
+	// 			if (lineTop < editorScrollTop) {
+	// 				// Root parent is scrolled off screen, show the header
+	// 				headerEl.textContent = rootParentText;
+	// 				headerEl.classList.add('obsidian-plus-sticky-header--visible');
+	// 				// console.log('Showing sticky header:', rootParentText);
+	// 			} else {
+	// 				// Root parent is visible, hide the header
+	// 				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+	// 				// console.log('Hiding sticky header, root is visible');
+	// 			}
+	// 		} else {
+	// 			// Cursor is not in a nested list or no root found, hide the header
+	// 			headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+	// 			// console.log('Hiding sticky header, not in nested list');
+	// 		}
+	// 	} catch (error) {
+	// 		console.error("Error updating sticky header:", error);
+	// 		// Ensure header is hidden on error
+	// 		headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+	// 	}
+	// }
+	private async updateStickyHeader(view: MarkdownView): Promise<void> { // Added async and Promise<void>
+        const headerEl = this.stickyHeaderMap.get(view);
+        if (!headerEl || !view.editor) {
+            // console.log('No header element or editor found for view');
+            return;
+        }
+
+        const editor = view.editor;
+        const cm = editor.cm;
+        if (!cm) return;
+
+        try {
+            const cursor = editor.getCursor();
+            const currentLineNumber = cursor.line;
+            const currentLineText = editor.getLine(currentLineNumber);
+            const currentIndentMatch = currentLineText.match(/^\s*/);
+            const currentIndent = currentIndentMatch ? currentIndentMatch[0].length : 0;
+
+            let rootParentLineNumber = -1;
+            let rootParentText = '';
+
+            if (currentIndent > 0) {
+                let parentLineNum = currentLineNumber - 1;
+                let lastFoundIndent = currentIndent;
+
+                while (parentLineNum >= 0) {
+                    const lineText = editor.getLine(parentLineNum);
+                    // Ensure we are matching list items, not just indented code blocks etc.
+                    const listItemMatch = lineText.match(/^(\s*)([-*+]|\d+\.)\s+/);
+                    if (!listItemMatch) {
+                        parentLineNum--;
+                        continue; // Skip lines that aren't list items
+                    }
+                    const indent = listItemMatch[1].length;
+
+                    if (indent < lastFoundIndent) {
+                        if (indent === 0) {
+                            rootParentLineNumber = parentLineNum;
+                            // Get the text content *after* the bullet/indent
+                            rootParentText = lineText.trim().substring(listItemMatch[2].length).trimStart();
+                            break;
+                        }
+                        lastFoundIndent = indent;
+                    }
+                    parentLineNum--;
+                }
+            }
+
+            if (rootParentLineNumber !== -1) {
+                const rootLinePos = cm.state.doc.line(rootParentLineNumber + 1).from;
+                // Use viewportLineBlocks for efficiency if available, fallback to lineBlockAt
+                const lineBlock = cm.lineBlockAt(rootLinePos); // Keep fallback
+                const editorScrollTop = cm.scrollDOM.scrollTop;
+                // Use lineBlock.top which is relative to the document, not viewport
+                const lineTop = lineBlock.top;
+
+                if (lineTop < editorScrollTop) {
+                    // Clear previous content before rendering
+                    headerEl.empty();
+                    // Render markdown content
+                    await MarkdownRenderer.render(
+                        this.app, // Use this.app
+                        rootParentText,
+                        headerEl,
+                        view.file?.path || '', // Provide source path context
+                        this // Provide component context
+                    );
+                    headerEl.classList.add('obsidian-plus-sticky-header--visible');
+                } else {
+                    headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+                    headerEl.empty(); // Clear content when hiding
+                }
+            } else {
+                headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+                headerEl.empty(); // Clear content when hiding
+            }
+        } catch (error) {
+            console.error("Error updating sticky header:", error);
+            headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+            headerEl.empty(); // Clear content on error
+        }
+    }
 
 	// --- End Additions for Sticky Header ---
 

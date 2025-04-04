@@ -64,7 +64,10 @@ Obsidian Plus Theme
   top: 0;
   z-index: 10; /* Ensure it's above editor content */
   background-color: var(--background-secondary); /* Use theme background */
-  padding: 5px 10px;
+  /* padding: 0 10px; */
+  padding: var(--file-margins);
+  padding-top: 0;
+  padding-bottom: 0;
   border-bottom: 1px solid var(--background-modifier-border);
   font-size: 0.9em;
   display: none; /* Initially hidden */
@@ -72,6 +75,8 @@ Obsidian Plus Theme
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.4; /* Match editor line height */
+  width: 100%;
+  box-sizing: border-box;
 }
 
 .obsidian-plus-sticky-header--visible {
