@@ -573,6 +573,7 @@ export default class ObsidianPlus extends Plugin {
 			if (headerEl) { // Check if headerEl exists before manipulating
 				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
 				headerEl.empty();
++				delete headerEl.dataset.renderedContent;
 			}
 		}
 	}
