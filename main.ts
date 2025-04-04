@@ -358,53 +358,31 @@ export default class ObsidianPlus extends Plugin {
 		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 
 		// --- Additions for Sticky Header ---
-		this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf: WorkspaceLeaf) => {
-			if (leaf?.view instanceof MarkdownView) {
-				this.setupStickyHeaderForView(leaf.view);
-				this.updateStickyHeader(leaf.view); // Update immediately on leaf change
+		this.registerEvent(this.app.workspace.on('active-leaf-change', async (leaf: WorkspaceLeaf | null) => { // Keep async
+			const activeView = leaf?.view;
+
+			// Setup and update header for the newly active markdown view
+			// This ensures the header element exists if the view was just created/opened
+			// and triggers an immediate update based on its current scroll state.
+			if (activeView instanceof MarkdownView) {
+				this.setupStickyHeaderForView(activeView); // Ensure header element exists
+				await this.updateStickyHeader(activeView); // Update its state immediately
 			}
-			// Optional: Clean up header from previous leaf if needed, though WeakMap helps
+			// NOTE: We no longer hide headers on inactive views here.
+			// The scroll handler will manage visibility for each view independently.
 		}));
 
-		// Setup for the initially active leaf
-		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (activeView) {
-			this.setupStickyHeaderForView(activeView);
-			this.updateStickyHeader(activeView); // Update initially
-		}
-
-        // Register a CodeMirror ViewPlugin to listen for scroll events efficiently
-        this.registerEditorExtension(ViewPlugin.fromClass(class {
-            plugin: ObsidianPlus;
-            view: EditorView;
-
-            constructor(view: EditorView) {
-                this.view = view;
-                // Find the ObsidianPlus instance - this is a bit hacky, relies on app object
-                this.plugin = app.plugins.plugins['obsidian-plus']; // Adjust 'obsidian-plus' if your plugin ID is different
-                this.view.scrollDOM.addEventListener('scroll', this.handleScroll);
-            }
-
-            update(update: ViewUpdate) {
-                // We handle cursor changes via the 'editor-change' event already
-            }
-
-            destroy() {
-                this.view.scrollDOM.removeEventListener('scroll', this.handleScroll);
-            }
-
-            handleScroll = () => {
-                // Use requestAnimationFrame to avoid performance issues on rapid scrolling
-                requestAnimationFrame(() => {
-                    const mdView = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
-                    // Ensure the scrolled view is the active markdown view
-                    if (mdView && mdView.editor.cm === this.view) {
-                         this.plugin.updateStickyHeader(mdView);
-                    }
-                });
-            }
-        }));
-		// --- End Additions for Sticky Header ---
+		// Setup for initially visible leaves (covers startup and workspace load)
+		this.app.workspace.iterateAllLeaves(leaf => {
+			if (leaf.view instanceof MarkdownView) {
+				this.setupStickyHeaderForView(leaf.view);
+				// Use setTimeout to slightly delay the initial update.
+				// This helps ensure CodeMirror and the view are fully initialized,
+				// preventing potential errors if updateStickyHeader runs too early.
+				setTimeout(() => this.updateStickyHeader(leaf.view), 150); // Increased delay slightly
+			}
+		});
+        // --- End Additions for Sticky Header ---
 
 		// Register the CodeMirror extension
 		this.flaggedLines = [];
@@ -457,165 +435,120 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	/**
-	 * Updates the visibility and content of the sticky header for the given view.
+	 * Updates the visibility and content of the sticky header based on scroll position.
 	 */
-	// private updateStickyHeader(view: MarkdownView): void {
-	// 	const headerEl = this.stickyHeaderMap.get(view);
-	// 	if (!headerEl || !view.editor) {
-	// 		// console.log('No header element or editor found for view');
-	// 		return; // No header element for this view or editor not ready
-	// 	}
+	private async updateStickyHeader(view: MarkdownView): Promise<void> {
+		const headerEl = this.stickyHeaderMap.get(view);
+		// Ensure view, editor, header element, and CodeMirror instance are valid
+		if (!view || !view.editor || !headerEl || !view.editor.cm) {
+			// console.log('Skipping header update: Invalid view, editor, header, or CM instance.');
+			return;
+		}
 
-	// 	const editor = view.editor;
-	// 	const cm = editor.cm;
-	// 	if (!cm) return; // CodeMirror view not ready
+		const editor = view.editor;
+		const cm = editor.cm;
+		// Ensure CodeMirror DOM is ready and has height (prevents errors during initialization/closing)
+		if (!cm.dom.clientHeight || !cm.scrollDOM) {
+			// console.log('Skipping header update: CM DOM not ready or no height.');
+			return;
+		}
 
-	// 	try {
-	// 		const cursor = editor.getCursor();
-	// 		const currentLineNumber = cursor.line;
-	// 		const currentLineText = editor.getLine(currentLineNumber);
-	// 		const currentIndentMatch = currentLineText.match(/^\s*/);
-	// 		const currentIndent = currentIndentMatch ? currentIndentMatch[0].length : 0;
+		try {
+			// Get the vertical position at the top of the viewport
+			const scrollTop = cm.scrollDOM.scrollTop;
+			// Get the line block at that vertical position
+			const topLineBlock = cm.lineBlockAtHeight(scrollTop);
+			// Get the 0-based line number from the block's start position
+			const topLineNumber = cm.state.doc.lineAt(topLineBlock.from).number - 1; // CM lines are 1-based, convert to 0-based
 
-	// 		let rootParentLineNumber = -1;
-	// 		let rootParentText = '';
+			if (topLineNumber < 0) { // Safeguard against invalid line numbers
+				// console.log('Hiding header: Top line number is negative.');
+				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+            	headerEl.empty();
+				return;
+			}
 
-	// 		// Only proceed if the cursor is on an indented line
-	// 		if (currentIndent > 0) {
-	// 			let parentLineNum = currentLineNumber - 1;
-	// 			let lastFoundIndent = currentIndent;
+			const topLineText = editor.getLine(topLineNumber);
+			const topIndentMatch = topLineText.match(/^(\s*)/);
+			const topIndent = topIndentMatch ? topIndentMatch[0].length : 0;
 
-	// 			// Walk upwards to find the root parent (indentation 0)
-	// 			while (parentLineNum >= 0) {
-	// 				const lineText = editor.getLine(parentLineNum);
-	// 				const indentMatch = lineText.match(/^\s*/);
-	// 				const indent = indentMatch ? indentMatch[0].length : 0;
+			let rootParentLineNumber = -1;
+			let rootParentText = '';
 
-	// 				if (indent < lastFoundIndent) {
-	// 					// Found a parent at a lower indent level
-	// 					if (indent === 0) {
-	// 						// This is the root parent
-	// 						rootParentLineNumber = parentLineNum;
-	// 						rootParentText = lineText.trim();
-	// 						break; // Found the root, stop searching
-	// 					}
-	// 					lastFoundIndent = indent; // Continue searching for the level 0 parent
-	// 				}
-	// 				parentLineNum--;
-	// 			}
-	// 		}
+			// If the topmost visible line is indented, find its root parent (indent 0)
+			if (topIndent > 0) {
+				let parentLineNum = topLineNumber - 1; // Start searching from the line above
+				let lastFoundIndent = topIndent;
 
-	// 		// Now check if the root parent (if found) is scrolled out of view
-	// 		if (rootParentLineNumber !== -1) {
-	// 			const rootLinePos = cm.state.doc.line(rootParentLineNumber + 1).from;
-	// 			const lineBlock = cm.lineBlockAt(rootLinePos);
-	// 			const editorScrollTop = cm.scrollDOM.scrollTop;
-	// 			const lineTop = lineBlock.top; // Position relative to the document start
+				while (parentLineNum >= 0) {
+					const lineText = editor.getLine(parentLineNum);
+					// Check if the line is a list item (starts with spaces then -, *, +, or digit.)
+					const listItemMatch = lineText.match(/^(\s*)([-*+]|\d+\.)\s+/);
 
-	// 			// Check if the top of the root line is above the visible area
-	// 			if (lineTop < editorScrollTop) {
-	// 				// Root parent is scrolled off screen, show the header
-	// 				headerEl.textContent = rootParentText;
-	// 				headerEl.classList.add('obsidian-plus-sticky-header--visible');
-	// 				// console.log('Showing sticky header:', rootParentText);
-	// 			} else {
-	// 				// Root parent is visible, hide the header
-	// 				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-	// 				// console.log('Hiding sticky header, root is visible');
-	// 			}
-	// 		} else {
-	// 			// Cursor is not in a nested list or no root found, hide the header
-	// 			headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-	// 			// console.log('Hiding sticky header, not in nested list');
-	// 		}
-	// 	} catch (error) {
-	// 		console.error("Error updating sticky header:", error);
-	// 		// Ensure header is hidden on error
-	// 		headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-	// 	}
-	// }
-	private async updateStickyHeader(view: MarkdownView): Promise<void> { // Added async and Promise<void>
-        const headerEl = this.stickyHeaderMap.get(view);
-        if (!headerEl || !view.editor) {
-            // console.log('No header element or editor found for view');
-            return;
-        }
+					if (listItemMatch) {
+						const indent = listItemMatch[1].length;
+						// Found a potential parent with less indentation
+						if (indent < lastFoundIndent) {
+							if (indent === 0) {
+								// Found the root parent (indent 0)
+								rootParentLineNumber = parentLineNum;
+								// Extract text after the bullet marker and leading space
+								rootParentText = lineText.substring(listItemMatch[0].length).trim();
+								// console.log(`Found root parent at line ${parentLineNum}: ${rootParentText}`);
+								break; // Root found, stop searching
+							}
+							lastFoundIndent = indent; // Continue searching upwards for indent 0
+						} else if (indent === 0) {
+							// Found a root-level item *above* the current hierarchy start, but not a direct parent
+							// console.log(`Stopped search at root-level item line ${parentLineNum}`);
+							break; // Stop searching upwards
+						}
+					} else {
+						// If it's not a list item, check its indentation
+						const nonListIndentMatch = lineText.match(/^\s*/);
+						const nonListIndent = nonListIndentMatch ? nonListIndentMatch[0].length : 0;
+						if (nonListIndent === 0) {
+							// Hit a non-indented line (like a paragraph) that breaks the list context
+							// console.log(`Stopped search at non-indented, non-list item line ${parentLineNum}`);
+							break; // Stop searching upwards
+						}
+						// Otherwise, it might be an indented code block or something else; continue searching past it
+					}
+					parentLineNum--;
+				}
+			}
+			// else: Topmost line is already root level (indent 0), so header should be hidden.
 
-        const editor = view.editor;
-        const cm = editor.cm;
-        if (!cm) return;
-
-        try {
-            const cursor = editor.getCursor();
-            const currentLineNumber = cursor.line;
-            const currentLineText = editor.getLine(currentLineNumber);
-            const currentIndentMatch = currentLineText.match(/^\s*/);
-            const currentIndent = currentIndentMatch ? currentIndentMatch[0].length : 0;
-
-            let rootParentLineNumber = -1;
-            let rootParentText = '';
-
-            if (currentIndent > 0) {
-                let parentLineNum = currentLineNumber - 1;
-                let lastFoundIndent = currentIndent;
-
-                while (parentLineNum >= 0) {
-                    const lineText = editor.getLine(parentLineNum);
-                    // Ensure we are matching list items, not just indented code blocks etc.
-                    const listItemMatch = lineText.match(/^(\s*)([-*+]|\d+\.)\s+/);
-                    if (!listItemMatch) {
-                        parentLineNum--;
-                        continue; // Skip lines that aren't list items
-                    }
-                    const indent = listItemMatch[1].length;
-
-                    if (indent < lastFoundIndent) {
-                        if (indent === 0) {
-                            rootParentLineNumber = parentLineNum;
-                            // Get the text content *after* the bullet/indent
-                            rootParentText = lineText.trim().substring(listItemMatch[2].length).trimStart();
-                            break;
-                        }
-                        lastFoundIndent = indent;
-                    }
-                    parentLineNum--;
-                }
-            }
-
-            if (rootParentLineNumber !== -1) {
-                const rootLinePos = cm.state.doc.line(rootParentLineNumber + 1).from;
-                // Use viewportLineBlocks for efficiency if available, fallback to lineBlockAt
-                const lineBlock = cm.lineBlockAt(rootLinePos); // Keep fallback
-                const editorScrollTop = cm.scrollDOM.scrollTop;
-                // Use lineBlock.top which is relative to the document, not viewport
-                const lineTop = lineBlock.top;
-
-                if (lineTop < editorScrollTop) {
-                    // Clear previous content before rendering
-                    headerEl.empty();
-                    // Render markdown content
-                    await MarkdownRenderer.render(
-                        this.app, // Use this.app
-                        rootParentText,
-                        headerEl,
-                        view.file?.path || '', // Provide source path context
-                        this // Provide component context
-                    );
-                    headerEl.classList.add('obsidian-plus-sticky-header--visible');
-                } else {
-                    headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-                    headerEl.empty(); // Clear content when hiding
-                }
-            } else {
-                headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-                headerEl.empty(); // Clear content when hiding
-            }
-        } catch (error) {
-            console.error("Error updating sticky header:", error);
-            headerEl.classList.remove('obsidian-plus-sticky-header--visible');
-            headerEl.empty(); // Clear content on error
-        }
-    }
+			// Show header *only* if we found a root parent for an indented top line
+			if (rootParentLineNumber !== -1) {
+				// console.log(`Rendering header for view ${view.file?.path}: ${rootParentText}`);
+				headerEl.empty(); // Clear previous content
+				await MarkdownRenderer.render(
+					this.app,
+					rootParentText, // Render the text *after* the bullet
+					headerEl,
+					view.file?.path || '', // Source path context
+					this // Component context
+				);
+				headerEl.classList.add('obsidian-plus-sticky-header--visible');
+			} else {
+				// Hide header if top line is root or no suitable parent was found
+				if (headerEl.classList.contains('obsidian-plus-sticky-header--visible')) {
+					// console.log(`Hiding header for view ${view.file?.path}`);
+					headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+					headerEl.empty(); // Clear content when hiding
+				}
+			}
+		} catch (error) {
+			// Avoid crashing the plugin if an error occurs during update
+			console.error("Error updating sticky header:", error);
+			// Ensure header is hidden on error
+			if (headerEl) { // Check if headerEl exists before manipulating
+				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+				headerEl.empty();
+			}
+		}
+	}
 
 	// --- End Additions for Sticky Header ---
 
