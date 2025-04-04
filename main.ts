@@ -269,9 +269,7 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEvent(
             this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
                 if (info instanceof MarkdownView) {
-                    this.handleBulletPreference(editor);
-                    // Also trigger sticky header update on cursor activity
-                    this.updateStickyHeader(info);
+                    this.handleBulletPreference(editor); // Keep this line
                 }
             })
         );
@@ -416,6 +414,7 @@ export default class ObsidianPlus extends Plugin {
 	 */
 	private setupStickyHeaderForView(view: MarkdownView): void {
 		// if (!view?.editor?.cm?.scrollDOM) return; // Ensure view and CM elements are ready
+		if (!view.editor?.cm) return; // Need CodeMirror instance
 		// Target the parent of the CodeMirror editor element within the view's container
         const editorParentEl = view.containerEl.querySelector('.cm-editor')?.parentElement;
         if (!editorParentEl) {
@@ -423,6 +422,7 @@ export default class ObsidianPlus extends Plugin {
             return; // Cannot place header if parent isn't found
         }
 
+		let headerEl: HTMLElement;
 		if (!this.stickyHeaderMap.has(view)) {
 			const headerEl = document.createElement('div');
 			headerEl.className = 'obsidian-plus-sticky-header';
@@ -431,7 +431,25 @@ export default class ObsidianPlus extends Plugin {
 			editorParentEl.prepend(headerEl);
 			this.stickyHeaderMap.set(view, headerEl);
 			console.log('Sticky header created for view:', view.file?.path);
+
+			// --- Add Scroll Listener ---
+			const scrollDOM = view.editor.cm.scrollDOM;
+			if (scrollDOM) {
+				let scrollTimeout: number | null = null;
+				this.registerDomEvent(scrollDOM, 'scroll', (evt) => {
+					if (scrollTimeout === null) {
+						// Use requestAnimationFrame for debouncing/throttling
+						scrollTimeout = window.requestAnimationFrame(() => {
+							this.updateStickyHeader(view);
+							scrollTimeout = null; // Reset timeout after execution
+						});
+					}
+				});
+			} else {
+				console.warn('Could not find scrollDOM for view:', view.file?.path);
+			}
 		}
+		// --- End Scroll Listener ---
 	}
 
 	/**
@@ -520,23 +538,32 @@ export default class ObsidianPlus extends Plugin {
 			// else: Topmost line is already root level (indent 0), so header should be hidden.
 
 			// Show header *only* if we found a root parent for an indented top line
-			if (rootParentLineNumber !== -1) {
+			// AND that root parent is scrolled out of view (above the current top line)
+			if (rootParentLineNumber !== -1 && rootParentLineNumber < topLineNumber) {
 				// console.log(`Rendering header for view ${view.file?.path}: ${rootParentText}`);
-				headerEl.empty(); // Clear previous content
-				await MarkdownRenderer.render(
-					this.app,
-					rootParentText, // Render the text *after* the bullet
-					headerEl,
-					view.file?.path || '', // Source path context
-					this // Component context
-				);
-				headerEl.classList.add('obsidian-plus-sticky-header--visible');
+				// Avoid re-rendering if content is the same (optional optimization)
+				if (headerEl.dataset.renderedContent !== rootParentText) {
+					headerEl.empty(); // Clear previous content
+					await MarkdownRenderer.render(
+						this.app,
+						rootParentText, // Render the text *after* the bullet
+						headerEl,
+						view.file?.path || '', // Source path context
+						this // Component context
+					);
+					headerEl.dataset.renderedContent = rootParentText; // Store rendered content
+				}
+				if (!headerEl.classList.contains('obsidian-plus-sticky-header--visible')) {
+					headerEl.classList.add('obsidian-plus-sticky-header--visible');
+				}
 			} else {
 				// Hide header if top line is root or no suitable parent was found
+				// or if the root parent is still visible
 				if (headerEl.classList.contains('obsidian-plus-sticky-header--visible')) {
 					// console.log(`Hiding header for view ${view.file?.path}`);
 					headerEl.classList.remove('obsidian-plus-sticky-header--visible');
 					headerEl.empty(); // Clear content when hiding
+					delete headerEl.dataset.renderedContent; // Clear stored content
 				}
 			}
 		} catch (error) {
