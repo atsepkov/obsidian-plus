@@ -58,6 +58,26 @@ Obsidian Plus Theme
     margin-bottom: -5px;
     width: 90%;
 }
+/* --- Additions for Sticky Parent Header --- */
+.obsidian-plus-sticky-header {
+  position: sticky; /* Stick to the top of the scroll container */
+  top: 0;
+  z-index: 10; /* Ensure it's above editor content */
+  background-color: var(--background-secondary); /* Use theme background */
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--background-modifier-border);
+  font-size: 0.9em;
+  display: none; /* Initially hidden */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.4; /* Match editor line height */
+}
+
+.obsidian-plus-sticky-header--visible {
+  display: block; /* Make it visible when needed */
+}
+/* --- End Additions --- */
 
 .op-expandable-item:hover {
     text-decoration: underline;

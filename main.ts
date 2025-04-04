@@ -1,9 +1,9 @@
 import path from 'path';
 import {
 	App, Editor, MarkdownView, MarkdownPostProcessorContext,
-	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile,
+	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf
 } from 'obsidian';
-import { EditorView, Decoration } from "@codemirror/view";
+import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import {
 	configure,
 	normalizeConfigVal,
@@ -102,6 +102,7 @@ function compareTaskLines(
 
 export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
+	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 
 	public getSummary = getSummary;
 
@@ -357,6 +358,55 @@ export default class ObsidianPlus extends Plugin {
 		// When registering intervals, this function will automatically clear the interval when the plugin is disabled.
 		// this.registerInterval(window.setInterval(() => console.log('setInterval'), 5 * 60 * 1000));
 
+		// --- Additions for Sticky Header ---
+		this.registerEvent(this.app.workspace.on('active-leaf-change', (leaf: WorkspaceLeaf) => {
+			if (leaf?.view instanceof MarkdownView) {
+				this.setupStickyHeaderForView(leaf.view);
+				this.updateStickyHeader(leaf.view); // Update immediately on leaf change
+			}
+			// Optional: Clean up header from previous leaf if needed, though WeakMap helps
+		}));
+
+		// Setup for the initially active leaf
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (activeView) {
+			this.setupStickyHeaderForView(activeView);
+			this.updateStickyHeader(activeView); // Update initially
+		}
+
+        // Register a CodeMirror ViewPlugin to listen for scroll events efficiently
+        this.registerEditorExtension(ViewPlugin.fromClass(class {
+            plugin: ObsidianPlus;
+            view: EditorView;
+
+            constructor(view: EditorView) {
+                this.view = view;
+                // Find the ObsidianPlus instance - this is a bit hacky, relies on app object
+                this.plugin = app.plugins.plugins['obsidian-plus']; // Adjust 'obsidian-plus' if your plugin ID is different
+                this.view.scrollDOM.addEventListener('scroll', this.handleScroll);
+            }
+
+            update(update: ViewUpdate) {
+                // We handle cursor changes via the 'editor-change' event already
+            }
+
+            destroy() {
+                this.view.scrollDOM.removeEventListener('scroll', this.handleScroll);
+            }
+
+            handleScroll = () => {
+                // Use requestAnimationFrame to avoid performance issues on rapid scrolling
+                requestAnimationFrame(() => {
+                    const mdView = this.plugin.app.workspace.getActiveViewOfType(MarkdownView);
+                    // Ensure the scrolled view is the active markdown view
+                    if (mdView && mdView.editor.cm === this.view) {
+                         this.plugin.updateStickyHeader(mdView);
+                    }
+                });
+            }
+        }));
+		// --- End Additions for Sticky Header ---
+
 		// Register the CodeMirror extension
 		this.flaggedLines = [];
 		const extension = this.highlightFlaggedLinesExtension(() => this.flaggedLines);
@@ -381,6 +431,105 @@ export default class ObsidianPlus extends Plugin {
 			taskCache.set(currentFile.path, oldTasks);
 		}
 	}
+
+	// --- Additions for Sticky Header ---
+
+	/**
+	 * Creates and appends the sticky header element if it doesn't exist for the view.
+	 */
+	private setupStickyHeaderForView(view: MarkdownView): void {
+		if (!view?.editor?.cm?.scrollDOM) return; // Ensure view and CM elements are ready
+
+		if (!this.stickyHeaderMap.has(view)) {
+			const headerEl = document.createElement('div');
+			headerEl.className = 'obsidian-plus-sticky-header';
+			// Prepend to the scrollDOM so it's the first child and 'sticky' works correctly
+			view.editor.cm.scrollDOM.prepend(headerEl);
+			this.stickyHeaderMap.set(view, headerEl);
+			console.log('Sticky header created for view:', view.file?.path);
+		}
+	}
+
+	/**
+	 * Updates the visibility and content of the sticky header for the given view.
+	 */
+	private updateStickyHeader(view: MarkdownView): void {
+		const headerEl = this.stickyHeaderMap.get(view);
+		if (!headerEl || !view.editor) {
+			// console.log('No header element or editor found for view');
+			return; // No header element for this view or editor not ready
+		}
+
+		const editor = view.editor;
+		const cm = editor.cm;
+		if (!cm) return; // CodeMirror view not ready
+
+		try {
+			const cursor = editor.getCursor();
+			const currentLineNumber = cursor.line;
+			const currentLineText = editor.getLine(currentLineNumber);
+			const currentIndentMatch = currentLineText.match(/^\s*/);
+			const currentIndent = currentIndentMatch ? currentIndentMatch[0].length : 0;
+
+			let rootParentLineNumber = -1;
+			let rootParentText = '';
+
+			// Only proceed if the cursor is on an indented line
+			if (currentIndent > 0) {
+				let parentLineNum = currentLineNumber - 1;
+				let lastFoundIndent = currentIndent;
+
+				// Walk upwards to find the root parent (indentation 0)
+				while (parentLineNum >= 0) {
+					const lineText = editor.getLine(parentLineNum);
+					const indentMatch = lineText.match(/^\s*/);
+					const indent = indentMatch ? indentMatch[0].length : 0;
+
+					if (indent < lastFoundIndent) {
+						// Found a parent at a lower indent level
+						if (indent === 0) {
+							// This is the root parent
+							rootParentLineNumber = parentLineNum;
+							rootParentText = lineText.trim();
+							break; // Found the root, stop searching
+						}
+						lastFoundIndent = indent; // Continue searching for the level 0 parent
+					}
+					parentLineNum--;
+				}
+			}
+
+			// Now check if the root parent (if found) is scrolled out of view
+			if (rootParentLineNumber !== -1) {
+				const rootLinePos = cm.state.doc.line(rootParentLineNumber + 1).from;
+				const lineBlock = cm.lineBlockAt(rootLinePos);
+				const editorScrollTop = cm.scrollDOM.scrollTop;
+				const lineTop = lineBlock.top; // Position relative to the document start
+
+				// Check if the top of the root line is above the visible area
+				if (lineTop < editorScrollTop) {
+					// Root parent is scrolled off screen, show the header
+					headerEl.textContent = rootParentText;
+					headerEl.classList.add('obsidian-plus-sticky-header--visible');
+					// console.log('Showing sticky header:', rootParentText);
+				} else {
+					// Root parent is visible, hide the header
+					headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+					// console.log('Hiding sticky header, root is visible');
+				}
+			} else {
+				// Cursor is not in a nested list or no root found, hide the header
+				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+				// console.log('Hiding sticky header, not in nested list');
+			}
+		} catch (error) {
+			console.error("Error updating sticky header:", error);
+			// Ensure header is hidden on error
+			headerEl.classList.remove('obsidian-plus-sticky-header--visible');
+		}
+	}
+
+	// --- End Additions for Sticky Header ---
 
 	private buildTagConnector(tag: string, config: ConnectorConfig) {
 		let connectorName = config.connector;
@@ -706,6 +855,17 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	onunload() {
+		console.log('Unloading Obsidian Plus');
+		// Optional: Explicitly remove header from the last active view
+		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (activeView) {
+			const headerEl = this.stickyHeaderMap.get(activeView);
+			headerEl?.remove();
+			this.stickyHeaderMap.delete(activeView);
+		}
+		// Other cleanup (like removing global listeners if any were added manually)
+		// Note: Listeners added with this.registerEvent and this.registerDomEvent are cleaned up automatically.
+		// The ViewPlugin's destroy method will handle its scroll listener removal.
 	}
 
 	async loadSettings() {
