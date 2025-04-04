@@ -441,7 +441,7 @@ export default class ObsidianPlus extends Plugin {
 		const headerEl = this.stickyHeaderMap.get(view);
 		// Ensure view, editor, header element, and CodeMirror instance are valid
 		if (!view || !view.editor || !headerEl || !view.editor.cm) {
-			// console.log('Skipping header update: Invalid view, editor, header, or CM instance.');
+			console.log('Skipping header update: Invalid view, editor, header, or CM instance.');
 			return;
 		}
 
