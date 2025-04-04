@@ -388,7 +388,7 @@ export default class ObsidianPlus extends Plugin {
 		this.flaggedLines = [];
 		const extension = this.highlightFlaggedLinesExtension(() => this.flaggedLines);
 		this.registerEditorExtension(extension);
-	
+
 		// re-check flagged lines whenever a file is opened:
 		this.registerEvent(
 			this.app.workspace.on("file-open", async (file) => {
