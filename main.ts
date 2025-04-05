@@ -808,16 +808,48 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	async loadSettings() {
+		// this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+		// this.updateTagStyles();
+		// this.updateFlaggedLines(this.app.workspace.getActiveFile());
+		// console.log('Settings loaded')
+
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+		// Explicitly reset runtime state managed by ConfigLoader
+		// This prevents loading potentially invalid data from data.json
+		this.settings.webTags = {};
+		this.settings.aiConnector = null;
+		this.settings.taskTags = []; // Always derived from the config file
+ 
+		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
 		this.updateFlaggedLines(this.app.workspace.getActiveFile());
-		console.log('Settings loaded')
+		console.log('Settings loaded'); 
 	}
 
 	async saveSettings() {
-		await this.saveData(this.settings);
-		const loaded = await this.loadData()
-		console.log('Settings saved', this.settings, loaded)
+		// await this.saveData(this.settings);
+		// const loaded = await this.loadData()
+		// console.log('Settings saved', this.settings, loaded)
+
+		// Create a copy of settings to avoid modifying the live object directly
+		const settingsToSave = { ...this.settings };
+
+		// Remove properties that should NOT be saved
+		delete settingsToSave.webTags;
+		delete settingsToSave.aiConnector;
+		// taskTags are derived by ConfigLoader, no need to save them
+		delete settingsToSave.taskTags;
+
+		// Save only the serializable parts
+		await this.saveData(settingsToSave);
+
+		// Log the object that was actually saved
+		console.log('Settings saved:', settingsToSave);
+		// Optional: Log what's currently loaded to compare
+		// const loaded = await this.loadData();
+		// console.log('Current data.json:', loaded);
+		
 	}
 
 	generateTagCSS(): string {
