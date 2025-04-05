@@ -1,4 +1,4 @@
-import { App, PluginSettingTab, Setting, TextComponent, ColorComponent, ButtonComponent } from 'obsidian';
+import { App, PluginSettingTab, Setting, TextComponent, ColorComponent, ButtonComponent, Notice } from 'obsidian';
 
 export class SettingTab extends PluginSettingTab {
   plugin: MyPlugin;
@@ -98,7 +98,11 @@ export class SettingTab extends PluginSettingTab {
           .onChange(async (value) => {
             this.plugin.settings.tagListFilePath = value;
             await this.plugin.saveSettings();
-            await this.plugin.loadTaskTagsFromFile();
+            if (this.plugin.configLoader) {
+              await this.plugin.configLoader.loadTaskTagsFromFile();
+            } else {
+              console.error("ConfigLoader not initialized");
+            }
           });
       });
     

@@ -18,6 +18,8 @@ import {
 	clearTaskCache
 } from './utilities';
 import { SettingTab } from './settings';
+import { ConfigLoader } from './configLoader';
+// TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 
@@ -27,8 +29,6 @@ const dimLineDecoration = Decoration.line({
 
 // this effect will fire whenever user updates the plugin config
 export const setConfigEffect = StateEffect.define<MyConfigType>();
-
-// Remember to rename these classes and interfaces!
 
 interface ObsidianPlusSettings {
 	mySetting: string;
@@ -52,15 +52,7 @@ interface TaskLineInfo {
 // Key by file path to an array of (lineNumber, text)
 let taskCache: Map<string, TaskLineInfo[]> = new Map();
 
-const connectorMap = {
-	'ai': require('./connectors/aiConnector').default,
-	'basic': require('./connectors/tagConnector').default,
-	'dummy': require('./connectors/dummyConnector').default,
-	'http': require('./connectors/httpConnector').default,
-	'webhook': require('./connectors/webhookConnector').default,
-	// 'web': require('./connectors/webConnector').default,
-}
-  
+// TODO: remove if no longer in use after refactor
 // Compare old vs new tasks by line number
 function compareTaskLines(
 	oldTasks: TaskLineInfo[],
@@ -111,13 +103,16 @@ function updateStickyHeaderText(rootText: string, parentText: string, parentInde
 export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
-
+	public configLoader: ConfigLoader;
 	public getSummary = getSummary;
 
 	async onload() {
 		await this.loadSettings();
 		configure(this.app)
 		app = this.app;
+
+		// Instantiate ConfigLoader
+		this.configLoader = new ConfigLoader(this.app, this);
 
 		// This creates an icon in the left ribbon.
 		// const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus', (evt: MouseEvent) => {
@@ -172,15 +167,15 @@ export default class ObsidianPlus extends Plugin {
 		this.addSettingTab(new SettingTab(this.app, this));
 
 		// Attempt to load tags from the user-specified file
-		await this.loadTaskTagsFromFile();
+		await this.configLoader.loadTaskTagsFromFile();
 		console.log("Loaded tags:", this.settings.taskTags);
 		
 		// Listen for changes to tags config file and checked off tasks in current file
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
 				// Listen for changes to tags config file in the vault
-				if (file instanceof TFile && file.path === this.settings.tagListFilePath) {
-					await this.loadTaskTagsFromFile();
+				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
+					await this.configLoader.loadTaskTagsFromFile();
 				}
 
 				// Listen for changes to tasks in the current file (if task was marked completed)
@@ -480,17 +475,14 @@ export default class ObsidianPlus extends Plugin {
 		}
 
 		try {
+			const contentRect = cm.contentDOM.getBoundingClientRect();
 			// Get the vertical position at the top of the viewport
 			const scrollTop = cm.scrollDOM.scrollTop;
 			// Get the line block at that vertical position
-			const topLineBlock = cm.lineBlockAtHeight(scrollTop);
+			const topLineBlock = cm.lineBlockAtHeight(scrollTop - 60); // FIXME: 30 is a magic number, there is an offset we're not accounting for
 			// Get the 0-based line number from the block's start position
 			const topLineNumber = cm.state.doc.lineAt(topLineBlock.from).number - 1; // CM lines are 1-based, convert to 0-based
-
-			const contentTop = cm.contentDOM.getBoundingClientRect().top - cm.scrollDOM.getBoundingClientRect().top;
-			const topLineBlock1 = cm.lineBlockAtHeight(scrollTop + contentTop);
-			const topLineNumber1 = cm.state.doc.lineAt(topLineBlock1.from).number - 1;
-			console.log('topLineNumber:', topLineNumber, 'topLineNumber1:', topLineNumber1);
+			// console.log('[DEBUG] Top line number:', topLineNumber, y, scrollTop, contentRect);
 
 			if (topLineNumber < 0) { // Safeguard against invalid line numbers
 				// console.log('Hiding header: Top line number is negative.');
@@ -604,23 +596,6 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	// --- End Additions for Sticky Header ---
-
-	private buildTagConnector(tag: string, config: ConnectorConfig) {
-		let connectorName = config.connector;
-		if (!connectorName && config.webhookUrl) {
-			connectorName = 'webhook';
-		}
-		if (!connectorName) {
-			connectorName = 'basic';
-		}
-		const TagConnector = connectorMap[connectorName];
-		const connector = new TagConnector(tag, this, config);
-		if (connectorName === 'ai') {
-			this.settings.aiConnector = connector;
-		}
-		this.settings.webTags[tag] = connector;
-		console.log(`Built ${connectorName} connector for`, tag, config);
-	}
 
 	// Called to mark/color-code lines based on type/error for user's attention
 	private buildDecorationSet(state: EditorState): DecorationSet {
@@ -737,116 +712,6 @@ export default class ObsidianPlus extends Plugin {
 			// Let CodeMirror know these are decorations
 			provide: (field) => EditorView.decorations.from(field),
 		});
-	}
-
-	// load list of tags from file that must be tasks
-	private async loadTaskTagsFromFile() {
-		const path = this.settings.tagListFilePath;
-		if (!path) {
-			this.settings.taskTags = [];
-			this.settings.webTags = {};
-			console.log("No tag list file specified, reset tags to empty");
-			this.updateFlaggedLines(this.app.workspace.getActiveFile());
-			return;
-		}
-	  
-		try {
-			const file = this.app.vault.getAbstractFileByPath(path);
-			if (file && file instanceof TFile) {
-				// const fileContents = await this.app.vault.read(file);
-				
-				// Extract tags from the file
-				// For example, if you store them like:
-				//   - #todo
-				//   - #fixme
-				// you can use a regex or line-based parse to find them
-		
-				// const foundTags = Array.from(fileContents.matchAll(/(^|\s)(#[\w/-]+)/g))
-				// .map(match => match[2]);  // capture group #2 is the actual #tag
-
-				const dataview = this.app.plugins.getPlugin("dataview");
-				if (!dataview) {
-					throw new Error("Dataview plugin not found");
-				}
-				const basicTags = getSummary(dataview.api, '#', {
-					currentFile: file.path,
-					header: '### Basic Task Tags',
-					onlyPrefixTags: true,
-					onlyReturn: true,
-				})
-				const autoTags = getSummary(dataview.api, '#', {
-					currentFile: file.path,
-					header: '### Automated Task Tags',
-					onlyPrefixTags: true,
-					onlyReturn: true,
-				})
-				const recurringTags = getSummary(dataview.api, '#', {
-					currentFile: file.path,
-					header: '### Recurring Task Tags',
-					onlyPrefixTags: true,
-					onlyReturn: true,
-				})
-				const foundTags = [];
-				for (const line of basicTags) {
-					foundTags.push(line.tags[0]);
-				}
-				console.log({basicTags, autoTags, recurringTags, foundTags});
-				const parseChildren = (prop) => {
-					let config = {};
-					if (prop.children.length) {
-						for (const child of prop.children) {
-							// there may be additional colons in the value, so split only once
-							const [key, ...rest] = child.text.split(':');
-							if (!rest || !rest.length || !rest[0].length) {
-								config[normalizeConfigVal(key)] = parseChildren(child);
-							} else {
-								const value = rest.join(':');
-								config[normalizeConfigVal(key)] = normalizeConfigVal(value);
-							}
-						}
-					} else {
-						console.error('No config found for this bullet:', prop.text);
-						return {};
-					}
-					return config;
-				}
-				for (const line of autoTags) {
-					const tag = line.tags[0];
-					let config = {}
-					for (const prop of line.children) {
-						const cleanText = normalizeConfigVal(prop.text, false);
-						if (cleanText === 'config:') {
-							// found config bullet, parse it and exit
-							// if it has children, parse its children
-							config = parseChildren(prop);
-						} else if (cleanText.startsWith('config:')) {
-							// found config bullet, let's eval it
-							const [key, ...rest] = cleanText.split(':');
-							const path = normalizeConfigVal(rest.join(':'));
-							try {
-								const content = await this.app.vault.read(this.app.vault.getAbstractFileByPath(path));
-								config = JSON.parse(content);
-							} catch (err1) {
-								console.error(`Config for "${tag}" failed to load.`)
-							}
-						}
-					}
-					foundTags.push(tag);
-					this.buildTagConnector(tag, config);
-				}
-				for (const line of recurringTags) {
-					foundTags.push(line.tags[0]);
-				}
-		
-				// Now store them in settings or just keep them in memory
-				this.settings.taskTags = [...new Set(foundTags)]; // deduplicate
-				console.log("Loaded tags from file:", this.settings.taskTags);
-				this.updateFlaggedLines(this.app.workspace.getActiveFile());
-		  	}
-		} catch (err) {
-			console.error(err)
-		  	console.error(`Couldn't read tag list file at "${path}"`, err);
-		}
 	}
 
 	// dispatches update effect post-config change
