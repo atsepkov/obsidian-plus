@@ -593,6 +593,62 @@ function gatherTags(dv, identifier, options = {}) {
 	return results;
 }
 
+// Helper function to find descendants matching an identifier within a parent item's children
+function findInChildren(parentItem, targetIdentifier, options = {}) {
+    const matches = [];
+    if (!parentItem || !parentItem.children) {
+        return matches;
+    }
+
+    const partialMatch = options.partialMatch ?? false;
+    const safeIdentifier = escapeRegex(targetIdentifier);
+    // Use the same pattern logic as gatherTags for whole-word matching
+    const pattern = targetIdentifier === '#' ? new RegExp(
+        `(?:^|[^A-Za-z0-9_])${safeIdentifier}`,
+        'g'
+    ) : new RegExp(
+        `(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_])`,
+        'g'
+    );
+
+    function searchRecursively(item) {
+        if (!item) return;
+
+        let text = item.text.split('\n')[0].trim(); // Check only the first line of the item text
+
+        // Check if the current item matches
+        if (text.includes(targetIdentifier)) {
+            let isMatch = false;
+            if (partialMatch) {
+                 isMatch = true;
+            } else {
+                // Check for whole word match
+                const matchResult = text.match(pattern);
+                if (matchResult) {
+                     isMatch = true;
+                }
+            }
+            if (isMatch) {
+                matches.push(item);
+            }
+        }
+
+        // Recursively search children
+        if (item.children) {
+            for (const child of item.children) {
+                searchRecursively(child);
+            }
+        }
+    }
+
+    // Start the recursive search from the direct children of the parentItem
+    for (const child of parentItem.children) {
+        searchRecursively(child);
+    }
+
+    return matches;
+}
+
 // get summary of specifc tag
 // NOTE: this basically returns a list of objects matching the tag pretty-formatted
 // similar to tasks plugin but with more flexibility and ability to grab/summarize content from children
