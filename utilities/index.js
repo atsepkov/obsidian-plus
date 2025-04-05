@@ -697,7 +697,7 @@ export function getSummary(dv, identifier, options = {}) {
             let nestedMatches = [];
             for (const parentItem of currentMatches) {
                 // Pass partialMatch option to the helper
-                nestedMatches = nestedMatches.concat(findInChildren(parentItem, nextIdentifier, { partialMatch }));
+                nestedMatches = nestedMatches.concat(findInChildren(parentItem, nextIdentifier, { partialMatch: partialMatch }));
             }
             currentMatches = nestedMatches; // Update matches for the next level or final result
         }
