@@ -598,10 +598,11 @@ function gatherTags(dv, identifier, options = {}) {
 // similar to tasks plugin but with more flexibility and ability to grab/summarize content from children
 export function getSummary(dv, identifier, options = {}) {
 
-    const currentFile = options.currentFile ?? false;            // limit the query to current file
-    const includeLinks = options.includeLinks ?? !currentFile;   // include the file link in the results
-    const includeTags = options.includeTags ?? false;            // include the tag itself in the results
-    const includeCheckboxes = options.includeCheckboxes ?? false;// include checkboxes for tasks in the results
+    // --- Options --- (Keep existing options definitions)
+    const currentFile = options.currentFile ?? false;
+    const includeLinks = options.includeLinks ?? !currentFile;
+    const includeTags = options.includeTags ?? false;
+    const includeCheckboxes = options.includeCheckboxes ?? false;
     const hideCompleted = options.hideCompleted ?? false;        // hide completed tasks
     const hideTasks = options.hideTasks ?? false;                // hide tasks
     const hideNonTasks = options.hideNonTasks ?? false;          // hide non-tasks
@@ -624,35 +625,74 @@ export function getSummary(dv, identifier, options = {}) {
         throw new Error("onlyChildren and hideChildren cannot be used together.");
     }
 
-    // 1) Gather lines
-    const lines = gatherTags(dv, identifier, options);
+    // 1) Gather lines (Modified Section)
+    let initialLines = [];
+    if (Array.isArray(identifier)) {
+        if (identifier.length === 0) {
+            throw new Error("Identifier array cannot be empty.");
+        }
 
-    // 2) Process lines into results
+        // Start with the first identifier
+        let currentMatches = gatherTags(dv, identifier[0], options);
+
+        // Sequentially filter by nested identifiers
+        for (let i = 1; i < identifier.length; i++) {
+            const nextIdentifier = identifier[i];
+            let nestedMatches = [];
+            for (const parentItem of currentMatches) {
+                // Pass partialMatch option to the helper
+                nestedMatches = nestedMatches.concat(findInChildren(parentItem, nextIdentifier, { partialMatch }));
+            }
+            currentMatches = nestedMatches; // Update matches for the next level or final result
+        }
+        initialLines = currentMatches; // The final result of the nested search
+
+    } else if (typeof identifier === 'string' || identifier === null || identifier === undefined) {
+        // Original logic for string identifier or no identifier
+        initialLines = gatherTags(dv, identifier, options);
+    } else {
+        throw new Error("Identifier must be a string, null, undefined, or an array of strings.");
+    }
+    // --- End of Modified Section ---
+
+    // 2) Process lines into results (Adjusted Section)
     let results = [];
-    for (let line of lines) {
-        if (!identifier) {
-            // identifier was not specified
+    const targetIdentifier = Array.isArray(identifier) ? identifier[identifier.length - 1] : identifier; // Use the last identifier for processing logic
+
+    for (let line of initialLines) { // Use initialLines from the logic above
+        // The rest of the processing logic needs to correctly handle the 'targetIdentifier'
+        // when deciding whether to include the item itself or its children, and when stripping tags.
+
+        if (!targetIdentifier) {
+            // identifier was not specified (or was null/undefined)
             let text = line.text.split('\n')[0].trim();
             results.push({
                 ...line,
                 text
             });
-        } else if (line.text === identifier && !hideChildren) {
-            results = results.concat(line.children);
-        } else if (line.text.length > identifier.length && !onlyChildren) {
+        } else if (line.text === targetIdentifier && !hideChildren && !Array.isArray(identifier)) {
+            // Original logic: If line *is* the identifier (string only case), take children
+            // This might need adjustment depending on desired behavior for array identifiers ending in a "container" tag
+             results = results.concat(line.children);
+        } else if (line.text.includes(targetIdentifier) && !onlyChildren) {
+             // If the line (which is a result of the gather/nested search) contains the target identifier
             let text = line.text.split('\n')[0].trim();
-            if (!includeTags) {
-                text = text.replace(identifier, "").trim();
+            const tagPosition = text.indexOf(targetIdentifier); // Find position of the *target* identifier
+
+            if (!includeTags && targetIdentifier) { // Check targetIdentifier exists before replacing
+                text = text.replace(targetIdentifier, "").trim();
             }
             results.push({
                 ...line,
-                tagPosition: line.text.indexOf(identifier),
+                tagPosition: tagPosition, // Position relative to the target identifier
                 text
             });
         }
+        // Note: The logic for `onlyChildren` might implicitly be handled by the nested search
+        // if the array identifier targets children, but review if explicit handling is needed here.
     }
 
-    // 3) Filter results
+    // 3) Filter results (Keep existing logic, but ensure 'identifier' used here refers to the target)
     const filtered = results.filter(c => {
         // custom filter
         if (customFilter && !customFilter(c)) return false;
@@ -662,14 +702,15 @@ export function getSummary(dv, identifier, options = {}) {
         if (hideTasks && c.task) return false;
         // hide non-tasks
         if (hideNonTasks && !c.task) return false;
-        // prefix-only tags
+
+        // Adjust tag position checks if needed, using targetIdentifier
         if (onlyPrefixTags && c.tagPosition !== 0) return false;
-        // suffix-only tags
-        if (onlySuffixTags && c.tagPosition < c.text.length) return false;
-        // middle-only tags
-        const tagOffset = includeTags ? identifier?.length : 0;
-        if (onlyMiddleTags && (c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
-            return false;
+        // Suffix check needs care if tags were stripped
+        if (onlySuffixTags && targetIdentifier && c.tagPosition < c.text.length - (includeTags ? targetIdentifier.length : 0)) return false;
+        // Middle check needs care if tags were stripped
+        const tagOffset = includeTags && targetIdentifier ? targetIdentifier.length : 0;
+        if (onlyMiddleTags && (!targetIdentifier || c.tagPosition === 0 || c.tagPosition >= c.text.length - tagOffset)) {
+             return false;
         }
         return true;
     });
