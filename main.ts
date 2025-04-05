@@ -98,7 +98,15 @@ function compareTaskLines(
 	});
   
 	return changes;
-}  
+}
+
+// helper function to help generate sticky header text
+const chevron = '**❯**';
+function updateStickyHeaderText(rootText: string, parentText: string, parentIndent: int) {
+	console.log(`rootText: ${rootText}, parentText: ${parentText}, parentIndent: ${parentIndent}`)
+	// returns "root text > ... > parent text", omits ellipsis if parent indent is 1, omits parent text if parent indent is 0
+	return parentIndent > 0 ? `${rootText} ${chevron} ${parentText}` : rootText
+}
 
 export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
@@ -479,6 +487,11 @@ export default class ObsidianPlus extends Plugin {
 			// Get the 0-based line number from the block's start position
 			const topLineNumber = cm.state.doc.lineAt(topLineBlock.from).number - 1; // CM lines are 1-based, convert to 0-based
 
+			const contentTop = cm.contentDOM.getBoundingClientRect().top - cm.scrollDOM.getBoundingClientRect().top;
+			const topLineBlock1 = cm.lineBlockAtHeight(scrollTop + contentTop);
+			const topLineNumber1 = cm.state.doc.lineAt(topLineBlock1.from).number - 1;
+			console.log('topLineNumber:', topLineNumber, 'topLineNumber1:', topLineNumber1);
+
 			if (topLineNumber < 0) { // Safeguard against invalid line numbers
 				// console.log('Hiding header: Top line number is negative.');
 				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
@@ -492,6 +505,10 @@ export default class ObsidianPlus extends Plugin {
 
 			let rootParentLineNumber = -1;
 			let rootParentText = '';
+
+			let immediateParentLineNumber = -1;
+			let immediateParentText = '';
+			let immediateParentIndent = 0;
 
 			// If the topmost visible line is indented, find its root parent (indent 0)
 			if (topIndent > 0) {
@@ -507,6 +524,13 @@ export default class ObsidianPlus extends Plugin {
 						const indent = listItemMatch[1].length;
 						// Found a potential parent with less indentation
 						if (indent < lastFoundIndent) {
+							if (!immediateParentText) {
+								// Found an immediate parent (indent 1)
+								immediateParentLineNumber = parentLineNum;
+								immediateParentText = lineText.substring(listItemMatch[0].length).trim();
+								immediateParentIndent = indent;
+								// console.log(`Found immediate parent at line ${parentLineNum}: ${immediateParentText}`);
+							}
 							if (indent === 0) {
 								// Found the root parent (indent 0)
 								rootParentLineNumber = parentLineNum;
@@ -542,11 +566,12 @@ export default class ObsidianPlus extends Plugin {
 			if (rootParentLineNumber !== -1 && rootParentLineNumber < topLineNumber) {
 				// console.log(`Rendering header for view ${view.file?.path}: ${rootParentText}`);
 				// Avoid re-rendering if content is the same (optional optimization)
-				if (headerEl.dataset.renderedContent !== rootParentText) {
+				const headerText = updateStickyHeaderText(rootParentText, immediateParentText, immediateParentIndent);
+				if (headerEl.dataset.renderedContent !== headerText) {
 					headerEl.empty(); // Clear previous content
 					await MarkdownRenderer.render(
 						this.app,
-						rootParentText, // Render the text *after* the bullet
+						headerText, // Render the text *after* the bullet
 						headerEl,
 						view.file?.path || '', // Source path context
 						this // Component context
