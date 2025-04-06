@@ -921,7 +921,7 @@ export function getSummary(dv, identifier, options = {}) {
         // Create the input box
         const searchEl = wrapper.createEl("input", {
             type: "text",
-            placeholder: "Search... " + filtered.length,
+            placeholder: "Search...",
         });
         // Create a container for results
         const resultsEl = wrapper.createEl("div");
