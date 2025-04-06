@@ -1,21 +1,8 @@
 import { App, TFile, Notice } from 'obsidian';
 import ObsidianPlus from './main'; // Adjust path if needed
-import TagConnector from './connectors/tagConnector'; // Adjust path for type
-
-// Import connector types (adjust paths as needed)
+import { createConnector } from './connectorFactory';
 import AiConnector from './connectors/aiConnector';
-import DummyConnector from './connectors/dummyConnector';
-import HttpConnector from './connectors/httpConnector';
-import WebhookConnector from './connectors/webhookConnector';
 // import WebConnector from './connectors/webConnector'; // Uncomment if used
-
-// Define a type for the connector constructor
-type ConnectorConstructor = new (tag: string, obsidianPlus: ObsidianPlus, config: any) => TagConnector;
-
-// Define the structure of the connector map
-interface ConnectorMap {
-    [key: string]: ConnectorConstructor;
-}
 
 // Define ConnectorConfig interface locally for now
 interface ConnectorConfig {
@@ -57,65 +44,9 @@ export class ConfigLoader {
     private app: App;
     private plugin: ObsidianPlus; // To access settings and other plugin parts
 
-    // Moved connectorMap here
-    private connectorMap: ConnectorMap = {
-        'ai': AiConnector,
-        'basic': TagConnector,
-        'dummy': DummyConnector,
-        'http': HttpConnector,
-        'webhook': WebhookConnector,
-        // 'web': WebConnector, // Uncomment if WebConnector is used
-    };
-
     constructor(app: App, plugin: ObsidianPlus) {
         this.app = app;
         this.plugin = plugin;
-    }
-
-    // Moved from main.ts
-    private buildTagConnector(tag: string, config: ConnectorConfig): void {
-        let connectorName = config.connector;
-
-        // Determine connector type if not explicitly set
-        if (!connectorName) {
-            if (config.webhookUrl) {
-                connectorName = 'webhook';
-            } else if (config.url) { // Assume HTTP if URL is present
-                connectorName = 'http';
-            } else if (config.provider) { // Assume AI if provider is present
-                 connectorName = 'ai';
-            } else {
-                connectorName = 'basic'; // Default
-            }
-        }
-
-        const ConnectorClass = this.connectorMap[connectorName];
-
-        if (ConnectorClass) {
-            try {
-                // Pass 'this.plugin' which is the ObsidianPlus instance
-                const connector = new ConnectorClass(tag, this.plugin, config);
-                console.log(`Built ${connectorName} connector for`, tag);
-
-                // Update plugin settings directly
-                if (connectorName === 'ai' && connector instanceof AiConnector) {
-                    this.plugin.settings.aiConnector = connector;
-                }
-                this.plugin.settings.webTags[tag] = connector;
-
-            } catch (error) {
-                 console.error(`Failed to instantiate ${connectorName} connector for tag ${tag}:`, error);
-            }
-        } else {
-            console.warn(`Unknown connector type "${connectorName}" specified for tag ${tag}. Using basic connector.`);
-            // Fallback to basic connector if type is unknown
-            try {
-                const connector = new TagConnector(tag, this.plugin, config);
-                this.plugin.settings.webTags[tag] = connector;
-            } catch (error) {
-                 console.error(`Failed to instantiate basic fallback connector for tag ${tag}:`, error);
-            }
-        }
     }
 
     // Moved from main.ts loadTaskTagsFromFile's inner scope
@@ -238,8 +169,18 @@ export class ConfigLoader {
 
                     // Create connector using the factory method (buildTagConnector)
                     // This method now updates plugin.settings directly
-                    this.buildTagConnector(tag, config);
-                    foundTags.push(tag); // Add to the list of tags requiring task format
+                    // this.buildTagConnector(tag, config);
+                    // foundTags.push(tag); // Add to the list of tags requiring task format
+                    const connector = createConnector(tag, config, this.plugin);
+                    if (connector) {
+                        foundTags.push(tag); // Add to the list of tags requiring task format
+                        this.plugin.settings.webTags[tag] = connector;
+                        if (connector instanceof AiConnector) {
+                            this.plugin.settings.aiConnector = connector;
+                        }
+                    } else {
+                        console.error(`Failed to create connector for tag "${tag}"`);
+                    }
                 }
 
                 // Process Recurring Tags (just add to taskTags)
