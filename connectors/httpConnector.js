@@ -1,3 +1,4 @@
+import { updateDvTask } from '../taskManager';
 import TagConnector from './tagConnector.js';
 
 /* Supported config fields:
@@ -70,7 +71,7 @@ export default class HttpConnector extends TagConnector {
             children.push(`${key}: ${result[key]}`);
         }
 
-        await this.obsidianPlus.updateTask(task, {
+        await updateDvTask(this.obsidianPlus.app, task, {
             append: status,
             removeChildrenByBullet: this.config.clearErrorsOnSuccess ? '*+' : '+',
             appendChildren: await this.convertLinesToChildren(children),
@@ -97,7 +98,7 @@ export default class HttpConnector extends TagConnector {
         if (this.config.timestamps) {
             message += ` (${new Date().toLocaleString()})`;
         }
-        await this.obsidianPlus.updateTask(task, {
+        await updateDvTask(this.obsidianPlus.app, task, {
             removeChildrenByBullet: '+*',
             appendChildren: await this.convertLinesToChildren([message]),
             useBullet: '*'
