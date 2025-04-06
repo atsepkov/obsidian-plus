@@ -93,11 +93,15 @@ function compareTaskLines(
 }
 
 // helper function to help generate sticky header text
-const chevron = '**❯**';
+const chevron = '❯';
 function updateStickyHeaderText(rootText: string, parentText: string, parentIndent: int) {
 	console.log(`rootText: ${rootText}, parentText: ${parentText}, parentIndent: ${parentIndent}`)
-	// returns "root text > ... > parent text", omits ellipsis if parent indent is 1, omits parent text if parent indent is 0
-	return parentIndent > 0 ? `${rootText} ${chevron} ${parentText}` : rootText
+	// returns "root text >> parent text", "root > parent" if parent indent is 1, omits parent text if parent indent is 0
+	return parentIndent > 1 ?
+		`${rootText} **${chevron}${chevron}** ${parentText}` :
+		parentIndent > 0 ?
+			`${rootText} **${chevron}** ${parentText}` :
+			rootText
 }
 
 export default class ObsidianPlus extends Plugin {

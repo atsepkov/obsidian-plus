@@ -612,7 +612,7 @@ function findInChildren(parentItem, targetIdentifier, options = {}) {
     );
 
     function searchRecursively(item) {
-        if (!item) return;
+        if (!item || typeof item.text !== 'string') return;
 
         let text = item.text.split('\n')[0].trim(); // Check only the first line of the item text
 
@@ -634,16 +634,18 @@ function findInChildren(parentItem, targetIdentifier, options = {}) {
         }
 
         // Recursively search children
-        if (item.children) {
-            for (const child of item.children) {
-                searchRecursively(child);
-            }
+        if (Array.isArray(item.children)) {
+            if (item.children) {
+                for (const child of item.children) {
+                    child && searchRecursively(child);
+                }
+            }   
         }
     }
 
     // Start the recursive search from the direct children of the parentItem
     for (const child of parentItem.children) {
-        searchRecursively(child);
+        child && searchRecursively(child);
     }
 
     return matches;
@@ -919,7 +921,7 @@ export function getSummary(dv, identifier, options = {}) {
         // Create the input box
         const searchEl = wrapper.createEl("input", {
             type: "text",
-            placeholder: "Search..."
+            placeholder: "Search... " + filtered.length,
         });
         // Create a container for results
         const resultsEl = wrapper.createEl("div");
