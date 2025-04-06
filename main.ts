@@ -4,18 +4,12 @@ import {
 	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { TaskManager } from './taskManager';
 import {
 	configure,
 	normalizeConfigVal,
-	findDvTask,
-	changeDvTaskStatus,
-	updateDvTask,
-	getDvTaskChildren,
-	getDvTaskParents,
 	getDvTaskLinks,
 	getSummary,
-	toggleTask,
-	clearTaskCache
 } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
@@ -108,6 +102,7 @@ export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	public configLoader: ConfigLoader;
+	public taskManager: TaskManager;
 	public getSummary = getSummary;
 
 	async onload() {
@@ -117,6 +112,24 @@ export default class ObsidianPlus extends Plugin {
 
 		// Instantiate ConfigLoader
 		this.configLoader = new ConfigLoader(this.app, this);
+
+		// Wait for Dataview API
+		this.app.workspace.onLayoutReady(async () => { // Use onLayoutReady
+			const dataview = this.app.plugins.plugins["dataview"]?.api;
+			if (!dataview) {
+				console.error("Dataview plugin not found or not ready.");
+				new Notice("Dataview plugin needed for task management.");
+				// Handle the case where dataview isn't ready - maybe disable features
+			} else {
+				// Instantiate TaskManager *after* dataview is ready
+				this.taskManager = new TaskManager(this.app, dataview);
+				console.log("TaskManager initialized.");
+ 
+				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
+				await this.configLoader.loadTaskTagsFromFile();
+				console.log("Loaded tags:", this.settings.taskTags);
+			}
+		});
 
 		// This creates an icon in the left ribbon.
 		// const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus', (evt: MouseEvent) => {
@@ -184,6 +197,10 @@ export default class ObsidianPlus extends Plugin {
 
 				// Listen for changes to tasks in the current file (if task was marked completed)
 				if (file instanceof TFile && file.extension === "md") {
+					if (!this.taskManager) {
+						console.warn("TaskManager not ready.");
+						return;
+					}
 					let newTasks = await this.extractTaskLines(file);
 					const oldTasks = taskCache.get(file.path) ?? [];
 			  
@@ -232,7 +249,7 @@ export default class ObsidianPlus extends Plugin {
 									if (!dataview) {
 										throw new Error("Dataview plugin not found");
 									}
-									const dvTask = findDvTask(dataview.api, { ...task, file, taskText, tag: {
+									const dvTask = this.taskManager.findDvTask(dataview.api, { ...task, file, taskText, tag: {
 										pos: tagPosition,
 										name: taskTag,
 									}});
@@ -257,7 +274,7 @@ export default class ObsidianPlus extends Plugin {
 										} catch (e) {
 											console.error(e);
 											await tagConnector.onError(dvTask, e);
-        									await this.changeTaskStatus(dvTask, 'error', e);
+        									await this.changeTaskStatus(dvTask, '!');
 											// if error updated the task, we need to sync our cache
 											newTasks = await this.extractTaskLines(file);
 										}
@@ -306,7 +323,11 @@ export default class ObsidianPlus extends Plugin {
 			if (target.matches('.op-toggle-task')) {
 				// id=i${id}
 				const taskId = target.id.slice(1);
-				toggleTask(taskId);
+				if (this.taskManager) {
+					this.taskManager.toggleTask(taskId);
+				} else {
+					console.warn('TaskManager not ready for click event');
+				}
 			}
 			// tasks expand to show child bullets on click
 			expandIfNeeded(evt);
@@ -398,7 +419,9 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("file-open", async (file) => {
 				if (file instanceof TFile && file.extension === "md") {
-					clearTaskCache();
+					if (this.taskManager) {
+						this.taskManager.clearTaskCache();
+					}
 					this.updateFlaggedLines(file);
 				}
 				if (file instanceof TFile && file.extension === "md") {
@@ -789,10 +812,11 @@ export default class ObsidianPlus extends Plugin {
 		const content = await this.app.vault.read(file);
 		const lines = content.split("\n");
 		const tasks: TaskLineInfo[] = [];
+		const taskRegex = /^\s*[-*+]\s+\[(x| )\]\s+/;
 		for (let i = 0; i < lines.length; i++) {
-		if (/\[([ xX!])\]/.test(lines[i])) {
-			tasks.push({ lineNumber: i, text: lines[i] });
-		}
+			if (taskRegex.test(lines[i])) {
+				tasks.push({ lineNumber: i, text: lines[i] });
+			}
 		}
 		return tasks;
 	}
@@ -881,11 +905,11 @@ export default class ObsidianPlus extends Plugin {
 		styleElement.textContent = this.generateTagCSS();
 	}
 
-	async changeTaskStatus(task, status, description): void {
-		await changeDvTaskStatus(task, status, description);
+	async changeTaskStatus(task: Task, status: string): void {
+		await this.taskManager.changeDvTaskStatus(task, status);
 	}
-	async updateTask(task, options): void {
-		await updateDvTask(task, options);
+	async updateTask(task: Task, options: UpdateTaskOptions): void {
+		await this.taskManager.updateDvTask(task, options);
 	}
 	async getTaskContext(task): any[] {
 		return {

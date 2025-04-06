@@ -1,5 +1,5 @@
 import { MarkdownRenderer, requestUrl } from "obsidian";
-import * as TurndownService from 'turndown';
+// import * as TurndownService from 'turndown';
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from "./basic"
 export { normalizeConfigVal } from './basic'
 
@@ -432,8 +432,9 @@ async function fetchExternalLinkContent(url) {
 	const hostname = url.split('/').slice(0, 3).join('/');
 	const html = await getCleanContent(response, hostname);
 	// @ts-ignore // Add this line temporarily to suppress potential TS errors during check
-	const turndown = new TurndownService.default();
-	const markdown = turndown.turndown(html);
+	// const turndown = new TurndownService.default();
+	// const markdown = turndown.turndown(html);
+    const markdown = htmlToMarkdown(html);
 	return markdown;
 }
 
