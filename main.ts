@@ -8,7 +8,6 @@ import { TaskManager } from './taskManager';
 import {
 	configure,
 	normalizeConfigVal,
-	getDvTaskLinks,
 	getSummary,
 } from './utilities';
 import { SettingTab } from './settings';
@@ -107,7 +106,6 @@ export default class ObsidianPlus extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		configure(this.app)
 		app = this.app;
 
 		// Instantiate ConfigLoader
@@ -124,6 +122,9 @@ export default class ObsidianPlus extends Plugin {
 				// Instantiate TaskManager *after* dataview is ready
 				this.taskManager = new TaskManager(this.app, dataview);
 				console.log("TaskManager initialized.");
+
+				// getSummary configuration
+				configure(this.app, this.taskManager)
  
 				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
 				await this.configLoader.loadTaskTagsFromFile();
@@ -913,9 +914,9 @@ export default class ObsidianPlus extends Plugin {
 	}
 	async getTaskContext(task): any[] {
 		return {
-			parents: await getDvTaskParents(task),
-			children: await getDvTaskChildren(task),
-			links: await getDvTaskLinks(task),
+			parents: await this.taskManager.getDvTaskParents(task),
+			children: await this.taskManager.getDvTaskChildren(task),
+			links: await this.taskManager.getDvTaskLinks(task),
 		}
 	}
 }

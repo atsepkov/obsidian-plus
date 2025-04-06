@@ -1,6 +1,5 @@
 import { spawn } from 'child_process';
 import puppeteer from 'puppeteer-core';
-import { updateDvTask, getDvTaskChildren } from '../taskManager';
 import TagConnector from './tagConnector.js';
 
 export default class WebConnector extends TagConnector {
@@ -62,7 +61,7 @@ export default class WebConnector extends TagConnector {
             }
 
             // Process commands from task content
-            const children = await getDvTaskChildren(this.obsidianPlus.app, task);
+            const children = await this.obsidianPlus.taskManager.getDvTaskChildren(this.obsidianPlus.app, task);
             // Note: getContext previously returned { parents, children, links }.
             // If you need parents or links here, you'll need to import and call
             // getDvTaskParents and getDvTaskLinks from taskManager as well.
@@ -114,7 +113,7 @@ export default class WebConnector extends TagConnector {
                     throw new Error(`Unknown command: ${action}`);
             }
 
-            await updateDvTask(this.obsidianPlus.app, task, {
+            await this.obsidianPlus.taskManager.updateDvTask(this.obsidianPlus.app, task, {
                 removeChildrenByBullet: '+*',
                 appendChildren: `${commandStr}: ${result}`,
                 useBullet: '+'
