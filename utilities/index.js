@@ -102,7 +102,8 @@ async function fetchExternalLinkContent(url) {
 	// @ts-ignore // Add this line temporarily to suppress potential TS errors during check
 	// const turndown = new TurndownService.default();
 	// const markdown = turndown.turndown(html);
-    const markdown = htmlToMarkdown(html);
+    // const markdown = htmlToMarkdown(html);
+    const markdown = 'test'
 	return markdown;
 }
 

@@ -515,7 +515,8 @@ export class TaskManager {
             // }
             // const turndown = new TurndownService();
             // const markdown = turndown.turndown(html);
-            const markdown = htmlToMarkdown(html);
+            // const markdown = htmlToMarkdown(html);
+            const markdown = 'htmlToMarkdown(html)';
             return markdown;
 
         } catch (error: any) {
