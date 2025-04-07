@@ -491,7 +491,7 @@ export default class ObsidianPlus extends Plugin {
 			} else {
 				console.warn('Could not find scrollDOM for view:', view.file?.path);
 			}
-		}
+		// }
 		// --- End Scroll Listener ---
 	}
 	 
