@@ -102,7 +102,6 @@ export default class ObsidianPlus extends Plugin {
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	public configLoader: ConfigLoader;
 	public taskManager: TaskManager;
-	public getSummary = getSummary;
 
 	async onload() {
 		await this.loadSettings();
@@ -328,6 +327,7 @@ export default class ObsidianPlus extends Plugin {
 					this.taskManager.toggleTask(taskId);
 				} else {
 					console.warn('TaskManager not ready for click event');
+					new Notice('TaskManager not available');
 				}
 			}
 			// tasks expand to show child bullets on click
@@ -481,6 +481,11 @@ export default class ObsidianPlus extends Plugin {
 			}
 		}
 		// --- End Scroll Listener ---
+	}
+	 
+	public getSummary(dv: any, identifier: string, options: any): string {
+		console.log('calling getSummary', dv, identifier, options, this.taskManager);
+		return getSummary(dv, identifier, options, this.taskManager);
 	}
 
 	/**

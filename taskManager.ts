@@ -46,6 +46,7 @@ export class TaskManager {
     constructor(app: App, dvApi: DataviewApi) {
         this.app = app;
         this.dvApi = dvApi;
+        console.log("TaskManager Dataview API initialized.");
     }
 
     // --- File Handling ---
@@ -83,6 +84,7 @@ export class TaskManager {
     // --- Task Finding & Manipulation ---
 
     public findDvTask(taskInfo: TaskInfo): Task | undefined {
+        if (!this.dvApi || !this.dvApi.page) return undefined;
         const page = this.dvApi.page(taskInfo.file.path);
         if (!page || !page.file || !page.file.lists) return undefined;
 
