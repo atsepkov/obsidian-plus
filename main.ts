@@ -453,15 +453,27 @@ export default class ObsidianPlus extends Plugin {
             return; // Cannot place header if parent isn't found
         }
 
+        // --- BEGIN CHANGE ---
+        // Remove any existing sticky header before potentially adding a new one
+        const existingHeader = editorParentEl.querySelector('.obsidian-plus-sticky-header');
+        if (existingHeader) {
+            existingHeader.remove();
+            console.log('Removed existing sticky header for view:', view.file?.path);
+        }
+        // --- END CHANGE ---
+
 		let headerEl: HTMLElement;
-		if (!this.stickyHeaderMap.has(view)) {
-			const headerEl = document.createElement('div');
+		// The check !this.stickyHeaderMap.has(view) is less critical now for preventing
+		// duplicates, but still useful for managing the map and listeners.
+		// However, since we always remove/recreate, we might simplify this part.
+		// Let's proceed by always creating and adding to the map, ensuring cleanup first.
+
+		// if (!this.stickyHeaderMap.has(view)) { // This check becomes less relevant for DOM duplicates
+			headerEl = document.createElement('div'); // Create the new header
 			headerEl.className = 'obsidian-plus-sticky-header';
-			// Prepend to the scrollDOM so it's the first child and 'sticky' works correctly
-			// view.editor.cm.scrollDOM.prepend(headerEl);
-			editorParentEl.prepend(headerEl);
-			this.stickyHeaderMap.set(view, headerEl);
-			console.log('Sticky header created for view:', view.file?.path);
+			editorParentEl.prepend(headerEl); // Add the new header
+			this.stickyHeaderMap.set(view, headerEl); // Update the map
+			console.log('Sticky header created/recreated for view:', view.file?.path);
 
 			// --- Add Scroll Listener ---
 			const scrollDOM = view.editor.cm.scrollDOM;
