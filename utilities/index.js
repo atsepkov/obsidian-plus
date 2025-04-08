@@ -516,7 +516,6 @@ export function getSummary(dv, identifier, options = {}, taskManager) {
     // ---------------------------------------------------------
     const renderResults = async (items, containerEl) => {
         console.log("RENDER RESULTS", dv)
-        global.dv = dv
         containerEl.empty(); // clear previous items
 
         if (expandOnClick) {
