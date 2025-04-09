@@ -88,7 +88,9 @@ function compareTaskLines(
 // helper function to help generate sticky header text
 const chevron = '❯';
 function updateStickyHeaderText(rootText: string, parentText: string, parentIndent: int) {
-	console.log(`rootText: ${rootText}, parentText: ${parentText}, parentIndent: ${parentIndent}`)
+	// if either root or parent includes images/links, remove them
+	rootText = rootText.replace(/!\[.*?\]\(.*?\)/g, '').replace(/!\[\[.*?\]\]/g, '');
+	parentText = parentText.replace(/!\[.*?\]\(.*?\)/g, '').replace(/!\[\[.*?\]\]/g, '');
 	// returns "root text >> parent text", "root > parent" if parent indent is 1, omits parent text if parent indent is 0
 	return parentIndent > 1 ?
 		`${rootText} **${chevron}${chevron}** ${parentText}` :
