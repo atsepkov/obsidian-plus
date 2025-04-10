@@ -251,7 +251,7 @@ export default class ObsidianPlus extends Plugin {
 									if (!dataview) {
 										throw new Error("Dataview plugin not found");
 									}
-									const dvTask = this.taskManager.findDvTask(dataview.api, { ...task, file, taskText, tag: {
+									const dvTask = this.taskManager.findDvTask({ ...task, file, taskText, tag: {
 										pos: tagPosition,
 										name: taskTag,
 									}});
