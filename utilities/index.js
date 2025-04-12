@@ -347,6 +347,7 @@ export function getSummary(dv, identifier, options = {}, taskManager) {
 
     const customFormat = options.customFormat ?? null;           // custom format function
     const customFilter = options.customFilter ?? null;           // custom filter function
+    const customChildFilter = options.customChildFilter ?? null; // custom child filter function
 	const customSearch = options.customSearch ?? null;           // custom search function
 
     const expandOnClick = options.expandOnClick ?? false;        // toggle children on click
@@ -471,7 +472,8 @@ export function getSummary(dv, identifier, options = {}, taskManager) {
                     icon.url = child.text;
                     icon.icon = getIconForUrl(url);
                 }
-                if (child.task) {
+                console.log(child)
+                if (child.task && !child.tags.length) { // ignore tagged tasks
                     tasks.total++;
                     if (child.status === "x") tasks.done++;
                 }
@@ -556,6 +558,9 @@ export function getSummary(dv, identifier, options = {}, taskManager) {
 
                     // Render each child in that <ul>
                     for (const child of c.children) {
+                        if (customChildFilter) {
+                            if (!customChildFilter(child)) continue;
+                        }
                         console.log(child);
                         const childLi = childrenUl.createEl("li");
                         await MarkdownRenderer.render(

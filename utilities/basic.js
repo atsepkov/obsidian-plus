@@ -110,7 +110,9 @@ export const isUrl = (str) => {
 		return false;
 	}
 }
-const urlRegex = /((https?|ftp):\/\/[^\s/$.?#].[^\s()]*)/i;
+// const urlRegex = /((https?|ftp):\/\/[^\s/$.?#].[^\s()]*)/i;
+// const urlRegex = /((https?|ftp):\/\/[^\s/$.?#][^\s()[\]{}|]*)/gi;
+const urlRegex = /((https?|ftp):\/\/[^\s/$.?#][^\s()[\]{}]*)/gi;
 export const lineHasUrl = (line) => {
 	return urlRegex.test(line);
 }

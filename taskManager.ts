@@ -243,7 +243,7 @@ export class TaskManager {
             if (removeAllChildren) parsedChildren = [];
 
             if (removeChildrenByBullet) {
-                const bulletsToRemove = Array.isArray(removeChildrenByBullet) ? removeChildrenByBullet : [removeChildrenByBullet];
+                const bulletsToRemove = Array.from(removeChildrenByBullet);
                 parsedChildren = parsedChildren.filter(c => !bulletsToRemove.includes(c.bullet));
             }
 
@@ -257,7 +257,7 @@ export class TaskManager {
             }
 
             if (replaceChildren) {
-                const childrenToReplace = Array.isArray(replaceChildren) ? replaceChildren : [replaceChildren];
+                const childrenToReplace = Array.from(replaceChildren) ? replaceChildren : [replaceChildren];
                 parsedChildren = this.toStructured(childrenToReplace, parentIndent, bullet);
             }
             if (prependChildren) {
