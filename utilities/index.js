@@ -10,48 +10,6 @@ export function configure(instance, obsidianPlus) {
     taskManager = obsidianPlus.taskManager
 }
 
-// toggles tasks generated within our own plugin's view
-// this will also trigger/affect the original task in the markdown file
-let taskCache = {}
-export async function getFileLines(filePath) {
-	const file = app.vault.getAbstractFileByPath(filePath);
-	return (await app.vault.read(file)).split("\n");
-}
-export async function saveFileLines(filePath, lines) {
-	const file = app.vault.getAbstractFileByPath(filePath);
-	await app.vault.modify(file, lines.join("\n"));
-}
-export async function toggleTask(id) {
-	const task = taskCache[id]
-	const tasksApi = app.plugins.getPlugin("obsidian-tasks-plugin")?.apiV1;
-
-	const file = app.metadataCache.getFirstLinkpathDest(task.path, "");
-	if (!file) return;
-	
-	const lines = await getFileLines(file.path);
-
-	if (tasksApi) {
-		const originalLineText = lines[task.line];
-		const result = tasksApi.executeToggleTaskDoneCommand(originalLineText, task.path)
-		if (result) {
-			lines[task.line] = result;
-			await saveFileLines(file.path, lines);
-		}
-	} else {
-		// Replace first occurrence of "- [ ]" or "- [x]" in that line
-		// with the new status
-		let line = lines[task.line];
-		const newStatus = task.status === "x" ? " " : "x";
-		line = line.replace(/\[.\]/, `[${newStatus}]`);
-		lines[task.line] = line;
-	  
-		await saveFileLines(file.path, lines);
-	}
-}
-export function clearTaskCache() {
-	taskCache = {}
-}
-
 // sanitize HTML input to remove non-readable content
 async function getCleanContent(response, hostname) {
 	const html = await response.text;

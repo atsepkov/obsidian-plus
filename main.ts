@@ -423,6 +423,7 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("file-open", async (file) => {
 				if (file instanceof TFile && file.extension === "md") {
+					// TODO: figure out when to clear task cache, doing it here breaks out getSummary links every time we change files
 					// if (this.taskManager) {
 					// 	this.taskManager.clearTaskCache();
 					// }
