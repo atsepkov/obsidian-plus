@@ -5,6 +5,7 @@ import {
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
+import { TagQuery } from './tagQuery';
 import {
 	configure,
 	normalizeConfigVal,
@@ -104,6 +105,7 @@ export default class ObsidianPlus extends Plugin {
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	public configLoader: ConfigLoader;
 	public taskManager: TaskManager;
+	public tagQuery: TagQuery;
 
 	async onload() {
 		await this.loadSettings();
@@ -125,7 +127,9 @@ export default class ObsidianPlus extends Plugin {
 				console.log("TaskManager initialized.");
 
 				// getSummary configuration
-				configure(this.app, this)
+				// configure(this.app, this)
+				this.tagQuery = new TagQuery(this.app, this);
+				console.log("TagQuery initialized.");
  
 				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
 				await this.configLoader.loadTaskTagsFromFile();
@@ -499,9 +503,13 @@ export default class ObsidianPlus extends Plugin {
 		// --- End Scroll Listener ---
 	}
 	 
-	public getSummary(dv: any, identifier: string, options: any): string {
-		console.log('calling getSummary', dv, identifier, options, this.taskManager);
-		return getSummary(dv, identifier, options, this.taskManager);
+	public getSummary(dv: any, identifier: string, options: any): Promise<void | ListItem[]> {
+		if (!this.tagQuery) {
+			console.error('TagQuery is not initialized.');
+			dv.paragraph('TagQuery component is not ready.');
+			return;
+		}
+		return this.tagQuery.query(dv, identifier, options);
 	}
 
 	/**
