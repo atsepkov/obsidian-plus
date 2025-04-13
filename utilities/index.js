@@ -4,8 +4,10 @@ import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl }
 export { normalizeConfigVal } from './basic'
 
 let app;
-export function configure(instance) {
+let taskManager;
+export function configure(instance, obsidianPlus) {
 	app = instance;
+    taskManager = obsidianPlus.taskManager
 }
 
 // toggles tasks generated within our own plugin's view
@@ -482,8 +484,9 @@ export function getSummary(dv, identifier, options = {}, taskManager) {
 
         // If this line is a task, optionally show a checkbox
         if (includeCheckboxes && item.task) {
-            const id = generateId(10);
-            taskCache[id] = item;
+            // const id = generateId(10);
+            // taskCache[id] = item;
+            const id = taskManager.addTaskToCache(item);
             text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}>` +
                    `<span>${text}</span>`;
         }

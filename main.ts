@@ -121,11 +121,11 @@ export default class ObsidianPlus extends Plugin {
 				// Handle the case where dataview isn't ready - maybe disable features
 			} else {
 				// Instantiate TaskManager *after* dataview is ready
-				this.taskManager = new TaskManager(this.app, dataview);
+				this.taskManager = new TaskManager(this.app, dataview, this);
 				console.log("TaskManager initialized.");
 
 				// getSummary configuration
-				configure(this.app, this.taskManager)
+				configure(this.app, this)
  
 				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
 				await this.configLoader.loadTaskTagsFromFile();
@@ -331,6 +331,7 @@ export default class ObsidianPlus extends Plugin {
 					console.warn('TaskManager not ready for click event');
 					new Notice('TaskManager not available');
 				}
+				return;
 			}
 			// tasks expand to show child bullets on click
 			expandIfNeeded(evt);
@@ -422,9 +423,9 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("file-open", async (file) => {
 				if (file instanceof TFile && file.extension === "md") {
-					if (this.taskManager) {
-						this.taskManager.clearTaskCache();
-					}
+					// if (this.taskManager) {
+					// 	this.taskManager.clearTaskCache();
+					// }
 					this.updateFlaggedLines(file);
 				}
 				if (file instanceof TFile && file.extension === "md") {
