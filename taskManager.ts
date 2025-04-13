@@ -3,7 +3,7 @@ import { DataviewApi, Task } from 'obsidian-dataview'; // Assuming Task type exi
 // import TurndownService from 'turndown'; // Assuming turndown is installed
 
 // Import helpers - fetchExternalLinkContent will be moved into this class
-// import { extractUrl, isUrl, lineHasUrl, getIconForUrl } from './utilities/basic'; // Keep these if needed by getDvTaskLinks formatting
+import { generateId } from './utilities';
 
 // Define TaskInfo structure used by findDvTask
 interface TaskInfo {
@@ -42,10 +42,12 @@ export class TaskManager {
     private app: App;
     private dvApi: DataviewApi;
     private taskCache: { [id: string]: Task } = {}; // Internal task cache for toggleTask
+    private obsidianPlus: ObsidianPlus;
 
-    constructor(app: App, dvApi: DataviewApi) {
+    constructor(app: App, dvApi: DataviewApi, obsidianPlus: ObsidianPlus) {
         this.app = app;
         this.dvApi = dvApi;
+        this.obsidianPlus = obsidianPlus;
         console.log("TaskManager Dataview API initialized.");
     }
 
@@ -76,7 +78,7 @@ export class TaskManager {
 
     // Add task to cache (needed by getSummary rendering)
     public addTaskToCache(task: Task): string {
-        const id = this.generateId(10); // Use internal helper
+        const id = generateId(10); // Use internal helper
         this.taskCache[id] = task;
         return id;
     }
@@ -120,7 +122,6 @@ export class TaskManager {
             return;
         }
 
-        const tasksApi = (this.app.plugins.plugins["obsidian-tasks-plugin"] as any)?.apiV1;
         const file = this.app.metadataCache.getFirstLinkpathDest(task.path, "");
         if (!file || !(file instanceof TFile)) {
             console.error(`Could not find file for task path: ${task.path}`);
@@ -134,6 +135,7 @@ export class TaskManager {
         }
 
         let success = false;
+        const tasksApi = (this.app.plugins.plugins["obsidian-tasks-plugin"] as any)?.apiV1;
         if (tasksApi) {
             try {
                 const originalLineText = lines[task.line];
@@ -438,15 +440,6 @@ export class TaskManager {
     }
 
     // --- Internal Helpers ---
-
-    private generateId(length: number): string {
-        const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
-        let result = '';
-        for (let i = 0; i < length; i++) {
-            result += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
-        return result;
-    }
 
     private escapeRegex(str: string): string {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');

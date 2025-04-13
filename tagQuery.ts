@@ -3,7 +3,7 @@
 import { App, TFile, MarkdownRenderer } from 'obsidian';
 import { DataviewApi, ListItem } from 'obsidian-dataview'; // Use ListItem or specific DV types
 import { TaskManager } from './taskManager'; // Import TaskManager
-import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities/basic'; // Import necessary basic utils
+import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities'; // Import necessary basic utils
 
 // Define structure for child/parent entries (if needed internally, or import if defined elsewhere)
 interface TaskEntry {

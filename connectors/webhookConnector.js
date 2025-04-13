@@ -1,4 +1,4 @@
-import { normalizeConfigVal } from '../utilities/basic.js';
+import { normalizeConfigVal } from '../utilities';
 import TagConnector from './tagConnector.js';
 
 export default class WebhookConnector extends TagConnector {

@@ -6,11 +6,7 @@ import {
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
-import {
-	configure,
-	normalizeConfigVal,
-	getSummary,
-} from './utilities';
+import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
