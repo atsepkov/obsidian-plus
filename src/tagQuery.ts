@@ -13,6 +13,35 @@ interface TaskEntry {
     text: string;
 }
 
+interface QueryOptions {
+    currentFile?: boolean;
+    path?: string;
+    header?: string;
+    includeLinks?: boolean;
+    includeTags?: boolean;
+    includeCheckboxes?: boolean;
+    customFormat?: string;
+    hideCompleted?: boolean;
+    hideTasks?: boolean;
+    hideNonTasks?: boolean;
+    hideChildren?: boolean;
+    onlyChildren?: boolean;
+    onlyPrefixTags?: boolean;
+    onlySuffixTags?: boolean;
+    onlyMiddleTags?: boolean;
+    customFilter?: string;
+    customSort?: (a: ListItem, b: ListItem) => number;
+    afterDate?: string;
+    beforeDate?: string;
+    partialMatch?: boolean;
+    expandOnClick?: boolean;
+    customChildFilter?: string;
+    onlyShowMilestonesOnExpand?: boolean;
+    showSearchbox?: boolean;
+    customSearch?: string;
+    onlyReturn?: boolean;
+}
+
 export class TagQuery {
     private app: App;
     private obsidianPlus: ObsidianPlus;
@@ -32,14 +61,26 @@ export class TagQuery {
      * @param identifier - Tag string, array of tags, or null.
      * @param options - Query options object.
      */
-    public async query(dv: any, identifier: string | string[] | null, options: any = {}): Promise<void | ListItem[]> {
+    public async query(dv: any, identifier: string | string[] | null, options: QueryOptions = {}): Promise<void | ListItem[]> {
         console.log("TagQuery.query called with options:", options, identifier);
 
-        // --- Options Processing (Copied from getSummary) ---
-        const currentFile = options.currentFile ?? false;
+        // --- Options Processing ---
+
+        // search space
+        const currentFile = options.currentFile ?? false; // limit search to current file
+        // options.path - limit search to specific files / directories
+        // options.header - only search bullets under specific header/section
+        // options.afterDate - limit search to items after specific date
+        // options.beforeDate - limit search to items before specific date
+        // options.partialMatch - allow partial matches
+
+        // render format
         const includeLinks = options.includeLinks ?? !currentFile;
         const includeTags = options.includeTags ?? false;
         const includeCheckboxes = options.includeCheckboxes ?? false;
+        const customFormat = options.customFormat ?? null;
+
+        // filtering of results
         const hideCompleted = options.hideCompleted ?? false;
         const hideTasks = options.hideTasks ?? false;
         const hideNonTasks = options.hideNonTasks ?? false;
@@ -48,13 +89,22 @@ export class TagQuery {
         const onlyPrefixTags = options.onlyPrefixTags ?? false;
         const onlySuffixTags = options.onlySuffixTags ?? false;
         const onlyMiddleTags = options.onlyMiddleTags ?? false;
-        const customFormat = options.customFormat ?? null;
         const customFilter = options.customFilter ?? null;
-        const customChildFilter = options.customChildFilter ?? null;
-        const customSearch = options.customSearch ?? null;
+
+        // ordering of results
+        const customSort = options.customSort ?? null;
+
+        // rendering of children (children are top-level items documented under specific tag instance)
         const expandOnClick = options.expandOnClick ?? false;
+        const customChildFilter = options.customChildFilter ?? null;
+        const onlyShowMilestonesOnExpand = options.onlyShowMilestonesOnExpand ?? false;
+
+        // rendering/handling of search box
         const showSearchbox = options.showSearchbox ?? false;
-        const onlyReturn = options.onlyReturn ?? false; // Added this option
+        const customSearch = options.customSearch ?? null;
+
+        // only return results, do not render them
+        const onlyReturn = options.onlyReturn ?? false;
 
         if (onlyChildren && hideChildren) {
             dv.paragraph("Error: onlyChildren and hideChildren cannot be used together.");
@@ -110,7 +160,7 @@ export class TagQuery {
             }
         }
 
-        // 3) Filter results (Logic from getSummary)
+        // 3) Filter + Sort results
         const filtered = results.filter(c => {
             if (customFilter && !customFilter(c)) return false;
             if (hideCompleted && c.task && c.status === "x") return false;
@@ -125,6 +175,10 @@ export class TagQuery {
 
             return true;
         });
+
+        if (customSort) {
+            filtered.sort(customSort);
+        }
 
         // 4) Return data if requested
         if (onlyReturn) {
@@ -141,7 +195,7 @@ export class TagQuery {
      * Finds list items matching an identifier within specific pages/paths/headers.
      * (Previously gatherTags)
      */
-    private gatherTags(dv: any, identifier: string | null, options: any): ListItem[] {
+    private gatherTags(dv: any, identifier: string | null, options: QueryOptions): ListItem[] {
         // --- Logic from gatherTags ---
         const currentFile = options.currentFile ?? false;
         const path = options.path ?? null;
@@ -195,7 +249,7 @@ export class TagQuery {
      * Recursively finds items matching an identifier within a parent's children.
      * (Previously findInChildren)
      */
-    private findInChildren(parentItem: ListItem, targetIdentifier: string, options: any): ListItem[] {
+    private findInChildren(parentItem: ListItem, targetIdentifier: string, options: QueryOptions): ListItem[] {
         // --- Logic from findInChildren ---
         const matches: ListItem[] = [];
         if (!parentItem || !parentItem.children) return matches;
@@ -277,7 +331,7 @@ export class TagQuery {
      * (Previously formatItem helper inside getSummary)
      * Requires TaskManager instance access.
      */
-    private formatItem(item: ListItem, dv: any, options: any, isChild = false): string {
+    private formatItem(item: ListItem, dv: any, options: QueryOptions, isChild = false): string {
         // --- Logic from formatItem ---
         // Needs this.taskManager
         const { includeCheckboxes, includeLinks, customFormat } = options;
@@ -341,10 +395,16 @@ export class TagQuery {
      * (Previously renderResults helper inside getSummary)
      * Requires App instance access.
      */
-    private async renderResults(dv: any, items: ListItem[], options: any): Promise<void> {
+    private async renderResults(dv: any, items: ListItem[], options: QueryOptions): Promise<void> {
         // --- Logic from renderResults ---
         // Needs this.app
-        const { expandOnClick, showSearchbox, customChildFilter, customSearch } = options;
+        const {
+            expandOnClick,
+            showSearchbox,
+            onlyShowMilestonesOnExpand,
+            customChildFilter,
+            customSearch
+        } = options;
         const containerEl = dv.container; // Get container from dv object
 
         containerEl.empty(); // Clear previous content
@@ -371,6 +431,8 @@ export class TagQuery {
                         childrenUl.style.display = "none";
                         for (const child of c.children) {
                             if (customChildFilter && !customChildFilter(child)) continue;
+                            if (onlyShowMilestonesOnExpand && !(child.task && !child.tags.length)) continue;
+
                             const childLi = childrenUl.createEl("li");
                             await MarkdownRenderer.render(this.app, child.text, childLi, c.path ?? "", dv.component); // Use this.app
                         }
