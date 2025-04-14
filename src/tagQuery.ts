@@ -22,6 +22,7 @@ interface QueryOptions {
     includeCheckboxes?: boolean;
     customFormat?: string;
     hideCompleted?: boolean;
+    hideIfCompletedMilestones?: boolean;
     hideTasks?: boolean;
     hideNonTasks?: boolean;
     hideChildren?: boolean;
@@ -82,10 +83,11 @@ export class TagQuery {
 
         // filtering of results
         const hideCompleted = options.hideCompleted ?? false;
+        const hideIfCompletedMilestones = options.hideIfCompletedMilestones ?? false; // hide task/tag if all milestone children are completed
         const hideTasks = options.hideTasks ?? false;
         const hideNonTasks = options.hideNonTasks ?? false;
-        const hideChildren = options.hideChildren ?? false;
-        const onlyChildren = options.onlyChildren ?? false;
+        const hideChildren = options.hideChildren ?? false; // only show top-level items (non-naked tags, common for regular tags/tasks)
+        const onlyChildren = options.onlyChildren ?? false; // only show children of a naked tag (common for project notes)
         const onlyPrefixTags = options.onlyPrefixTags ?? false;
         const onlySuffixTags = options.onlySuffixTags ?? false;
         const onlyMiddleTags = options.onlyMiddleTags ?? false;
@@ -142,14 +144,18 @@ export class TagQuery {
         // 2) Process lines into results (Adjusted Section from getSummary)
         let results: ListItem[] = [];
         const targetIdentifier = Array.isArray(identifier) ? identifier[identifier.length - 1] : identifier;
+        console.log("Target Identifier:", targetIdentifier, initialLines);
 
         for (let line of initialLines) {
             if (!targetIdentifier) {
+                // no identifier/tag specified
                 let text = line.text.split('\n')[0].trim();
                 results.push({ ...line, text });
-            } else if (line.text === targetIdentifier && !hideChildren && !Array.isArray(identifier)) {
-                 results = results.concat(line.children);
+            } else if (!line.text.includes(' ') && !hideChildren && !Array.isArray(identifier)) {
+                // naked tag
+                results = results.concat(line.children);
             } else if (line.text.includes(targetIdentifier) && !onlyChildren) {
+                // tagged line item
                 let text = line.text.split('\n')[0].trim();
                 const tagPosition = text.indexOf(targetIdentifier);
                 if (!includeTags && targetIdentifier) {
@@ -167,6 +173,20 @@ export class TagQuery {
             if (hideTasks && c.task) return false;
             if (hideNonTasks && !c.task) return false;
             if (onlyPrefixTags && c.tagPosition !== 0) return false;
+            if (hideIfCompletedMilestones) {
+                let hasMilestones = false;
+                let isComplete = true;
+                for (const child of c.children) {
+                    if (child.task && !child.tags.length) {
+                        hasMilestones = true;
+                        if (child.status !== "x") {
+                            isComplete = false;
+                            break;
+                        }
+                    }
+                }
+                if (hasMilestones && isComplete) return false;
+            }
             // Adjust suffix/middle checks if tagPosition was added and is reliable
             const tagLength = targetIdentifier?.length ?? 0;
             if (onlySuffixTags && targetIdentifier && c.tagPosition < c.text.length - (includeTags ? tagLength : 0)) return false;
