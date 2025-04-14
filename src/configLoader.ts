@@ -110,9 +110,6 @@ export class ConfigLoader {
             return;
         }
 
-        // Import getSummary locally within the function scope
-        const { getSummary } = await import('./utilities'); // Adjust path if needed
-
         try {
             const file = this.app.vault.getAbstractFileByPath(path);
             if (file && file instanceof TFile) {
@@ -120,10 +117,10 @@ export class ConfigLoader {
                 // Use DataviewQuery to get summary data, requesting onlyReturn
                 const commonOptions = { currentFile: file.path, onlyPrefixTags: true, onlyReturn: true };
 
-                // Use the imported getSummary function
-                const basicTags = getSummary(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
-                const autoTags = getSummary(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
-                const recurringTags = getSummary(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
+                const basicTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
+                const autoTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
+                const recurringTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
+                console.log("Found tags:", basicTags, autoTags, recurringTags);
 
                 const foundTags: string[] = [];
 

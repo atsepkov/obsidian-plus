@@ -331,7 +331,7 @@ export class TagQuery {
 
         const targetHeading = cache.headings[targetHeadingIndex];
         const startLine = targetHeading.position.start.line;
-        let endLine = cache.sections?.find(s => s.position.start.line > startLine)?.position.start.line ?? Number.MAX_SAFE_INTEGER; // Use section end or file end
+        let endLine = Number.MAX_SAFE_INTEGER; // assume the end of the file, if no next heading is found
 
         // Find next heading of same or higher level to determine end line more accurately
         for (let i = targetHeadingIndex + 1; i < cache.headings.length; i++) {
