@@ -410,6 +410,17 @@ export class TagQuery {
         // --- End formatItem Logic ---
     }
 
+    private checksum(items: ListItem[]): string {
+        const newItemsJSON = JSON.stringify(items.map(e => ({ text: e.text, children: e.children.map(c => ({ text: c.text })) })));
+
+        let hash = 5381;
+        for (let i = 0; i < newItemsJSON.length; i++) {
+            hash = ((hash << 5) + hash) + newItemsJSON.charCodeAt(i); // hash * 33 + char
+        }
+        // Return a hexadecimal string (forced positive via >>> 0)
+        return (hash >>> 0).toString(16);
+    }
+
     /**
      * Renders the list of results to the DOM using Dataview methods.
      * (Previously renderResults helper inside getSummary)
@@ -426,6 +437,20 @@ export class TagQuery {
             customSearch
         } = options;
         const containerEl = dv.container; // Get container from dv object
+
+        // Create a stable representation of items
+        const newChecksum = this.checksum(items);
+        const alreadyHasNodes = containerEl.hasChildNodes();
+
+        // Check if container has a previously stored checksum
+        const oldChecksum = containerEl.getAttr("data-render-checksum");
+        if (oldChecksum === newChecksum && alreadyHasNodes) {
+            // The data didn't change; do nothing
+            return;
+        }
+
+        // Otherwise, store our new checksum
+        containerEl.setAttr("data-render-checksum", newChecksum);
 
         containerEl.empty(); // Clear previous content
 
