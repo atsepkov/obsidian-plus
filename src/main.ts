@@ -326,7 +326,16 @@ export default class ObsidianPlus extends Plugin {
 				// id=i${id}
 				const taskId = target.id.slice(1);
 				if (this.taskManager) {
-					this.taskManager.toggleTask(taskId);
+					// this.taskManager.toggleTask(taskId);
+					if (evt.shiftKey) {
+                        // --- SHIFT + CLICK ---
+                        console.log(`Shift+Click detected for task ID: ${taskId}. Cancelling.`);
+                        this.taskManager.cancelTask(taskId); // Call the new cancel method
+                    } else {
+                        // --- REGULAR CLICK ---
+                        console.log(`Click detected for task ID: ${taskId}. Toggling.`);
+                        this.taskManager.toggleTask(taskId); // Call the existing toggle method
+                    }
 				} else {
 					console.warn('TaskManager not ready for click event');
 					new Notice('TaskManager not available');

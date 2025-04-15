@@ -167,6 +167,76 @@ export class TaskManager {
         }
     }
 
+    public async cancelTask(taskId: string): Promise<void> {
+        const task = this.taskCache[taskId];
+        if (!task) {
+            console.warn(`Task with ID ${taskId} not found in cache.`);
+            new Notice(`Task with ID ${taskId} not found.`);
+            return;
+        }
+
+        const file = this.app.metadataCache.getFirstLinkpathDest(task.path, "");
+        if (!file || !(file instanceof TFile)) {
+            console.error(`Could not find file for task path: ${task.path}`);
+            new Notice(`Could not find file: ${task.path}`);
+            return;
+        }
+
+        try {
+            const lines = await this.getFileLines(file.path);
+            if (task.line >= lines.length) {
+                console.error(`Task line number ${task.line} out of bounds for file ${file.path}`);
+                new Notice(`Task line number invalid for: ${task.text}`);
+                return;
+            }
+
+            let line = lines[task.line];
+            const currentStatusMatch = line.match(/\[(.)\]/);
+
+            if (currentStatusMatch) {
+                const currentStatus = currentStatusMatch[1];
+                if (currentStatus === '-') {
+                    new Notice(`Task already cancelled: ${task.text}`);
+                    return; // Already cancelled, do nothing
+                }
+
+                // --- Indentation Preservation ---
+                // Store the original indentation
+                const indentMatch = line.match(/^(\s*)/);
+                const indentation = indentMatch ? indentMatch[1] : "";
+
+                // --- Status Marker Change ---
+                // Replace status marker with [-]
+                // Use a more precise regex to avoid affecting content after the marker
+                let modifiedLine = line.replace(/^(\s*[-*+]\s*)\[.?\]/, `$1[-]`);
+
+                // --- Timestamp Handling ---
+                const cancellationDate = moment().format('YYYY-MM-DD');
+                const cancellationMarker = ` ❌ ${cancellationDate}`; // Correct format
+
+                // Remove existing completion date (✅ YYYY-MM-DD) if present
+                modifiedLine = modifiedLine.replace(/\s*✅\s*\d{4}-\d{2}-\d{2}/, '');
+                // Remove existing cancellation date (❌ YYYY-MM-DD) if present (to avoid duplicates)
+                modifiedLine = modifiedLine.replace(/\s*❌\s*\d{4}-\d{2}-\d{2}/, '');
+
+                // Append the new cancellation marker
+                modifiedLine += cancellationMarker;
+
+                // --- Assign back WITHOUT trimming indentation ---
+                lines[task.line] = modifiedLine; // No .trim() here!
+
+                await this.saveFileLines(file.path, lines);
+                new Notice(`Task cancelled: ${task.text}`);
+            } else {
+                console.error(`Could not find status marker on line ${task.line} for task: ${task.text}`);
+                new Notice(`Could not find status marker for task: ${task.text}`);
+            }
+        } catch (error) {
+            console.error(`Error cancelling task ${taskId}:`, error);
+            new Notice(`Error cancelling task: ${error.message}`);
+        }
+    }
+
     // --- Task Update ---
 
     public async updateDvTask(dvTask: Task, options: UpdateTaskOptions): Promise<void> {

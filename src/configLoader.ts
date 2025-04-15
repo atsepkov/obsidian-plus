@@ -120,7 +120,6 @@ export class ConfigLoader {
                 const basicTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
                 const autoTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
                 const recurringTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
-                console.log("Found tags:", basicTags, autoTags, recurringTags);
 
                 const foundTags: string[] = [];
 

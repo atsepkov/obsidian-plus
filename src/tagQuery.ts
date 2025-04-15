@@ -382,7 +382,7 @@ export class TagQuery {
 
         if (includeCheckboxes && item.task) {
             const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
-            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}>` +
+            text = `<input type="checkbox" ${item.status === "-" ? "data-task=\"-\"" : ""} class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}>` +
                    `<span>${text}</span>`;
         }
 
