@@ -20,7 +20,9 @@ Here are the features it adds to Obsidian:
   - lists that summarize tag notes
   - expand tags to show document outlines
   - stitch notes together from multiple days into continuous flow of thought
+  - additional task shortcuts not offered by Tasks plugin (e.g. shift+click to cancel task)
 - sticky header summarizing current context
+  - useful when part of the context is out of view
   
 Work in Progress:
 - better summaries

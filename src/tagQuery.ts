@@ -22,6 +22,7 @@ interface QueryOptions {
     includeCheckboxes?: boolean;
     customFormat?: string;
     hideCompleted?: boolean;
+    onlyCompleted?: boolean;
     hideIfCompletedMilestones?: boolean;
     hideTasks?: boolean;
     hideNonTasks?: boolean;
@@ -83,6 +84,7 @@ export class TagQuery {
 
         // filtering of results
         const hideCompleted = options.hideCompleted ?? false;
+        const onlyCompleted = options.onlyCompleted ?? false;
         const hideIfCompletedMilestones = options.hideIfCompletedMilestones ?? false; // hide task/tag if all milestone children are completed
         const hideTasks = options.hideTasks ?? false;
         const hideNonTasks = options.hideNonTasks ?? false;
@@ -144,16 +146,17 @@ export class TagQuery {
         // 2) Process lines into results (Adjusted Section from getSummary)
         let results: ListItem[] = [];
         const targetIdentifier = Array.isArray(identifier) ? identifier[identifier.length - 1] : identifier;
-        console.log("Target Identifier:", targetIdentifier, initialLines);
 
+        const isProjectTag = (line) => line.tags.length === 1 && (line.text.trim() === line.tags[0]);
         for (let line of initialLines) {
             if (!targetIdentifier) {
                 // no identifier/tag specified
                 let text = line.text.split('\n')[0].trim();
                 results.push({ ...line, text });
-            } else if (!line.text.includes(' ') && !hideChildren && !Array.isArray(identifier)) {
-                // naked tag
-                results = results.concat(line.children);
+            } else if (isProjectTag(line) && !hideChildren && line.text.includes(targetIdentifier)) {
+                // project tag
+                const parent = { ...line, tagPosition: 0 };
+                results = results.concat(line.children.map(c => ({ ...c, parentItem: parent })));
             } else if (line.text.includes(targetIdentifier) && !onlyChildren) {
                 // tagged line item
                 let text = line.text.split('\n')[0].trim();
@@ -170,9 +173,12 @@ export class TagQuery {
         const filtered = results.filter(c => {
             if (customFilter && !customFilter(c)) return false;
             if (hideCompleted && c.task && c.status === "x") return false;
+            if (onlyCompleted && c.task && c.status !== "x") return false;
             if (hideTasks && c.task) return false;
             if (hideNonTasks && !c.task) return false;
-            if (onlyPrefixTags && c.tagPosition !== 0) return false;
+            if (onlyPrefixTags && c.tagPosition !== 0 && (
+                !c.parentItem || (c.parentItem && !c.parentItem.text.includes(targetIdentifier))
+            )) return false;
             if (hideIfCompletedMilestones) {
                 let hasMilestones = false;
                 let isComplete = true;

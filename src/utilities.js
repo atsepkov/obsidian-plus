@@ -102,17 +102,24 @@ export function escapeRegex(str) {
 	return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+const urlRegex = /((https?|ftp):\/\/[^\s/$.?#].[^\s()]*)/i;
 export const isUrl = (str) => {
+	// Anchor it to match the entire line:
+	const anchoredRegex = new RegExp(`^${urlRegex.source}$`, urlRegex.flags);
+  
+	// If regex doesn't match as a full line, return false immediately
+	if (!anchoredRegex.test(str)) {
+	  	return false;
+	}
+  
+	// Then validate by actually constructing a URL
 	try {
-		new URL(str);
-		return true;
+	  	new URL(str);
+	  	return true;
 	} catch (e) {
-		return false;
+	  	return false;
 	}
 }
-// const urlRegex = /((https?|ftp):\/\/[^\s/$.?#].[^\s()]*)/i;
-// const urlRegex = /((https?|ftp):\/\/[^\s/$.?#][^\s()[\]{}|]*)/gi;
-const urlRegex = /((https?|ftp):\/\/[^\s/$.?#][^\s()[\]{}]*)/gi;
 export const lineHasUrl = (line) => {
 	return urlRegex.test(line);
 }
