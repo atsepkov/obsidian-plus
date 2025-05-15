@@ -42,6 +42,7 @@ interface QueryOptions {
     showSearchbox?: boolean;
     customSearch?: string;
     onlyReturn?: boolean;
+    groupBy?: (item: ListItem) => string; // Add groupBy option
 }
 
 export class TagQuery {
@@ -106,6 +107,9 @@ export class TagQuery {
         // rendering/handling of search box
         const showSearchbox = options.showSearchbox ?? false;
         const customSearch = options.customSearch ?? null;
+
+        // grouping
+        const groupBy = options.groupBy ?? null; // Extract groupBy option
 
         // only return results, do not render them
         const onlyReturn = options.onlyReturn ?? false;
@@ -211,8 +215,32 @@ export class TagQuery {
             return filtered;
         }
 
-        // 5) Render results (using internal helper)
-        await this.renderResults(dv, filtered, options);
+        // 5) Group results if groupBy is provided
+        let groupedResults: Map<string, ListItem[]> | null = null;
+        if (groupBy) {
+            groupedResults = new Map<string, ListItem[]>();
+            for (const item of filtered) {
+                try {
+                    const groupKey = groupBy(item);
+                    if (groupKey !== null && groupKey !== undefined) {
+                        if (!groupedResults.has(groupKey)) {
+                            groupedResults.set(groupKey, []);
+                        }
+                        groupedResults.get(groupKey)!.push(item);
+                    }
+                } catch (e) {
+                    console.error("Error applying groupBy function:", e, "Item:", item);
+                    // Optionally add to a default group or skip
+                }
+            }
+            // Sort groups alphabetically by key
+            groupedResults = new Map([...groupedResults.entries()].sort());
+        }
+
+
+        // 6) Render results (using internal helper)
+        // Pass both the flat filtered list (for checksum/search) and the grouped list (if exists)
+        await this.renderResults(dv, filtered, options, groupedResults);
     }
 
     // --- Private Helper Methods (Moved from utilities/index.js) ---
@@ -432,7 +460,7 @@ export class TagQuery {
      * (Previously renderResults helper inside getSummary)
      * Requires App instance access.
      */
-    private async renderResults(dv: any, items: ListItem[], options: QueryOptions): Promise<void> {
+    private async renderResults(dv: any, items: ListItem[], options: QueryOptions, groupedItems: Map<string, ListItem[]> | null): Promise<void> {
         // --- Logic from renderResults ---
         // Needs this.app
         const {
@@ -440,11 +468,12 @@ export class TagQuery {
             showSearchbox,
             onlyShowMilestonesOnExpand,
             customChildFilter,
-            customSearch
+            customSearch,
+            groupBy // Need groupBy option here for search re-grouping
         } = options;
         const containerEl = dv.container; // Get container from dv object
 
-        // Create a stable representation of items
+        // Create a stable representation of items for checksum (use the flat list)
         const newChecksum = this.checksum(items);
         const alreadyHasNodes = containerEl.hasChildNodes();
 
@@ -460,13 +489,16 @@ export class TagQuery {
 
         containerEl.empty(); // Clear previous content
 
-        const renderList = async (itemsToRender: ListItem[], targetEl: HTMLElement) => {
-            targetEl.empty(); // Clear target element
+        // Helper function to render a flat list of items
+        const renderFlatList = async (itemsToRender: ListItem[], targetEl: HTMLElement) => {
+             // Clear target element only if it's not the main container and we are replacing content
+             // targetEl.empty(); // Clearing here might interfere with grouped rendering structure
 
             if (expandOnClick) {
                 const listEl = targetEl.createEl("ul", { cls: "op-expandable-list" });
                 for (const c of itemsToRender) {
                     const liEl = listEl.createEl("li");
+                    // Use formatItem helper
                     const itemContent = this.formatItem(c, dv, options).replace(/^- /, ""); // Pass dv and options
 
                     if (c.children?.length > 0) {
@@ -485,6 +517,7 @@ export class TagQuery {
                             if (onlyShowMilestonesOnExpand && !(child.task && !child.tags.length)) continue;
 
                             const childLi = childrenUl.createEl("li");
+                            // Render child text directly, not formatted as a top-level item
                             await MarkdownRenderer.render(this.app, child.text, childLi, c.path ?? "", dv.component); // Use this.app
                         }
                     } else {
@@ -494,30 +527,94 @@ export class TagQuery {
             } else {
                 // Render as simple list using dv.list
                 const listItems = itemsToRender.map(c => this.formatItem(c, dv, options)); // Pass dv and options
-                dv.list(listItems, targetEl); // Use dv.list for proper rendering
+                // dv.list renders directly into the container, need to manage this if rendering into sub-elements
+                // Let's manually create the list structure for consistency with expandable list
+                 const listEl = targetEl.createEl("ul");
+                 for (const itemText of listItems) {
+                     const liEl = listEl.createEl("li");
+                     // Render the formatted text (which includes the bullet)
+                     await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
+                 }
             }
         };
+
+        // Helper function to render grouped items
+        const renderGroupedList = async (groupedItemsToRender: Map<string, ListItem[]>, targetEl: HTMLElement) => {
+            targetEl.empty(); // Clear the target element before rendering groups
+            for (const [groupKey, groupItems] of groupedItemsToRender.entries()) {
+                // Create a container for each group
+                const groupContainer = targetEl.createEl("div", { cls: "op-group" });
+
+                // Add the group header
+                groupContainer.createEl("h4", { text: groupKey, cls: "op-group-header" });
+
+                // Create a container for the list items within this group
+                const groupListContainer = groupContainer.createEl("div", { cls: "op-group-list" });
+
+                // Render the items for this group using the flat list renderer
+                await renderFlatList(groupItems, groupListContainer);
+            }
+        };
+
 
         if (showSearchbox) {
             const wrapper = containerEl.createEl("div", { cls: "my-search-wrapper" });
             const searchEl = wrapper.createEl("input", { type: "text", placeholder: "Search..." });
-            const resultsEl = wrapper.createEl("div");
+            const resultsEl = wrapper.createEl("div"); // Container for search results
 
-            await renderList(items, resultsEl); // Initial render
+            // Initial render based on original data (grouped or flat)
+            if (groupedItems) {
+                await renderGroupedList(groupedItems, resultsEl);
+            } else {
+                await renderFlatList(items, resultsEl);
+            }
 
             searchEl.addEventListener("input", async (e) => {
                 const query = (e.target as HTMLInputElement).value.toLowerCase();
-                const currentItems = items.filter(item => {
+
+                // Filter the original flat list of items
+                const filteredItems = items.filter(item => {
                     if (customSearch) return customSearch(item, query);
+                    // Default search: check item text and children text
                     const hasQuery = item.text.toLowerCase().includes(query);
                     const hasChild = item.children?.some(child => child.text.toLowerCase().includes(query));
                     return hasQuery || hasChild;
                 });
-                await renderList(currentItems, resultsEl); // Re-render filtered
+
+                // Re-group if groupBy was originally used
+                if (groupBy) {
+                    const filteredGroupedItems = new Map<string, ListItem[]>();
+                     for (const item of filteredItems) {
+                        try {
+                            const groupKey = groupBy(item);
+                            if (groupKey !== null && groupKey !== undefined) {
+                                if (!filteredGroupedItems.has(groupKey)) {
+                                    filteredGroupedItems.set(groupKey, []);
+                                }
+                                filteredGroupedItems.get(groupKey)!.push(item);
+                            }
+                        } catch (e) {
+                            console.error("Error applying groupBy function during search re-grouping:", e, "Item:", item);
+                        }
+                    }
+                    // Sort groups alphabetically by key for search results too
+                    const sortedFilteredGroupedItems = new Map([...filteredGroupedItems.entries()].sort());
+                    await renderGroupedList(sortedFilteredGroupedItems, resultsEl);
+                } else {
+                    // Render flat list if no groupBy was used
+                    await renderFlatList(filteredItems, resultsEl);
+                }
             });
         } else {
-            await renderList(items, containerEl); // Render directly into dv.container
+            // Render directly into dv.container (grouped or flat)
+            if (groupedItems) {
+                await renderGroupedList(groupedItems, containerEl);
+            } else {
+                await renderFlatList(items, containerEl);
+            }
         }
         // --- End renderResults Logic ---
     }
+
+    // ... (existing private helper methods after renderResults)
 }
