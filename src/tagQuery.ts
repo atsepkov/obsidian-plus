@@ -31,13 +31,13 @@ interface QueryOptions {
     onlyPrefixTags?: boolean;
     onlySuffixTags?: boolean;
     onlyMiddleTags?: boolean;
-    customFilter?: string;
+    customFilter?: (a: ListItem) => boolean;
     customSort?: (a: ListItem, b: ListItem) => number;
     afterDate?: string;
     beforeDate?: string;
     partialMatch?: boolean;
     expandOnClick?: boolean;
-    customChildFilter?: string;
+    customChildFilter?: (a: ListItem) => boolean;
     onlyShowMilestonesOnExpand?: boolean;
     showSearchbox?: boolean;
     customSearch?: string;
