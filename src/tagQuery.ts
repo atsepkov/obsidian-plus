@@ -25,6 +25,8 @@ interface QueryOptions {
     onlyCompleted?: boolean;
     hideIfCompletedMilestones?: boolean;
     hideTasks?: boolean;
+    expandOnClick?: boolean;
+    expandChildren?: boolean; // Add expandChildren option
     hideNonTasks?: boolean;
     hideChildren?: boolean;
     onlyChildren?: boolean;
@@ -101,6 +103,7 @@ export class TagQuery {
 
         // rendering of children (children are top-level items documented under specific tag instance)
         const expandOnClick = options.expandOnClick ?? false;
+        const expandChildren = options.expandChildren ?? false; // Extract expandChildren option
         const customChildFilter = options.customChildFilter ?? null;
         const onlyShowMilestonesOnExpand = options.onlyShowMilestonesOnExpand ?? false;
 
@@ -491,11 +494,19 @@ export class TagQuery {
 
         // Helper function to render a flat list of items
         const renderFlatList = async (itemsToRender: ListItem[], targetEl: HTMLElement) => {
-             // Clear target element only if it's not the main container and we are replacing content
-             // targetEl.empty(); // Clearing here might interfere with grouped rendering structure
+            // Clear target element only if it's not the main container and we are replacing content
+            // targetEl.empty(); // Clearing here might interfere with grouped rendering structure
 
-            if (expandOnClick) {
-                const listEl = targetEl.createEl("ul", { cls: "op-expandable-list" });
+            const {
+                expandOnClick,
+                expandChildren, // Extract expandChildren here
+                customChildFilter,
+                onlyShowMilestonesOnExpand,
+            } = options;
+
+            // The condition for rendering nested children lists is now expandOnClick OR expandChildren
+            if (expandOnClick || expandChildren) {
+                const listEl = targetEl.createEl("ul", { cls: "op-expandable-list" }); // Keep class name for potential styling
                 for (const c of itemsToRender) {
                     const liEl = listEl.createEl("li");
                     // Use formatItem helper
@@ -503,15 +514,25 @@ export class TagQuery {
 
                     if (c.children?.length > 0) {
                         const parentId = generateId(10);
-                        const spanEl = liEl.createEl("span", {
-                            cls: "op-expandable-item",
-                            attr: { "data-parent-id": parentId },
-                        });
-                        spanEl.style.cursor = "pointer";
-                        await MarkdownRenderer.render(this.app, itemContent, spanEl, c.path ?? "", dv.component); // Use this.app
+
+                        // Render parent text: wrap in span only if expandOnClick is true
+                        const parentTextContainer = expandOnClick
+                            ? liEl.createEl("span", {
+                                cls: "op-expandable-item",
+                                attr: { "data-parent-id": parentId },
+                            })
+                            : liEl.createEl("div"); // Use a div or span without special class/cursor if not clickable
+
+                        if (expandOnClick) {
+                             parentTextContainer.style.cursor = "pointer";
+                        }
+
+                        await MarkdownRenderer.render(this.app, itemContent, parentTextContainer, c.path ?? "", dv.component); // Use this.app
 
                         const childrenUl = liEl.createEl("ul", { attr: { id: parentId }, cls: "op-expandable-children" });
-                        childrenUl.style.display = "none";
+                        // Set display based on expandChildren option
+                        childrenUl.style.display = expandChildren ? "" : "none";
+
                         for (const child of c.children) {
                             if (customChildFilter && !customChildFilter(child)) continue;
                             if (onlyShowMilestonesOnExpand && !(child.task && !child.tags.length)) continue;
@@ -521,18 +542,16 @@ export class TagQuery {
                             await MarkdownRenderer.render(this.app, child.text, childLi, c.path ?? "", dv.component); // Use this.app
                         }
                     } else {
+                        // Item has no children, render directly into li
                         await MarkdownRenderer.render(this.app, itemContent, liEl, c.path ?? "", dv.component); // Use this.app
                     }
                 }
             } else {
-                // Render as simple list using dv.list
+                // Render as simple flat list if neither expandOnClick nor expandChildren is true
                 const listItems = itemsToRender.map(c => this.formatItem(c, dv, options)); // Pass dv and options
-                // dv.list renders directly into the container, need to manage this if rendering into sub-elements
-                // Let's manually create the list structure for consistency with expandable list
                  const listEl = targetEl.createEl("ul");
                  for (const itemText of listItems) {
                      const liEl = listEl.createEl("li");
-                     // Render the formatted text (which includes the bullet)
                      await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
                  }
             }
