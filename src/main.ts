@@ -12,7 +12,7 @@ import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
-import { TaskLinkSuggest } from './fuzzyFinder';
+import { TaskTagTrigger } from './fuzzyFinder';
 
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
@@ -22,7 +22,14 @@ const dimLineDecoration = Decoration.line({
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 interface ObsidianPlusSettings {
-	mySetting: string;
+	tagListFilePath: string;
+	tagColors: string[];
+	taskTags: string[];
+	webTags: { [key: string]: string };
+	tagDescriptions: { [key: string]: string };
+	
+	aiConnector: string;
+	summarizeWithAi: boolean;
 }
 
 const DEFAULT_SETTINGS: ObsidianPlusSettings = {
@@ -30,6 +37,7 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
 	tagColors: [],
 	taskTags: [],
 	webTags: {},
+	tagDescriptions: {},
 
 	aiConnector: null,
 	summarizeWithAi: false,
@@ -452,7 +460,7 @@ export default class ObsidianPlus extends Plugin {
 			taskCache.set(currentFile.path, oldTasks);
 		}
 
-		this.registerEditorSuggest(new TaskLinkSuggest(this.app, this));
+		this.registerEditorSuggest(new TaskTagTrigger(this.app, this));
 	}
 
 	// --- Additions for Sticky Header ---

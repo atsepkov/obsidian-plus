@@ -92,6 +92,7 @@ export class ConfigLoader {
         // Reset relevant parts of plugin settings before loading
         this.plugin.settings.taskTags = [];
         this.plugin.settings.webTags = {};
+        this.plugin.settings.tagDescriptions = {};
         this.plugin.settings.aiConnector = null;
 
         if (!path) {
@@ -117,9 +118,17 @@ export class ConfigLoader {
                 // Use DataviewQuery to get summary data, requesting onlyReturn
                 const commonOptions = { currentFile: file.path, onlyPrefixTags: true, onlyReturn: true };
 
-                const basicTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
-                const autoTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
-                const recurringTags = await this.plugin.getSummary(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
+                const basicTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
+                const autoTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
+                const recurringTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
+                const tagDescriptions = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Legend' }) || [];
+                tagDescriptions.forEach((desc: any) => {
+                    // first word is the tag, strip it
+                    let text = desc.text;
+                    const tag = desc.tags[0].slice(1);
+                    if (text.startsWith(tag + ' ')) text = text.substring(tag.length + 1);
+                    this.plugin.settings.tagDescriptions[desc.tags[0]] = text.trim();
+                })
 
                 const foundTags: string[] = [];
 

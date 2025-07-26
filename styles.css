@@ -112,3 +112,8 @@ input[data-task="-"] {
     padding: 2px;
     font-size: small;
 }
+
+.modal-container .prompt .suggestion-item p {
+    margin: 0;
+    padding: 0;
+}
