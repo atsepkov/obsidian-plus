@@ -105,3 +105,10 @@ input[data-task="-"] {
     -webkit-mask-size: var(--checkbox-icon);
     -webkit-mask-position: 50% 50%;
 }
+
+.modal-container .prompt .suggestion-item {
+    white-space: normal;
+    line-height: 1.3em;
+    padding: 2px;
+    font-size: small;
+}

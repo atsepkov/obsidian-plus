@@ -28,6 +28,7 @@ interface QueryOptions {
     expandOnClick?: boolean;
     expandChildren?: boolean; // Add expandChildren option
     hideNonTasks?: boolean;
+    hideProjectTags?: boolean;
     hideChildren?: boolean;
     onlyChildren?: boolean;
     onlyPrefixTags?: boolean;
@@ -66,7 +67,7 @@ export class TagQuery {
      * @param identifier - Tag string, array of tags, or null.
      * @param options - Query options object.
      */
-    public async query(dv: any, identifier: string | string[] | null, options: QueryOptions = {}): Promise<void | ListItem[]> {
+    public query(dv: any, identifier: string | string[] | null, options: QueryOptions = {}): Promise<void | ListItem[]> {
         console.log("TagQuery.query called with options:", options, identifier);
 
         // --- Options Processing ---
@@ -91,6 +92,7 @@ export class TagQuery {
         const hideIfCompletedMilestones = options.hideIfCompletedMilestones ?? false; // hide task/tag if all milestone children are completed
         const hideTasks = options.hideTasks ?? false;
         const hideNonTasks = options.hideNonTasks ?? false;
+        const hideProjectTags = options.hideProjectTags ?? false;
         const hideChildren = options.hideChildren ?? false; // only show top-level items (non-naked tags, common for regular tags/tasks)
         const onlyChildren = options.onlyChildren ?? false; // only show children of a naked tag (common for project notes)
         const onlyPrefixTags = options.onlyPrefixTags ?? false;
@@ -118,7 +120,6 @@ export class TagQuery {
         const onlyReturn = options.onlyReturn ?? false;
 
         if (onlyChildren && hideChildren) {
-            dv.paragraph("Error: onlyChildren and hideChildren cannot be used together.");
             return;
         }
         // --- End Options ---
@@ -146,7 +147,6 @@ export class TagQuery {
                 throw new Error("Identifier must be a string, null, undefined, or an array of strings.");
             }
         } catch (error: any) {
-             dv.paragraph(`Error gathering tags: ${error.message}`);
              return;
         }
 
@@ -165,6 +165,8 @@ export class TagQuery {
                 const parent = { ...line, tagPosition: 0 };
                 results = results.concat(line.children.map(c => ({ ...c, parentItem: parent })));
             } else if (line.text.includes(targetIdentifier) && !onlyChildren) {
+                if (hideProjectTags && isProjectTag(line)) continue;
+
                 // tagged line item
                 let text = line.text.split('\n')[0].trim();
                 const tagPosition = text.indexOf(targetIdentifier);
@@ -214,12 +216,19 @@ export class TagQuery {
         }
 
         // 4) Return data if requested
-        if (onlyReturn) {
-            return filtered;
+        return filtered;
+    }
+
+    async renderQuery(dv: any, identifier: string | string[] | null, options: QueryOptions = {}): Promise<void | ListItem[]> {
+        const filtered = this.query(dv, identifier, options);
+
+        if (options.onlyChildren && options.hideChildren) {
+            dv.paragraph("Error: onlyChildren and hideChildren cannot be used together.");
+            return;
         }
 
-        // 5) Group results if groupBy is provided
         let groupedResults: Map<string, ListItem[]> | null = null;
+        const groupBy = options.groupBy;
         if (groupBy) {
             groupedResults = new Map<string, ListItem[]>();
             for (const item of filtered) {
@@ -245,6 +254,8 @@ export class TagQuery {
         // Pass both the flat filtered list (for checksum/search) and the grouped list (if exists)
         await this.renderResults(dv, filtered, options, groupedResults);
     }
+
+
 
     // --- Private Helper Methods (Moved from utilities/index.js) ---
 

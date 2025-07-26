@@ -12,6 +12,7 @@ import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
+import { TaskLinkSuggest } from './fuzzyFinder';
 
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
@@ -102,6 +103,7 @@ export default class ObsidianPlus extends Plugin {
 	public configLoader: ConfigLoader;
 	public taskManager: TaskManager;
 	public tagQuery: TagQuery;
+	public dv: any;
 
 	async onload() {
 		await this.loadSettings();
@@ -449,6 +451,8 @@ export default class ObsidianPlus extends Plugin {
 			const oldTasks = await this.extractTaskLines(currentFile);
 			taskCache.set(currentFile.path, oldTasks);
 		}
+
+		this.registerEditorSuggest(new TaskLinkSuggest(this.app, this));
 	}
 
 	// --- Additions for Sticky Header ---
@@ -507,14 +511,24 @@ export default class ObsidianPlus extends Plugin {
 		// }
 		// --- End Scroll Listener ---
 	}
+
+	public query(dv: any, identifier: string, options: any): Promise<void | ListItem[]> {
+		this.dv = dv;
+		if (!this.tagQuery) {
+			console.error('TagQuery is not initialized.');
+			return;
+		}
+		return this.tagQuery.query(dv, identifier, options);
+	}
 	 
 	public getSummary(dv: any, identifier: string, options: any): Promise<void | ListItem[]> {
+		this.dv = dv;
 		if (!this.tagQuery) {
 			console.error('TagQuery is not initialized.');
 			dv.paragraph('TagQuery component is not ready.');
 			return;
 		}
-		return this.tagQuery.query(dv, identifier, options);
+		return this.tagQuery.renderQuery(dv, identifier, options);
 	}
 
 	/**
@@ -599,7 +613,7 @@ export default class ObsidianPlus extends Plugin {
 							// console.log(`Stopped search at root-level item line ${parentLineNum}`);
 							break; // Stop searching upwards
 						}
-					} else {
+					} else if (lineText.trim() !== '') {
 						// If it's not a list item, check its indentation
 						const nonListIndentMatch = lineText.match(/^\s*/);
 						const nonListIndent = nonListIndentMatch ? nonListIndentMatch[0].length : 0;
