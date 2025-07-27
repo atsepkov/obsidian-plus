@@ -15,30 +15,46 @@ import {
   /*                              HELPERS                               */
   /* ------------------------------------------------------------------ */
   
-  /** Gather all tags + counts across the vault */
-  function getAllTags(app: App) {
-    const tagMap: Record<string, number> = {};
-    const tags = app.metadataCache.getTags(); // Obsidian 1.4+
-    Object.entries(tags).forEach(([tag, info]) => {
-      tagMap[tag] = info.count;
-    });
-    /* Sort by count desc then alpha */
-    return Object.entries(tagMap)
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .map(([tag]) => tag);
-  }
+  /** Gather every tag across the vault and return them
+ *  sorted by descending occurrence count, then A→Z  */
+    function getAllTags(app: App): string[] {
+        /* Obsidian ≥ 1.4:  getTags()  →  Record<#tag, { count: number }>   */
+        const tagInfo = app.metadataCache.getTags?.() as Record<string, {count: number}>;
+    
+        if (!tagInfo) return [];
+    
+        return Object
+            .entries(tagInfo)
+            .sort((a, b) => {
+                const diff = b[1] - a[1];     // larger count ⇒ earlier
+                return diff !== 0 ? diff : a[0].localeCompare(b[0]);  // tie → alpha
+            })
+            .map(([tag]) => tag);
+    }
   
-  /** Add a block‑ID to a task bullet if it doesn’t have one yet */
-  async function ensureBlockId(app: App, entry: TaskEntry): Promise<string> {
-    if (entry.id) return entry.id;
-    const id = Math.random().toString(36).slice(2, 7);
-    const text = await app.vault.read(entry.file);
-    const lines = text.split("\n");
-    lines[entry.lineNo] += ` ^${id}`;
-    await app.vault.modify(entry.file, lines.join("\n"));
-    entry.id = id;
-    return id;
-  }
+    /** Add a block‑ID to a task bullet if it doesn’t have one yet */
+    async function ensureBlockId(app: App, entry: TaskEntry): Promise<string> {
+        /* 1️⃣  Already cached in the object → reuse */
+        if (entry.id) return entry.id;
+    
+        /* 2️⃣  ID is in the line but wasn’t parsed (e.g. Dataview result) */
+        const inline = entry.text.match(/\^(\w+)\b/);
+        if (inline) {
+        entry.id = inline[1];          // cache for future calls
+        return entry.id;
+        }
+    
+        /* 3️⃣  No ID anywhere → append a new one */
+        const id = Math.random().toString(36).slice(2, 7);
+        const file = this.app.vault.getFileByPath(entry.path ?? entry.file.path);
+        const fileContents = await app.vault.read(file);
+        const lines = fileContents.split("\n");
+        lines[entry.line] += ` ^${id}`;
+        await app.vault.modify(file, lines.join("\n"));
+    
+        entry.id = id;
+        return id;
+    }
   
   /* ------------------------------------------------------------------ */
   /*                     MAIN  FuzzySuggest  MODAL                       */
@@ -51,6 +67,8 @@ import {
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
     private activeTag = "#";
+    private cachedTag   = "";          // which tag the cache belongs to
+    private taskCache: TaskEntry[] = [];   // tasks for that tag
   
     constructor(app: App, plugin: Plugin,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position }) {
@@ -67,23 +85,42 @@ import {
       ]);
   
       /* Keep mode in sync while user edits */
-      this.inputEl.addEventListener("input", () => this.detectMode());
+      this.inputEl.value = "#";
+      this.inputEl.addEventListener("input", () => {
+        this.detectMode()
+      });
       this.detectMode(); // initial
+    }
+
+    onOpen() {
+        super.onOpen?.();                    // (safe even if base is empty)
+      
+        this.inputEl.value = "#";   // ① prefill “#”
+        this.detectMode();          // ② tagMode = true
+        this.updateSuggestions();   // ③ show tags immediately
     }
   
     /* ---------- dynamic mode detection ---------- */
     private detectMode() {
-      const q = this.inputEl.value;
-      const m = q.match(/^#\S+\s$/);      // “#tag␠”
-      if (m) {
-        this.tagMode = false;
-        this.activeTag = m[0].trim();     // strip space
-      } else {
-        this.tagMode = true;
-        this.activeTag = "#";
-      }
-      /* force list refresh */
-      this.updateSuggestions();
+        const q = this.inputEl.value;
+        const m = q.match(/^#\S+\s/);          // “#tag␠...”
+      
+        if (m) {
+          this.tagMode   = false;
+          this.activeTag = m[0].trim();        // “#tag”
+      
+          /* 🆕  cache populate */
+          if (this.activeTag !== this.cachedTag) {
+            this.taskCache = this.collectTasks(this.activeTag);
+            this.cachedTag = this.activeTag;
+          }
+        } else {
+          this.tagMode   = true;
+          this.activeTag = "#";
+        }
+
+        /* 👇 force redraw immediately (fixes space‑switch lag) */
+        this.updateSuggestions();
     }
   
     /* ---------- data ---------- */
@@ -127,27 +164,72 @@ import {
         file?.path,
         this.plugin
       );
+        /* 👇 stop link‑clicks from bubbling to the list item */
+        el.querySelectorAll("a.internal-link").forEach(a => {
+            a.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const target = (a as HTMLAnchorElement).getAttribute("href")!;
+                this.app.workspace.openLinkText(target, file.path, false);
+                this.close();
+            });
+        });
     }
   
     /* ---------- choose behavior ---------- */
-    async onChooseItem(item) {
-      const editor = (this.app.workspace.getActiveViewOfType(MarkdownView)!).editor;
-  
-      if (typeof item === "string") {
-        /* TAG chosen → stay in modal, switch to task mode */
-        this.tagMode = false;
-        this.activeTag = item;
-        this.inputEl.value = item + " ";
-        this.updateSuggestions();
-        return; // don’t close modal
-      }
-  
-      /* TASK chosen → insert link, close modal */
-      const task = item as TaskEntry;
-      const id   = await ensureBlockId(this.app, task);
-      const file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-      const link = `[[${this.app.metadataCache.fileToLinktext(file)}^${id}]]`;
-      editor.replaceRange(link, this.replaceRange.from, this.replaceRange.to);
+    async onChooseItem(raw) {
+        const item = raw.item ?? raw;
+    
+        if (typeof item === "string") {
+            /* TAG chosen → stay in modal, switch to task mode */
+            this.tagMode = false;
+            this.activeTag = item;
+            this.inputEl.value = item + " ";
+            this.updateSuggestions();
+            return; // don’t close modal
+        }
+    
+        /* ─── TASK chosen ───────────────────────────────────────────── */
+        const task  = item as TaskEntry;
+        const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
+        const id    = await ensureBlockId(this.app, task);
+        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}^${id}|^]]`;
+
+        const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
+        const ed     = view.editor;
+
+        /* current-line context ------------------------------------------------ */
+        const ln        = this.replaceRange.from.line;
+        const curLine   = ed.getLine(ln);
+
+        /* leading whitespace + parent bullet (“- ” or “* ”) */
+        const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
+        const leadWS    = mIndent[1];          // spaces / tabs before bullet (if any)
+        const bullet    = mIndent[2] || "- ";  // reuse parent bullet or default "- "
+
+        /* parent line to insert ----------------------------------------------- */
+        let text = task.text;
+        // strip blockid, if present
+        if (text.match(/\^.*$/)) text = text.replace(/\^.*$/, "");
+        const parentTxt = `${leadWS}${bullet}${link} ${this.activeTag} *${text.trim()}*`;
+
+        /* child bullet one level deeper --------------------------------------- */
+        const childIndent  = `${leadWS}    ${bullet}`;   // 4 spaces deeper
+        const newBlock     = `${parentTxt}\n${childIndent}`;
+
+        /* replace the original trigger line */
+        ed.replaceRange(
+        newBlock,
+        { line: ln,     ch: 0 },
+        { line: ln,     ch: curLine.length }
+        );
+
+        /* move cursor AFTER the modal has closed & editor regains focus -------- */
+        setTimeout(() => {
+        ed.setCursor({ line: ln + 1, ch: childIndent.length });
+        }, 0);
+
+        this.close();
     }
   
     /* ---------- gather tasks with a given tag ---------- */
@@ -158,13 +240,44 @@ import {
         if (dv && (this.plugin as any).query) {
           try {
             const rows = (this.plugin as any)
-              .query(dv, tag, { path: '""', hideCompleted: true }) as TaskEntry[];
+              .query(dv, tag, {
+                path: '""',
+                onlyOpen: true,
+                onlyPrefixTags: true
+            }) as TaskEntry[];
             return (rows ?? []).map(r => ({ ...r, text: r.text.trim() }));
           } catch (e) { console.error("Dataview query failed", e); }
         }
       
         /* 2️⃣  Fallback – none (empty) because file reads are async */
         return [];
+    }
+
+    getSuggestions(query: string) {
+        /* ---------- TAG MODE ---------- */
+        if (this.tagMode) {
+          const tags      = getAllTags(this.app);   // already sorted
+          const q         = query.replace(/^#/, "").trim();
+          const baseScore = prepareFuzzySearch(q);
+      
+          return tags.flatMap((tag, idx) => {
+            if (!q)                                // nothing typed → keep order
+              return [{ item: tag, score: 0, match: null, idx }];
+      
+            const m = baseScore(tag);
+            return m ? [{ ...m, item: tag, idx }] : [];
+          })
+          /* sort by fuzzy score ↓  then popularity (idx) ↑ */
+          .sort((a, b) => b.score - a.score || a.idx - b.idx);
+        }
+      
+        /* ---------- TASK MODE ---------- */
+        const body     = query.replace(/^#\S+\s/, "");   // drop “#tag␠”
+        const scorer   = prepareFuzzySearch(body);
+        return this.taskCache.flatMap(t => {
+          const m = scorer(`${this.activeTag} ${t.text}`); // ← keeps tag in string
+          return m ? [{ ...m, item: t }] : [];
+        });
     }
   }
   

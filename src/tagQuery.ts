@@ -22,7 +22,11 @@ interface QueryOptions {
     includeCheckboxes?: boolean;
     customFormat?: string;
     hideCompleted?: boolean;
+    hideCancelled?: boolean;
     onlyCompleted?: boolean;
+    onlyCancelled?: boolean;
+    onlyOpen?: boolean;
+    hideOpen?: boolean;
     hideIfCompletedMilestones?: boolean;
     hideTasks?: boolean;
     expandOnClick?: boolean;
@@ -88,7 +92,11 @@ export class TagQuery {
 
         // filtering of results
         const hideCompleted = options.hideCompleted ?? false;
+        const hideCancelled = options.hideCancelled ?? false;
         const onlyCompleted = options.onlyCompleted ?? false;
+        const onlyCancelled = options.onlyCancelled ?? false;
+        const onlyOpen = options.onlyOpen ?? false;
+        const hideOpen = options.hideOpen ?? false;
         const hideIfCompletedMilestones = options.hideIfCompletedMilestones ?? false; // hide task/tag if all milestone children are completed
         const hideTasks = options.hideTasks ?? false;
         const hideNonTasks = options.hideNonTasks ?? false;
@@ -119,7 +127,17 @@ export class TagQuery {
         // only return results, do not render them
         const onlyReturn = options.onlyReturn ?? false;
 
+        // contradicting options
         if (onlyChildren && hideChildren) {
+            console.error('Error: onlyChildren and hideChildren cannot be used together.');
+            return;
+        }
+        if (onlyOpen && (onlyCompleted || onlyCancelled)) {
+            console.error('Error: onlyOpen and onlyCompleted/onlyCancelled cannot be used together.');
+            return;
+        }
+        if (hideOpen && onlyOpen) {
+            console.error('Error: hideOpen and onlyOpen cannot be used together.');
             return;
         }
         // --- End Options ---
@@ -182,7 +200,10 @@ export class TagQuery {
         const filtered = results.filter(c => {
             if (customFilter && !customFilter(c)) return false;
             if (hideCompleted && c.task && c.status === "x") return false;
+            if (hideCancelled && c.task && c.status === "-") return false;
             if (onlyCompleted && c.task && c.status !== "x") return false;
+            if (onlyOpen && c.task && c.status !== " ") return false;
+            if (hideOpen && c.task && c.status === " ") return false;
             if (hideTasks && c.task) return false;
             if (hideNonTasks && !c.task) return false;
             if (onlyPrefixTags && c.tagPosition !== 0 && (
