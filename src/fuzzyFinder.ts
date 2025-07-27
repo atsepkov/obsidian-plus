@@ -29,7 +29,7 @@ import {
                 const diff = b[1] - a[1];     // larger count ⇒ earlier
                 return diff !== 0 ? diff : a[0].localeCompare(b[0]);  // tie → alpha
             })
-            .map(([tag]) => tag);
+            .map(([tag, count]) => ({ tag, count }));
     }
   
     /** Add a block‑ID to a task bullet if it doesn’t have one yet */
@@ -89,6 +89,7 @@ import {
       this.inputEl.addEventListener("input", () => {
         this.detectMode()
       });
+      this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.detectMode(); // initial
     }
 
@@ -98,6 +99,40 @@ import {
         this.inputEl.value = "#";   // ① prefill “#”
         this.detectMode();          // ② tagMode = true
         this.updateSuggestions();   // ③ show tags immediately
+    }
+
+    private handleKeys(evt: KeyboardEvent) {
+        if (!this.tagMode) return;                // only in TAG mode
+      
+        const list  = this.chooser;               // ul.suggestion-container
+        const item  = list?.values[list.selectedItem];
+        const chosen = item?.item ?? item;        // unwrap FuzzyMatch
+      
+        /* ---- Tab: autocomplete tag, keep modal open ---- */
+        if (evt.key === "Tab" && typeof chosen === "object") {
+          evt.preventDefault();
+          this.inputEl.value = chosen.tag + " ";  // autocomplete
+          this.detectMode();                      // switches to task mode
+          return;
+        }
+    }
+
+    private insertNewTemplate(tag: string) {
+        const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
+        const ed     = view.editor;
+        const ln     = this.replaceRange.from.line;
+        const cur    = ed.getLine(ln);
+        const indent = cur.match(/^(\s*)/)![1];
+      
+        const isTask = (this.plugin.settings.taskTags ?? []).includes(tag);
+        const bullet = isTask ? "- [ ] " : "- ";
+        const line   = `${indent}${bullet}${tag} `;
+      
+        ed.replaceRange(line,
+          { line: ln, ch: 0 },
+          { line: ln, ch: cur.length }
+        );
+        ed.setCursor({ line: ln, ch: line.length });
     }
   
     /* ---------- dynamic mode detection ---------- */
@@ -118,6 +153,17 @@ import {
           this.tagMode   = true;
           this.activeTag = "#";
         }
+
+        /* after you build instructions array */
+        this.setInstructions([
+            this.tagMode
+            ? { command: "⏎", purpose: "insert new bullet · close" }
+            : { command: "⏎", purpose: "link task · close" },
+            this.tagMode
+            ? { command: "Tab", purpose: "autocomplete tag" }
+            : { command: "Tab", purpose: "—" },
+            { command: "Esc", purpose: "cancel" }
+        ]);
 
         /* 👇 force redraw immediately (fixes space‑switch lag) */
         this.updateSuggestions();
@@ -144,10 +190,10 @@ import {
       let text = "";
       let file: TFile;
   
-      if (typeof item.item === "string") {
+      if (item.item && "tag" in item.item) {
         /* TAG row */
-        const tag = item.item;
-        const desc = (this.plugin.settings.tagDescriptions ?? {})[tag];
+        const { tag, count } = (item.item as { tag: string; count: number });
+        const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
         // el.createSpan({ text: tag });
         // if (desc) el.createSpan({ text: " — " + desc, cls: "tag-desc" });
         file = this.app.vault.getAbstractFileByPath(tag) as TFile;
@@ -180,12 +226,9 @@ import {
     async onChooseItem(raw) {
         const item = raw.item ?? raw;
     
-        if (typeof item === "string") {
+        if ("tag" in item) {
             /* TAG chosen → stay in modal, switch to task mode */
-            this.tagMode = false;
-            this.activeTag = item;
-            this.inputEl.value = item + " ";
-            this.updateSuggestions();
+            this.insertNewTemplate(item.tag);
             return; // don’t close modal
         }
     
@@ -256,19 +299,27 @@ import {
     getSuggestions(query: string) {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
-          const tags      = getAllTags(this.app);   // already sorted
-          const q         = query.replace(/^#/, "").trim();
-          const baseScore = prepareFuzzySearch(q);
-      
-          return tags.flatMap((tag, idx) => {
-            if (!q)                                // nothing typed → keep order
-              return [{ item: tag, score: 0, match: null, idx }];
-      
-            const m = baseScore(tag);
-            return m ? [{ ...m, item: tag, idx }] : [];
-          })
-          /* sort by fuzzy score ↓  then popularity (idx) ↑ */
-          .sort((a, b) => b.score - a.score || a.idx - b.idx);
+            const tags      = getAllTags(this.app);   // already sorted
+            const q         = query.replace(/^#/, "").trim();
+
+            /* ➊  Handle one‑char query in constant time ------------------------ */
+            if (q.length === 1) {
+                return tags
+                .filter(({ tag }) => tag.toLowerCase().startsWith("#" + q))
+                .map(({ tag, count }) => ({
+                    item: { tag, count },
+                    match: null,
+                    score: 0               // identical → preserve original popularity order
+                }));
+            }
+            
+            /* ➋  Two‑or‑more chars → fuzzy‑rank then popularity ---------------- */
+            const test = prepareFuzzySearch(q);
+            return tags.flatMap(({ tag, count }, idx) => {
+                const m = test(tag);
+                return m ? [{ ...m, item: { tag, count }, idx }] : [];
+            })
+            .sort((a, b) => b.score - a.score || a.idx - b.idx);
         }
       
         /* ---------- TASK MODE ---------- */
@@ -290,15 +341,19 @@ import {
     constructor(app: App, private plugin: Plugin) { super(app); }
   
     onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
-      const before = editor.getLine(cursor.line).slice(0, cursor.ch);
-      if (!before.endsWith("- ?")) return null;
+        /* inside TaskTagTrigger.onTrigger() – tighten the regex */
+        const before = editor.getLine(cursor.line).slice(0, cursor.ch);
+        const after  = editor.getLine(cursor.line).slice(cursor.ch);   // text after cursor
+
+        /* NEW:  trigger only if “- ?” is the very last non‑whitespace on the line */
+        if (!/[-*+]?\s*\?$/.test(before) || /\S/.test(after)) return null;
   
-      new TaskTagModal(this.app, this.plugin, {
-        from: { line: cursor.line, ch: before.length - 2 }, // start of "- ?"
-        to:   { line: cursor.line, ch: cursor.ch }
-      }).open();
-  
-      return null; // never show inline suggest
+        new TaskTagModal(this.app, this.plugin, {
+            from: { line: cursor.line, ch: before.length - 2 }, // start of "- ?"
+            to:   { line: cursor.line, ch: cursor.ch }
+        }).open();
+    
+        return null; // never show inline suggest
     }
   
     getSuggestions() { return []; }   // required stub
