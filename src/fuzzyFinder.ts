@@ -236,7 +236,7 @@ import {
         const task  = item as TaskEntry;
         const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
         const id    = await ensureBlockId(this.app, task);
-        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}^${id}|^]]`;
+        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
 
         const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
         const ed     = view.editor;
@@ -285,7 +285,7 @@ import {
             const rows = (this.plugin as any)
               .query(dv, tag, {
                 path: '""',
-                onlyOpen: true,
+                onlyOpen: !this.plugin.settings.webTags[tag],
                 onlyPrefixTags: true
             }) as TaskEntry[];
             return (rows ?? []).map(r => ({ ...r, text: r.text.trim() }));

@@ -122,7 +122,12 @@ export class ConfigLoader {
                 const autoTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
                 const recurringTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
                 const tagDescriptions = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Legend' }) || [];
-                tagDescriptions.forEach((desc: any) => {
+                [
+                    ...basicTags,
+                    ...autoTags,
+                    ...recurringTags,
+                    ...tagDescriptions,
+                ].forEach((desc: any) => {
                     // first word is the tag, strip it
                     let text = desc.text;
                     const tag = desc.tags[0].slice(1);
