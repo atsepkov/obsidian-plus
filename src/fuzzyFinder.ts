@@ -343,10 +343,17 @@ import {
     onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
         /* inside TaskTagTrigger.onTrigger() – tighten the regex */
         const before = editor.getLine(cursor.line).slice(0, cursor.ch);
-        const after  = editor.getLine(cursor.line).slice(cursor.ch);   // text after cursor
-
-        /* NEW:  trigger only if “- ?” is the very last non‑whitespace on the line */
-        if (!/[-*+]?\s*\?$/.test(before) || /\S/.test(after)) return null;
+        const line   = editor.getLine(cursor.line);      // full current line
+        const atEOL  = cursor.ch === line.length;        // cursor at end‑of‑line
+      
+        /*  New, stricter pattern:
+            - optional leading spaces / tabs
+            - a list bullet  (- or * or +) followed by one space
+            - a single question‑mark
+            - nothing else                              */
+        const isExactPrompt = /^\s*[-*+] \?\s*$/.test(line);
+      
+        if (!atEOL || !isExactPrompt) return null;       // 🚫 don’t trigger
   
         new TaskTagModal(this.app, this.plugin, {
             from: { line: cursor.line, ch: before.length - 2 }, // start of "- ?"
