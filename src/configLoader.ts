@@ -1,5 +1,6 @@
 import { App, TFile, Notice } from 'obsidian';
 import ObsidianPlus from './main'; // Adjust path if needed
+import { MIN_INTERVAL, alignedNextDue, parseISODuration, normalizeInterval } from './utilities';
 import { createConnector } from './connectorFactory';
 import AiConnector from './connectors/aiConnector';
 // import WebConnector from './connectors/webConnector'; // Uncomment if used
@@ -37,6 +38,22 @@ export function normalizeConfigVal(value: any, stripUnderscores = true): any {
     }
 
     return value;
+}
+
+/* --------------------------------------------------------------------
+   Return TRUE **only** when the checkbox is [x] / [X]  (= enabled)
+   Anything else – [ ]  [/ ]  [-]  [?] – is treated as **disabled**.
+   Works whether Dataview gives us a .status field or only raw text.
+--------------------------------------------------------------------- */
+function isTaskChecked(dvLine: any): boolean {
+    // Dataview ≥ 0.5.63 exposes .status for task list items
+    if (typeof dvLine.status === "string") {
+      return dvLine.status.toLowerCase() === "x";
+    }
+  
+    // Fallback: parse the raw markdown text
+    const m = dvLine.text.match(/\[([^\]])\]/);        // first character inside [...]
+    return m ? m[1].toLowerCase() === "x" : false;
 }
 
 
@@ -122,10 +139,14 @@ export class ConfigLoader {
                 const autoTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
                 const recurringTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
                 const tagDescriptions = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Legend' }) || [];
+                const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
+
+                // Process Tag Descriptions
                 [
                     ...basicTags,
                     ...autoTags,
                     ...recurringTags,
+                    ...subscribeSection,
                     ...tagDescriptions,
                 ].forEach((desc: any) => {
                     // first word is the tag, strip it
@@ -190,6 +211,40 @@ export class ConfigLoader {
                         }
                     } else {
                         console.error(`Failed to create connector for tag "${tag}"`);
+                    }
+                }
+
+                // after processing autoTags …
+                const subscribeTags: string[] = [];
+                for (const line of subscribeSection) {                 // ← parse with the same Dataview query you use for autoTags
+                    if (!line.tags?.length) continue;
+
+                    const active = isTaskChecked(line);
+                    const tag = line.tags[0];
+                    let config: ConnectorConfig = {};
+
+                    // identical child-parsing algo you already call
+                    for (const prop of line.children || []) {
+                        const clean = normalizeConfigVal(prop.text, false);
+                        if (clean === 'config:') {
+                            config = this.parseChildren(prop);
+                            break;
+                        }
+                        // (config: path/to/file.json) branch unchanged …
+                    }
+
+                    const connector = createConnector(tag, config, this.plugin);
+                    if (connector) {
+                        const interval = Math.max(parseISODuration(normalizeInterval(config.pollInterval ?? "PT1H")), MIN_INTERVAL);
+                        this.plugin.settings.subscribe[tag] = {        // NEW map to store polling connectors
+                            config, // store for later (formatting, etc.)
+                            connector,
+                            active,
+                            interval,
+                            nextDue: alignedNextDue(interval),
+                        };
+                        subscribeTags.push(tag);
+                        console.log(`Subscribe connector for ${tag} is ${active ? `active (${config.pollInterval})` : 'inactive'}`);
                     }
                 }
 

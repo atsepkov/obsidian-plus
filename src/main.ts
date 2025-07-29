@@ -13,6 +13,7 @@ import { ConfigLoader } from './configLoader';
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 import { TaskTagTrigger } from './fuzzyFinder';
+import { PollingManager } from './pollingManager';
 
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
@@ -27,6 +28,7 @@ interface ObsidianPlusSettings {
 	taskTags: string[];
 	webTags: { [key: string]: string };
 	tagDescriptions: { [key: string]: string };
+	subscribe: Record<string,{ connector:TagConnector; interval:number }>;
 	
 	aiConnector: string;
 	summarizeWithAi: boolean;
@@ -38,6 +40,7 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
 	taskTags: [],
 	webTags: {},
 	tagDescriptions: {},
+	subscribe: {},
 
 	aiConnector: null,
 	summarizeWithAi: false,
@@ -140,6 +143,10 @@ export default class ObsidianPlus extends Plugin {
 				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
 				await this.configLoader.loadTaskTagsFromFile();
 				console.log("Loaded tags:", this.settings.taskTags);
+
+				this.pollingManager = new PollingManager(this);
+				this.pollingManager.reload();
+				console.log("PollingManager started.");
 			}
 		});
 
@@ -197,6 +204,7 @@ export default class ObsidianPlus extends Plugin {
 
 		// Attempt to load tags from the user-specified file
 		await this.configLoader.loadTaskTagsFromFile();
+		this.pollingManager.reload();
 		console.log("Loaded tags:", this.settings.taskTags);
 		
 		// Listen for changes to tags config file and checked off tasks in current file
@@ -205,6 +213,7 @@ export default class ObsidianPlus extends Plugin {
 				// Listen for changes to tags config file in the vault
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
 					await this.configLoader.loadTaskTagsFromFile();
+					this.pollingManager.reload();
 				}
 
 				// Listen for changes to tasks in the current file (if task was marked completed)
@@ -905,6 +914,8 @@ export default class ObsidianPlus extends Plugin {
 		this.settings.webTags = {};
 		this.settings.aiConnector = null;
 		this.settings.taskTags = []; // Always derived from the config file
+		this.settings.tagDescriptions = {};
+		this.settings.subscribe = {};
  
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();

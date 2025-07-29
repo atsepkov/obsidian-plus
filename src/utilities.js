@@ -156,3 +156,46 @@ export function normalizeConfigVal(value, stripUnderscores = true) {
 
 	return value;
 }
+
+export function parseISODuration(iso) {
+    // quick & light – good enough for PT5M, P1D, etc.
+    const dur = window.moment.duration(iso);
+    return dur.asMilliseconds();
+}
+
+export function normalizeInterval(raw) {
+	const match = raw.match(/^(\d+)([mhdwM])$/i);
+	if (!match) return raw;               // assume user already gave ISO-8601
+	const [, n, unit] = match;
+	switch (unit.toLowerCase()) {
+	  case 'm': return `PT${n}M`;  // minutes
+	  case 'h': return `PT${n}H`;  // hours
+	  case 'd': return `P${n}D`;   // days
+	  case 'w': return `P${n}W`;   // weeks
+	  case 'M': return `P${n}M`;   // months
+	  default : throw new Error('Unsupported interval');
+	}
+}
+
+// ─────────────────────────────────────────────────────────────
+// TIME HELPERS (slot-based scheduler; 1-minute granularity)
+// ─────────────────────────────────────────────────────────────
+export const SLOT_MS = 60 * 1000;          	// slot granularity
+export const MIN_INTERVAL = 1 * 60 * 1000;  // maximum message frequency
+
+// next aligned moment in the future that is a multiple of SLOT_MS
+export function nextSlot(now = Date.now()) {
+  return Math.ceil(now / SLOT_MS) * SLOT_MS;
+}
+
+// round-up so tasks fire on “neat” boundaries (5m, 15m, etc.)
+export function alignedNextDue(interval, now = Date.now()) {
+  return Math.ceil(now / interval) * interval;
+}
+
+/* NEW: tiny string-template helper for pretty log lines                 */
+export function applyTemplate(tpl, data) {
+	return tpl.replace(/\{([^}]+)}/g, (_, path) =>
+	  path.split('.').reduce((o, k) => (o ? o[k] : ''), data)
+	);
+}

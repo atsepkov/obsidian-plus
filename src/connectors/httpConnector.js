@@ -1,3 +1,4 @@
+import { requestUrl, RequestUrlParam, RequestUrlResponse } from "obsidian";
 import TagConnector from './tagConnector.js';
 
 /* Supported config fields:
@@ -142,32 +143,31 @@ export default class HttpConnector extends TagConnector {
 
     async sendRequest(url, data, options = {}) {
         // Determine the HTTP method
-        const method = options.method || this.config.method || 'GET';
+        const method = (this.config.method ?? "GET").toUpperCase();
 
-        // Prepare fetch options
-        const fetchOptions = {
-            method,
-            headers: {
-                'Content-Type': 'application/json',
-                ...this.config.headers,
-                ...options.headers,
-            },
+        // Merge headers: connector defaults  + auth  + per-call extras
+        const headers = {
+            "Content-Type": "application/json",
+            ...(this.config.headers ?? {}),
+            ...options.headers
         };
 
-        // Handle GET requests: append data as query parameters
-        if (method === 'GET' || method === 'HEAD') {
-            const urlParams = new URLSearchParams(data).toString();
-            url = `${url}?${urlParams}`;
-        } else {
-            // For other methods, include the body
-            fetchOptions.body = JSON.stringify(data);
-        }
+        // Build requestUrl param
+        const req = {
+            url,
+            method,
+            headers,
+            // Obsidian expects string | ArrayBuffer for the body
+            body: method === "GET" ? undefined : JSON.stringify(data),
+            throw: false,                   // we’ll handle non-2xx ourselves
+        };
 
         try {
-            const response = await fetch(url, fetchOptions);
+            const response = await requestUrl(req);
+            console.log('HTTP request sent successfully', response);
             
             // Check for a successful status
-            if (!response.ok) {
+            if (response.status !== 200) {
                 // Log or handle errors as needed
                 throw new Error(`HTTP error! status: ${response.status}`);
             }
