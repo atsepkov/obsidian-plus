@@ -117,3 +117,9 @@ input[data-task="-"] {
     margin: 0;
     padding: 0;
 }
+
+.modal-container .prompt .suggestion-item ul {
+    margin: 0;
+    padding: 0;
+    margin-left: 8px;
+}

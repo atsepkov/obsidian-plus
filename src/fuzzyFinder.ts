@@ -55,6 +55,64 @@ import {
         entry.id = id;
         return id;
     }
+
+    /* --------------------------------------------------------------- */
+    /*  Lazy chunked scan (no global map, no hooks)                    */
+    /* --------------------------------------------------------------- */
+
+    const pending: Record<string, boolean> = {};       // tag -> scan in‑progress
+    const cache:   Record<string, TaskEntry[]> = {};   // tag -> tasks[]
+
+    async function collectTasksLazy(tag: string, plugin: Plugin, done: () => void) {
+        if (cache[tag]) return cache[tag];               // already built
+
+        if (pending[tag]) return [];                     // still building
+
+        pending[tag] = true;
+        cache[tag]   = [];                               // start empty list
+
+        const files = plugin.app.vault.getMarkdownFiles();
+        let i = 0;
+        const sliceSize = 25;
+
+        const buildSlice = () => {
+            const batch = files.slice(i, i + sliceSize);
+            batch.forEach(f => {
+                const cacheFile = plugin.app.metadataCache.getFileCache(f);
+                cacheFile?.listItems?.forEach(async li => {
+                    let raw = (li as any).text;              // may be undefined
+                    if (raw === undefined) {
+                        /* fallback: read the single line from vault (sync → small) */
+                        const lines = plugin.app.vault.cachedRead
+                            ? await plugin.app.vault.cachedRead(f)  // Obsidian ≥ 1.6
+                            : await plugin.app.vault.read(f);
+                        raw = lines.split("\n")[li.position.start.line] ?? "";
+                    }
+                    raw = raw.trim();
+                    if (raw.toLowerCase().includes(tag.slice(1).toLowerCase())) { // crude filter
+                        const idMatch = raw.match(/\^\w+\b/);
+                        cache[tag].push({
+                            file: f,
+                            line: li.position.start.line,
+                            text: raw,
+                            id: idMatch?.[0]?.slice(1)
+                        });
+                    }
+                });
+            });
+            i += batch.length;
+
+            if (i < files.length) {
+                setTimeout(buildSlice, 0);                    // yield to UI
+            } else {
+                pending[tag] = false;                         // finished
+                done();                                       // tell modal to refresh
+            }
+        };
+        buildSlice();
+
+        return [];                                       // initial empty list
+    }
   
   /* ------------------------------------------------------------------ */
   /*                     MAIN  FuzzySuggest  MODAL                       */
@@ -180,7 +238,7 @@ import {
     getItemText(item) {
         let text = typeof item === "string" ? item : item.text;
         // in non-tag mode, prepend active tag
-        if (!this.tagMode) text = this.activeTag + " " + text;
+        // if (!this.tagMode) text = this.activeTag + " " + text;
         return text;
     }      
   
@@ -202,7 +260,7 @@ import {
         /* TASK row – markdown */
         const task = item.item as TaskEntry;
         file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-        text = `${this.activeTag} ${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
+        text = `${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
       }
       await MarkdownRenderer.renderMarkdown(
         text,
@@ -236,7 +294,7 @@ import {
         const task  = item as TaskEntry;
         const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
         const id    = await ensureBlockId(this.app, task);
-        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}^${id}|^]]`;
+        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
 
         const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
         const ed     = view.editor;
@@ -252,6 +310,8 @@ import {
 
         /* parent line to insert ----------------------------------------------- */
         let text = task.text;
+        // strip off the prefix bullet/task and tag
+        if (text.match(/#.*$/)) text = text.replace(/^.*?#[^\s]+/, "");
         // strip blockid, if present
         if (text.match(/\^.*$/)) text = text.replace(/\^.*$/, "");
         const parentTxt = `${leadWS}${bullet}${link} ${this.activeTag} *${text.trim()}*`;
@@ -323,10 +383,24 @@ import {
         }
       
         /* ---------- TASK MODE ---------- */
-        const body     = query.replace(/^#\S+\s/, "");   // drop “#tag␠”
-        const scorer   = prepareFuzzySearch(body);
-        return this.taskCache.flatMap(t => {
-          const m = scorer(`${this.activeTag} ${t.text}`); // ← keeps tag in string
+        const tag   = this.activeTag;                         // "#todo"
+        const body  = query.replace(/^#\S+\s/, "");           // user’s filter
+        
+        /* ①  sync local cache with global one (if available)  */
+        if (!this.taskCache[tag] && cache[tag]?.length) {
+          this.taskCache[tag] = cache[tag];                   // ← add this line
+        }
+        
+        /* ②  build lazily if still missing */
+        if (!this.taskCache[tag]) {
+          collectTasksLazy(tag, this.plugin, () => this.updateSuggestions());
+          return [];                                         // nothing yet
+        }
+        
+        /* ③  we now have tasks → fuzzy‑filter and display */
+        const scorer = prepareFuzzySearch(body);
+        return this.taskCache[tag]!.flatMap(t => {
+          const m = scorer(`${tag} ${t.text}`);
           return m ? [{ ...m, item: t }] : [];
         });
     }
