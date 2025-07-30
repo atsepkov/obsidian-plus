@@ -63,55 +63,60 @@ import {
     const pending: Record<string, boolean> = {};       // tag -> scan in‑progress
     const cache:   Record<string, TaskEntry[]> = {};   // tag -> tasks[]
 
-    async function collectTasksLazy(tag: string, plugin: Plugin, done: () => void) {
-        if (cache[tag]) return cache[tag];               // already built
-
-        if (pending[tag]) return [];                     // still building
-
+    function collectTasksLazy(
+        tag: string,
+        plugin: Plugin,
+        onReady: () => void
+      ): TaskEntry[] {
+        /* 1️⃣  Already cached → return immediately */
+        if (cache[tag]) return cache[tag];
+      
+        /* 2️⃣  Build already in flight → return empty until done */
+        if (pending[tag]) return [];
+      
+        /* 3️⃣  Kick off background build */
         pending[tag] = true;
-        cache[tag]   = [];                               // start empty list
-
-        const files = plugin.app.vault.getMarkdownFiles();
-        let i = 0;
-        const sliceSize = 25;
-
-        const buildSlice = () => {
-            const batch = files.slice(i, i + sliceSize);
-            batch.forEach(f => {
-                const cacheFile = plugin.app.metadataCache.getFileCache(f);
-                cacheFile?.listItems?.forEach(async li => {
-                    let raw = (li as any).text;              // may be undefined
-                    if (raw === undefined) {
-                        /* fallback: read the single line from vault (sync → small) */
-                        const lines = plugin.app.vault.cachedRead
-                            ? await plugin.app.vault.cachedRead(f)  // Obsidian ≥ 1.6
-                            : await plugin.app.vault.read(f);
-                        raw = lines.split("\n")[li.position.start.line] ?? "";
-                    }
-                    raw = raw.trim();
-                    if (raw.toLowerCase().includes(tag.slice(1).toLowerCase())) { // crude filter
-                        const idMatch = raw.match(/\^\w+\b/);
-                        cache[tag].push({
-                            file: f,
-                            line: li.position.start.line,
-                            text: raw,
-                            id: idMatch?.[0]?.slice(1)
-                        });
-                    }
-                });
-            });
-            i += batch.length;
-
-            if (i < files.length) {
-                setTimeout(buildSlice, 0);                    // yield to UI
-            } else {
-                pending[tag] = false;                         // finished
-                done();                                       // tell modal to refresh
-            }
+        cache[tag]   = [];                 // start with empty list
+      
+        /* Fetch Dataview API + user options */
+        const dv  = plugin.app.plugins.plugins["dataview"]?.api;
+        const opt = {
+          path: '""',
+          onlyOpen: !plugin.settings.webTags?.[tag],
+          onlyPrefixTags: true,
+          ...(plugin.settings.tagQueryOptions ?? {})      // <-- future user hash
         };
-        buildSlice();
-
-        return [];                                       // initial empty list
+      
+        let rows: TaskEntry[] = [];
+        try {
+          if (dv && (plugin as any).query) {
+            rows = (plugin as any).query(dv, tag, opt) as TaskEntry[];
+          }
+        } catch (e) {
+          console.error("Dataview query failed", e);
+        }
+      
+        /* Chunk the rows into the cache without blocking the UI */
+        const CHUNK = 50;
+        let i = 0;
+      
+        const feed = () => {
+          const slice = rows.slice(i, i + CHUNK);
+          slice.forEach(r =>
+            cache[tag].push({ ...r, text: r.text.trim() })
+          );
+          i += slice.length;
+      
+          if (i < rows.length) {
+            setTimeout(feed, 0);           // yield to UI / mobile watchdog
+          } else {
+            pending[tag] = false;          // finished
+            onReady();                     // refresh modal
+          }
+        };
+        feed();                            // start first slice
+      
+        return [];                         // initial call returns nothing
     }
   
   /* ------------------------------------------------------------------ */
@@ -238,7 +243,7 @@ import {
     getItemText(item) {
         let text = typeof item === "string" ? item : item.text;
         // in non-tag mode, prepend active tag
-        // if (!this.tagMode) text = this.activeTag + " " + text;
+        if (!this.tagMode) text = this.activeTag + " " + text;
         return text;
     }      
   
@@ -260,7 +265,7 @@ import {
         /* TASK row – markdown */
         const task = item.item as TaskEntry;
         file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-        text = `${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
+        text = `${this.activeTag} ${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
       }
       await MarkdownRenderer.renderMarkdown(
         text,
@@ -311,9 +316,9 @@ import {
         /* parent line to insert ----------------------------------------------- */
         let text = task.text;
         // strip off the prefix bullet/task and tag
-        if (text.match(/#.*$/)) text = text.replace(/^.*?#[^\s]+/, "");
+        // if (text.match(/#.*$/)) text = text.replace(/^.*?#[^\s]+/, "");
         // strip blockid, if present
-        if (text.match(/\^.*$/)) text = text.replace(/\^.*$/, "");
+        if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
         const parentTxt = `${leadWS}${bullet}${link} ${this.activeTag} *${text.trim()}*`;
 
         /* child bullet one level deeper --------------------------------------- */
