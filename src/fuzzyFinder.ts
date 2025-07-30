@@ -5,7 +5,7 @@ import {
   
   interface TaskEntry {
     file:   TFile;
-    lineNo: number;
+    line:   number;
     text:   string;
     id?:    string;
     path?:  string;        // returned by Dataview
@@ -182,7 +182,7 @@ import {
         // in non-tag mode, prepend active tag
         if (!this.tagMode) text = this.activeTag + " " + text;
         return text;
-    }
+    }      
   
     /* ---------- suggestion renderer ---------- */
     async renderSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
@@ -236,7 +236,7 @@ import {
         const task  = item as TaskEntry;
         const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
         const id    = await ensureBlockId(this.app, task);
-        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
+        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}^${id}|^]]`;
 
         const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
         const ed     = view.editor;
