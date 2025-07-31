@@ -653,6 +653,7 @@ export class TagQuery {
                     await renderGroupedList(sortedFilteredGroupedItems, resultsEl);
                 } else {
                     // Render flat list if no groupBy was used
+                    resultsEl.empty();                       // <- add this line
                     await renderFlatList(filteredItems, resultsEl);
                 }
             });

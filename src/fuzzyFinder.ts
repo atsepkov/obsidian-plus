@@ -102,9 +102,24 @@ import {
       
         const feed = () => {
           const slice = rows.slice(i, i + CHUNK);
-          slice.forEach(r =>
-            cache[tag].push({ ...r, text: r.text.trim() })
-          );
+          /* inside collectTasksLazy – while pushing rows into cache[tag] */
+        function explodeLines(row: any): string[] {
+            const out = [row.text];
+            row.children?.forEach((c: any) => out.push(...explodeLines(c)));
+            return out;
+        }
+        
+        slice.forEach(r => {
+            const lines = explodeLines(r).map(s => s.trim()).filter(Boolean);
+            cache[tag].push({
+                ...r,
+                text: r.text.trim(),
+                lines,
+            });
+        });
+        //   slice.forEach(r =>
+        //     cache[tag].push({ ...r, text: r.text.trim() })
+        //   );
           i += slice.length;
       
           if (i < rows.length) {
@@ -404,10 +419,38 @@ import {
         
         /* ③  we now have tasks → fuzzy‑filter and display */
         const scorer = prepareFuzzySearch(body);
+        const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
+
         return this.taskCache[tag]!.flatMap(t => {
-          const m = scorer(`${tag} ${t.text}`);
-          return m ? [{ ...m, item: t }] : [];
-        });
+            let best = null;        // best FuzzyMatch
+            let bonus = 0;          // exact-word bonus on the line that wins
+          
+            for (const line of t.lines ?? [t.text]) {
+              const lower = line.toLowerCase();
+              const m = scorer(line);
+              if (!m) continue;     // this line didn’t match whole query
+          
+              /* word-bonus scoped to THIS line only */
+              let b = 0;
+              tokens.forEach(tok => {
+                if (new RegExp(`\\b${tok}\\b`).test(lower)) b += 500;
+              });
+          
+              const total = m.score + b;
+              if (!best || total > best.score + bonus) {
+                best   = m;
+                bonus  = b;
+              }
+            }
+          
+            if (!best) return [];   // no line satisfied all tokens
+          
+            return [{
+              ...best,
+              score: best.score + bonus,
+              item: t
+            }];
+        }).sort((a, b) => b.score - a.score);
     }
   }
   
