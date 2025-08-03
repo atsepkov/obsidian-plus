@@ -222,7 +222,9 @@ export default class ObsidianPlus extends Plugin {
 
 		// Attempt to load tags from the user-specified file
 		await this.configLoader.loadTaskTagsFromFile();
-		this.pollingManager.reload();
+		if (this.pollingManager) {
+			this.pollingManager.reload();
+		}
 		console.log("Loaded tags:", this.settings.taskTags);
 		
 		// Listen for changes to tags config file and checked off tasks in current file
