@@ -111,6 +111,7 @@ function updateStickyHeaderText(rootText: string, parentText: string, parentInde
 export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
+	private _suggester: TaskTagTrigger;
 	public configLoader: ConfigLoader;
 	public taskManager: TaskManager;
 	public tagQuery: TagQuery;
@@ -119,6 +120,18 @@ export default class ObsidianPlus extends Plugin {
 	async onload() {
 		await this.loadSettings();
 		app = this.app;
+
+		/* 1 · load stylesheet text (works in mobile & desktop) */
+		const cssPath = this.app.vault.adapter.getResourcePath(
+		`${this.manifest.dir}/styles.css`
+		);
+		const cssText = await (await fetch(cssPath)).text();
+	
+		/* 2 · inject once and register for cleanup */
+		const styleEl = document.createElement("style");
+		styleEl.textContent = cssText;
+		document.head.appendChild(styleEl);
+		this.register(() => styleEl.remove());
 
 		// Instantiate ConfigLoader
 		this.configLoader = new ConfigLoader(this.app, this);
@@ -147,6 +160,11 @@ export default class ObsidianPlus extends Plugin {
 				this.pollingManager = new PollingManager(this);
 				this.pollingManager.reload();
 				console.log("PollingManager started.");
+			}
+
+			if (!this._suggester) {
+				this._suggester = new TaskTagTrigger(this.app, this);
+				this.registerEditorSuggest(this._suggester);
 			}
 		});
 
@@ -469,7 +487,7 @@ export default class ObsidianPlus extends Plugin {
 			taskCache.set(currentFile.path, oldTasks);
 		}
 
-		this.registerEditorSuggest(new TaskTagTrigger(this.app, this));
+		// this.registerEditorSuggest(new TaskTagTrigger(this.app, this));
 	}
 
 	// --- Additions for Sticky Header ---

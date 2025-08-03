@@ -110,16 +110,22 @@ input[data-task="-"] {
     white-space: normal;
     line-height: 1.3em;
     padding: 2px;
-    font-size: small;
+    font-size: small !important;
 }
 
 .modal-container .prompt .suggestion-item p {
-    margin: 0;
-    padding: 0;
+    margin: 0 !important;
+    padding: 0 !important;
 }
 
 .modal-container .prompt .suggestion-item ul {
     margin: 0;
     padding: 0;
-    margin-left: 8px;
+    margin-left: 24px;
+}
+
+.modal .suggestion-item .child-line {
+    margin-left: 1.25em;
+    opacity: 0.7;
+    white-space: normal;
 }

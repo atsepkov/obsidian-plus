@@ -264,30 +264,39 @@ import {
   
     /* ---------- suggestion renderer ---------- */
     async renderSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
-      el.empty();
-      let text = "";
-      let file: TFile;
-  
-      if (item.item && "tag" in item.item) {
-        /* TAG row */
-        const { tag, count } = (item.item as { tag: string; count: number });
-        const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
-        // el.createSpan({ text: tag });
-        // if (desc) el.createSpan({ text: " — " + desc, cls: "tag-desc" });
-        file = this.app.vault.getAbstractFileByPath(tag) as TFile;
-        text = `${tag} ${desc ? " " + desc : ""}`;
-      } else {
-        /* TASK row – markdown */
-        const task = item.item as TaskEntry;
-        file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-        text = `${this.activeTag} ${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
-      }
-      await MarkdownRenderer.renderMarkdown(
-        text,
-        el,
-        file?.path,
-        this.plugin
-      );
+        el.empty();
+        let text = "";
+        let file: TFile;
+        let hit = null;
+        let task: TaskEntry;
+    
+        if (item.item && "tag" in item.item) {
+            /* TAG row */
+            const { tag, count } = (item.item as { tag: string; count: number });
+            const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
+            // el.createSpan({ text: tag });
+            // if (desc) el.createSpan({ text: " — " + desc, cls: "tag-desc" });
+            file = this.app.vault.getAbstractFileByPath(tag) as TFile;
+            text = `${tag} ${desc ? " " + desc : ""}`;
+        } else {
+            /* TASK row – markdown */
+            task = item.item as TaskEntry;
+            hit    = (item as any).matchLine;        // the line that matched
+            file = this.app.vault.getFileByPath(task.path ?? task.file.path);
+            text = `${this.activeTag} ${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
+        }
+        /* parent line (always shown) */
+        await MarkdownRenderer.renderMarkdown(
+            text,
+            el,
+            file?.path,
+            this.plugin
+        );
+        /*  matched child line (if it's not the parent)  */
+        if (hit && hit !== task.text) {
+            const div = el.createDiv({ cls: "child-line" });   // style below
+            await MarkdownRenderer.renderMarkdown('- ' + hit, div, file.path, this.plugin);
+        }
         /* 👇 stop link‑clicks from bubbling to the list item */
         el.querySelectorAll("a.internal-link").forEach(a => {
             a.addEventListener("click", evt => {
@@ -305,9 +314,9 @@ import {
         const item = raw.item ?? raw;
     
         if ("tag" in item) {
-            /* TAG chosen → stay in modal, switch to task mode */
             this.insertNewTemplate(item.tag);
-            return; // don’t close modal
+            this.close();
+            return;
         }
     
         /* ─── TASK chosen ───────────────────────────────────────────── */
@@ -342,14 +351,14 @@ import {
 
         /* replace the original trigger line */
         ed.replaceRange(
-        newBlock,
-        { line: ln,     ch: 0 },
-        { line: ln,     ch: curLine.length }
+            newBlock,
+            { line: ln,     ch: 0 },
+            { line: ln,     ch: curLine.length }
         );
 
         /* move cursor AFTER the modal has closed & editor regains focus -------- */
         setTimeout(() => {
-        ed.setCursor({ line: ln + 1, ch: childIndent.length });
+            ed.setCursor({ line: ln + 1, ch: childIndent.length });
         }, 0);
 
         this.close();
@@ -422,33 +431,32 @@ import {
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
 
         return this.taskCache[tag]!.flatMap(t => {
-            let best = null;        // best FuzzyMatch
-            let bonus = 0;          // exact-word bonus on the line that wins
+            let bestLine = null;
+            let bestScore = -Infinity;
           
-            for (const line of t.lines ?? [t.text]) {
-              const lower = line.toLowerCase();
+            /* evaluate EACH line separately */
+            t.lines.forEach(line => {
               const m = scorer(line);
-              if (!m) continue;     // this line didn’t match whole query
+              if (!m) return;
           
-              /* word-bonus scoped to THIS line only */
-              let b = 0;
+              /* bonus for whole-word hits on THAT line */
+              let bonus = 0;
               tokens.forEach(tok => {
-                if (new RegExp(`\\b${tok}\\b`).test(lower)) b += 500;
+                if (new RegExp(`\\b${tok}\\b`, "i").test(line)) bonus += 500;
               });
           
-              const total = m.score + b;
-              if (!best || total > best.score + bonus) {
-                best   = m;
-                bonus  = b;
+              const total = m.score + bonus;
+              if (total > bestScore) {
+                bestScore = total;
+                bestLine  = line.trim();
               }
-            }
+            });
           
-            if (!best) return [];   // no line satisfied all tokens
-          
+            if (!bestLine) return [];
             return [{
-              ...best,
-              score: best.score + bonus,
-              item: t
+              item:  t,                   // original TaskEntry
+              score: bestScore,
+              matchLine: bestLine         // 👈 keep only the line that matched
             }];
         }).sort((a, b) => b.score - a.score);
     }

@@ -572,14 +572,13 @@ export class TaskManager {
             const html = await this.getCleanContent(response.text, hostname); // Pass text directly
 
             // Ensure TurndownService is available (might need adjustment based on how it's loaded)
-            // if (typeof TurndownService === 'undefined') {
-            //     console.error("TurndownService is not loaded.");
-            //     return `Error: TurndownService not available. HTML content:\n${html}`;
-            // }
-            // const turndown = new TurndownService();
-            // const markdown = turndown.turndown(html);
+            if (typeof TurndownService === 'undefined') {
+                console.error("TurndownService is not loaded.");
+                return `Error: TurndownService not available. HTML content:\n${html}`;
+            }
+            const turndown = new TurndownService();
+            const markdown = turndown.turndown(html);
             // const markdown = htmlToMarkdown(html);
-            const markdown = 'htmlToMarkdown(html)';
             return markdown;
 
         } catch (error: any) {
