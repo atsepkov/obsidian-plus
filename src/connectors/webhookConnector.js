@@ -1,4 +1,5 @@
 import { normalizeConfigVal } from '../utilities';
+import { requestUrl } from 'obsidian';
 import TagConnector from './tagConnector.js';
 
 export default class WebhookConnector extends TagConnector {
@@ -101,4 +102,42 @@ export default class WebhookConnector extends TagConnector {
             throw error;
         }
     }
+
+    /**
+     * Fire-and-forget by default (fetch + no-cors).  
+     * If you need to read the reply set `printResponse: true`
+     * in the connector’s YAML / JSON config and we’ll switch to requestUrl.
+     */
+    // async sendWebhook(url, data = {}, options = {}) {
+    //     const wantResponse = this.config.printResponse ?? false;
+    //     const method       = (options.method || "POST").toUpperCase();
+    //     const headers      = {
+    //         "Content-Type": "application/json",
+    //         ...(this.config.headers ?? {}),
+    //         ...options.headers,
+    //     };
+
+    //     // ---------- 1) Fire-and-forget path (no pre-flight, no CORS headaches) ----------
+    //     if (!wantResponse) {
+    //         const fetchOpts = {
+    //             method,
+    //             mode:  "no-cors",
+    //             headers,
+    //             body:  method === "GET" || method === "HEAD" ? undefined : JSON.stringify(data),
+    //         };
+    //         await fetch(url, fetchOpts).catch(console.error);   // we don’t really care
+    //         return { ok: true, status: 204, json: async () => ({}) };
+    //     }
+
+    //     // ---------- 2) Need the JSON back → use Obsidian’s requestUrl ----------
+    //     const res = await requestUrl({
+    //         url,
+    //         method,
+    //         headers,
+    //         body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(data),
+    //     });
+    //     if (res.status < 200 || res.status >= 300)
+    //         throw new Error(`HTTP ${res.status}`);
+    //     return res;
+    // }
 }

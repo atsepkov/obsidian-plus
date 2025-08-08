@@ -242,6 +242,7 @@ export class ConfigLoader {
                             active,
                             interval,
                             nextDue: alignedNextDue(interval),
+                            lastRun   : 0                            // ← allow immediate fire
                         };
                         subscribeTags.push(tag);
                         console.log(`Subscribe connector for ${tag} is ${active ? `active (${config.pollInterval})` : 'inactive'}`);

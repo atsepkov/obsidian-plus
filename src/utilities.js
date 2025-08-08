@@ -62,6 +62,7 @@ const urlIcon = {
 
 	// Productivity
 	"mail.google.com": ":LiMail:",
+	"docs.google.com": ":LiFile:",
 	"maps.google.com": ":LiMap:",
 	"drive.google.com": ":LiFile:",
 	"box.com": ":LiFile:",

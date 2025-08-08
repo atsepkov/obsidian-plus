@@ -31,7 +31,7 @@ interface QueryOptions {
     hideTasks?: boolean;
     expandOnClick?: boolean;
     expandChildren?: boolean; // Add expandChildren option
-    hideNonTasks?: boolean;
+    onlyTasks?: boolean;
     hideProjectTags?: boolean;
     hideChildren?: boolean;
     onlyChildren?: boolean;
@@ -99,7 +99,7 @@ export class TagQuery {
         const hideOpen = options.hideOpen ?? false;
         const hideIfCompletedMilestones = options.hideIfCompletedMilestones ?? false; // hide task/tag if all milestone children are completed
         const hideTasks = options.hideTasks ?? false;
-        const hideNonTasks = options.hideNonTasks ?? false;
+        const onlyTasks = options.onlyTasks ?? false;
         const hideProjectTags = options.hideProjectTags ?? false;
         const hideChildren = options.hideChildren ?? false; // only show top-level items (non-naked tags, common for regular tags/tasks)
         const onlyChildren = options.onlyChildren ?? false; // only show children of a naked tag (common for project notes)
@@ -205,7 +205,7 @@ export class TagQuery {
             if (onlyOpen && c.task && c.status !== " ") return false;
             if (hideOpen && c.task && c.status === " ") return false;
             if (hideTasks && c.task) return false;
-            if (hideNonTasks && !c.task) return false;
+            if (onlyTasks && !c.task) return false;
             if (onlyPrefixTags && c.tagPosition !== 0 && (
                 !c.parentItem || (c.parentItem && !c.parentItem.text.includes(targetIdentifier))
             )) return false;
@@ -620,7 +620,12 @@ export class TagQuery {
                 await renderFlatList(items, resultsEl);
             }
 
+            searchEl.addEventListener("mousedown", e => { e.stopPropagation(); });
+
             searchEl.addEventListener("input", async (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+
                 const query = (e.target as HTMLInputElement).value.toLowerCase();
 
                 // Filter the original flat list of items
