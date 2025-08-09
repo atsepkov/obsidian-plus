@@ -1,7 +1,17 @@
 import path from 'path';
 import {
-	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf
+        App,
+        Editor,
+        MarkdownView,
+        MarkdownRenderer,
+        Modal,
+        Notice,
+        Plugin,
+        PluginSettingTab,
+        Setting,
+        TFile,
+        WorkspaceLeaf,
+        ItemView
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -9,11 +19,11 @@ import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
-// TODO: remove if no longer in use after refactor
-import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 import { TaskTagTrigger } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
+
+const TASK_OUTLINE_VIEW = 'task-outline-view';
 
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
@@ -139,10 +149,16 @@ export default class ObsidianPlus extends Plugin {
 		const styleEl = document.createElement("style");
 		styleEl.textContent = cssText;
 		document.head.appendChild(styleEl);
-		this.register(() => styleEl.remove());
+                this.register(() => styleEl.remove());
 
-		// Instantiate ConfigLoader
-		this.configLoader = new ConfigLoader(this.app, this);
+                // Register Task Outline view and ribbon button
+                this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
+                this.addRibbonIcon('list-check', 'Task Outline', () => {
+                        this.activateTaskOutlineView();
+                });
+
+                // Instantiate ConfigLoader
+                this.configLoader = new ConfigLoader(this.app, this);
 
 		// Wait for Dataview API
 		this.app.workspace.onLayoutReady(async () => { // Use onLayoutReady
@@ -174,9 +190,9 @@ export default class ObsidianPlus extends Plugin {
 				this._suggester = new TaskTagTrigger(this.app, this);
 				this.registerEditorSuggest(this._suggester);
 			}
-		});
+                });
 
-		// This creates an icon in the left ribbon.
+                // This creates an icon in the left ribbon.
 		// const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus', (evt: MouseEvent) => {
 		// 	// Called when the user clicks the icon.
 		// 	new Notice('This is a notice!');
@@ -459,21 +475,32 @@ export default class ObsidianPlus extends Plugin {
 		}));
 
 		// Setup for initially visible leaves (covers startup and workspace load)
-		this.app.workspace.iterateAllLeaves(leaf => {
-			if (leaf.view instanceof MarkdownView) {
-				this.setupStickyHeaderForView(leaf.view);
-				// Use setTimeout to slightly delay the initial update.
-				// This helps ensure CodeMirror and the view are fully initialized,
-				// preventing potential errors if updateStickyHeader runs too early.
-				setTimeout(() => this.updateStickyHeader(leaf.view), 150); // Increased delay slightly
-			}
-		});
+                this.app.workspace.iterateAllLeaves(leaf => {
+                        if (leaf.view instanceof MarkdownView) {
+                                this.setupStickyHeaderForView(leaf.view);
+                                // Use setTimeout to slightly delay the initial update.
+                                // This helps ensure CodeMirror and the view are fully initialized,
+                                // preventing potential errors if updateStickyHeader runs too early.
+                                setTimeout(() => this.updateStickyHeader(leaf.view), 150); // Increased delay slightly
+                        }
+                });
         // --- End Additions for Sticky Header ---
 
-		// Register the CodeMirror extension
-		this.flaggedLines = [];
-		const extension = this.highlightFlaggedLinesExtension(() => this.flaggedLines);
-		this.registerEditorExtension(extension);
+                // Re-render Task Outline view when cursor moves
+                const cursorListener = EditorView.updateListener.of((update: ViewUpdate) => {
+                        if (update.selectionSet) {
+                                const leaf = this.app.workspace.getLeavesOfType(TASK_OUTLINE_VIEW)[0];
+                                if (leaf && leaf.view instanceof TaskOutlineView) {
+                                        (leaf.view as TaskOutlineView).updateView();
+                                }
+                        }
+                });
+                this.registerEditorExtension(cursorListener);
+
+                // Register the CodeMirror extension for flagged lines
+                this.flaggedLines = [];
+                const extension = this.highlightFlaggedLinesExtension(() => this.flaggedLines);
+                this.registerEditorExtension(extension);
 
 		// re-check flagged lines whenever a file is opened:
 		this.registerEvent(
@@ -836,23 +863,63 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	// dispatches update effect post-config change
-	private async updateFlaggedLines(file: TFile) {
-		// Now to force the extension to re-check decorations, 
-		// we can dispatch a doc change or a minimal transaction
-		// that triggers the `update()` method.
-		const leaf = this.app.workspace.getActiveViewOfType(MarkdownView); 
-		const cm = leaf?.editor?.cm; 
-		// If using Obsidian 1.0 new API, you might need a different approach:
-		// The idea: you want to reconfigure or do a no-op transaction to trigger the "update" method
-		if (cm) {
-		  // Force a reconfiguration or a no-op
-		  cm.dispatch({
-			effects: setConfigEffect.of(this.settings),
-		  });
-		}
-	}
+        private async updateFlaggedLines(file: TFile) {
+                // Now to force the extension to re-check decorations,
+                // we can dispatch a doc change or a minimal transaction
+                // that triggers the `update()` method.
+                const leaf = this.app.workspace.getActiveViewOfType(MarkdownView);
+                const cm = leaf?.editor?.cm;
+                // If using Obsidian 1.0 new API, you might need a different approach:
+                // The idea: you want to reconfigure or do a no-op transaction to trigger the "update" method
+                if (cm) {
+                  // Force a reconfiguration or a no-op
+                  cm.dispatch({
+                        effects: setConfigEffect.of(this.settings),
+                  });
+                }
+        }
 
-	private selectMultiLineCode(fullText: string, clickPos: number) {
+        public getTagUnderCursor(): string | null {
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (!view) return null;
+                const cursor = view.editor.getCursor();
+                const line = view.editor.getLine(cursor.line);
+                const regex = /#[\w\/\-]+/g;
+                const matches = [...line.matchAll(regex)];
+                if (matches.length === 0) return null;
+
+                // Prefer the tag the cursor is inside
+                for (const m of matches) {
+                        const start = m.index ?? 0;
+                        const end = start + m[0].length;
+                        if (cursor.ch >= start && cursor.ch <= end) {
+                                return m[0];
+                        }
+                }
+
+                // Fall back to the closest tag on the line
+                let closest = matches[0];
+                let distance = Math.abs((matches[0].index ?? 0) - cursor.ch);
+                for (const m of matches.slice(1)) {
+                        const dist = Math.abs((m.index ?? 0) - cursor.ch);
+                        if (dist < distance) {
+                                distance = dist;
+                                closest = m;
+                        }
+                }
+                return closest[0];
+        }
+
+        public async activateTaskOutlineView() {
+                const existing = this.app.workspace.getLeavesOfType(TASK_OUTLINE_VIEW)[0];
+                if (existing) {
+                        this.app.workspace.revealLeaf(existing);
+                } else {
+                        await this.app.workspace.getRightLeaf(false).setViewState({ type: TASK_OUTLINE_VIEW, active: true });
+                }
+        }
+
+        private selectMultiLineCode(fullText: string, clickPos: number) {
 		// Find previous ```
 		let start = clickPos;
 		while (start >= 0 && fullText.slice(start, start + 3) !== '```') {
@@ -915,8 +982,9 @@ export default class ObsidianPlus extends Plugin {
 		return tasks;
 	}
 
-	onunload() {
-		console.log('Unloading Obsidian Plus');
+        onunload() {
+                this.app.workspace.getLeavesOfType(TASK_OUTLINE_VIEW).forEach(l => l.detach());
+                console.log('Unloading Obsidian Plus');
 		// Optional: Explicitly remove header from the last active view
 		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (activeView) {
@@ -1011,13 +1079,63 @@ export default class ObsidianPlus extends Plugin {
 	async updateTask(task: Task, options: UpdateTaskOptions): void {
 		await this.taskManager.updateDvTask(task, options);
 	}
-	async getTaskContext(task): any[] {
-		return {
-			parents: await this.taskManager.getDvTaskParents(task),
-			children: await this.taskManager.getDvTaskChildren(task),
-			links: await this.taskManager.getDvTaskLinks(task),
-		}
-	}
+        async getTaskContext(task): any[] {
+                return {
+                        parents: await this.taskManager.getDvTaskParents(task),
+                        children: await this.taskManager.getDvTaskChildren(task),
+                        links: await this.taskManager.getDvTaskLinks(task),
+                }
+        }
+}
+
+class TaskOutlineView extends ItemView {
+        private plugin: ObsidianPlus;
+
+        constructor(leaf: WorkspaceLeaf, plugin: ObsidianPlus) {
+                super(leaf);
+                this.plugin = plugin;
+        }
+
+        getViewType() {
+                return TASK_OUTLINE_VIEW;
+        }
+
+        getDisplayText() {
+                return 'Task Outline';
+        }
+
+        getIcon() {
+                return 'list-check';
+        }
+
+        async onOpen() {
+                await this.updateView();
+        }
+
+        async updateView() {
+                const container = this.containerEl;
+                container.empty();
+                const tag = this.plugin.getTagUnderCursor();
+                if (!tag) {
+                        container.createEl('p', { text: 'No tag at cursor.' });
+                        return;
+                }
+                const dv = this.plugin.app.plugins.plugins['dataview']?.api;
+                if (!dv || !this.plugin.tagQuery) {
+                        container.createEl('p', { text: 'Dataview plugin not available.' });
+                        return;
+                }
+                const items: any[] = await this.plugin.tagQuery.query(dv, tag, { onlyReturn: true }) as any[];
+                container.createEl('h3', { text: `Tasks for ${tag}` });
+                const ul = container.createEl('ul');
+                if (items) {
+                        for (const item of items) {
+                                ul.createEl('li', { text: item.text });
+                        }
+                }
+        }
+
+        onClose() {}
 }
 
 class SampleModal extends Modal {
