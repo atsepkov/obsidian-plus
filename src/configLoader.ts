@@ -111,6 +111,8 @@ export class ConfigLoader {
         this.plugin.settings.webTags = {};
         this.plugin.settings.tagDescriptions = {};
         this.plugin.settings.aiConnector = null;
+        this.plugin.settings.projects = [];
+        this.plugin.settings.projectTags = [];
 
         if (!path) {
             console.log("No tag list file specified, reset tags to empty");
@@ -140,6 +142,8 @@ export class ConfigLoader {
                 const recurringTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
                 const tagDescriptions = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Legend' }) || [];
                 const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
+                const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
+                const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
 
                 // Process Tag Descriptions
                 [
@@ -162,6 +166,22 @@ export class ConfigLoader {
                 for (const line of basicTags) {
                     if (line.tags && line.tags.length > 0) {
                         foundTags.push(line.tags[0]);
+                    }
+                }
+
+                // Process Projects (list of tags considered projects)
+                for (const line of projectSection) {
+                    if (line.tags && line.tags.length > 0) {
+                        this.plugin.settings.projects.push(line.tags[0]);
+                    }
+                }
+
+                // Process Project Tags (tags scoped under a project)
+                for (const line of projectTagSection) {
+                    if (line.tags && line.tags.length > 0) {
+                        const tag = line.tags[0];
+                        this.plugin.settings.projectTags.push(tag);
+                        foundTags.push(tag);
                     }
                 }
 

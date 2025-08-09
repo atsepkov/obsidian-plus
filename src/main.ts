@@ -23,24 +23,32 @@ const dimLineDecoration = Decoration.line({
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 interface ObsidianPlusSettings {
-	tagListFilePath: string;
-	tagColors: string[];
-	taskTags: string[];
-	webTags: { [key: string]: string };
-	tagDescriptions: { [key: string]: string };
-	subscribe: Record<string,{ connector:TagConnector; interval:number }>;
+        tagListFilePath: string;
+        tagColors: string[];
+        taskTags: string[];
+        webTags: { [key: string]: string };
+        tagDescriptions: { [key: string]: string };
+        subscribe: Record<string,{ connector:TagConnector; interval:number }>;
+
+        /** tags representing projects (root bullets) */
+        projects: string[];
+        /** tags that should be scoped to a project */
+        projectTags: string[];
 	
 	aiConnector: string;
 	summarizeWithAi: boolean;
 }
 
 const DEFAULT_SETTINGS: ObsidianPlusSettings = {
-	tagListFilePath: "TaskTags.md",
-	tagColors: [],
-	taskTags: [],
-	webTags: {},
-	tagDescriptions: {},
-	subscribe: {},
+        tagListFilePath: "TaskTags.md",
+        tagColors: [],
+        taskTags: [],
+        webTags: {},
+        tagDescriptions: {},
+        subscribe: {},
+
+        projects: [],
+        projectTags: [],
 
 	aiConnector: null,
 	summarizeWithAi: false,
@@ -549,14 +557,14 @@ export default class ObsidianPlus extends Plugin {
 		// --- End Scroll Listener ---
 	}
 
-	public query(dv: any, identifier: string, options: any): Promise<void | ListItem[]> {
-		this.dv = dv;
-		if (!this.tagQuery) {
-			console.error('TagQuery is not initialized.');
-			return;
-		}
-		return this.tagQuery.query(dv, identifier, options);
-	}
+        public query(dv: any, identifier: string | string[], options: any): Promise<void | ListItem[]> {
+                this.dv = dv;
+                if (!this.tagQuery) {
+                        console.error('TagQuery is not initialized.');
+                        return;
+                }
+                return this.tagQuery.query(dv, identifier, options);
+        }
 	 
 	public getSummary(dv: any, identifier: string, options: any): Promise<void | ListItem[]> {
 		this.dv = dv;
@@ -931,11 +939,13 @@ export default class ObsidianPlus extends Plugin {
 
 		// Explicitly reset runtime state managed by ConfigLoader
 		// This prevents loading potentially invalid data from data.json
-		this.settings.webTags = {};
-		this.settings.aiConnector = null;
-		this.settings.taskTags = []; // Always derived from the config file
-		this.settings.tagDescriptions = {};
-		this.settings.subscribe = {};
+                this.settings.webTags = {};
+                this.settings.aiConnector = null;
+                this.settings.taskTags = []; // Always derived from the config file
+                this.settings.tagDescriptions = {};
+                this.settings.subscribe = {};
+                this.settings.projects = [];
+                this.settings.projectTags = [];
  
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
@@ -952,10 +962,12 @@ export default class ObsidianPlus extends Plugin {
 		const settingsToSave = { ...this.settings };
 
 		// Remove properties that should NOT be saved
-		delete settingsToSave.webTags;
-		delete settingsToSave.aiConnector;
-		// taskTags are derived by ConfigLoader, no need to save them
-		delete settingsToSave.taskTags;
+                delete settingsToSave.webTags;
+                delete settingsToSave.aiConnector;
+                // taskTags are derived by ConfigLoader, no need to save them
+                delete settingsToSave.taskTags;
+                delete settingsToSave.projects;
+                delete settingsToSave.projectTags;
 
 		// Save only the serializable parts
 		await this.saveData(settingsToSave);

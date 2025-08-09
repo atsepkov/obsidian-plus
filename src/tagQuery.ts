@@ -172,18 +172,20 @@ export class TagQuery {
         let results: ListItem[] = [];
         const targetIdentifier = Array.isArray(identifier) ? identifier[identifier.length - 1] : identifier;
 
-        const isProjectTag = (line) => line.tags.length === 1 && (line.text.trim() === line.tags[0]);
+        const isLonelyTag = (line) =>
+            line.tags.length === 1 &&
+            (line.text.trim() === line.tags[0]);
         for (let line of initialLines) {
             if (!targetIdentifier) {
                 // no identifier/tag specified
                 let text = line.text.split('\n')[0].trim();
                 results.push({ ...line, text });
-            } else if (isProjectTag(line) && !hideChildren && line.text.includes(targetIdentifier)) {
-                // project tag
+            } else if (isLonelyTag(line) && !hideChildren && line.text.includes(targetIdentifier)) {
+                // lonely tag
                 const parent = { ...line, tagPosition: 0 };
                 results = results.concat(line.children.map(c => ({ ...c, parentItem: parent })));
             } else if (line.text.includes(targetIdentifier) && !onlyChildren) {
-                if (hideProjectTags && isProjectTag(line)) continue;
+                if (hideProjectTags && isLonelyTag(line)) continue;
 
                 // tagged line item
                 let text = line.text.split('\n')[0].trim();

@@ -66,18 +66,20 @@ import {
     function collectTasksLazy(
         tag: string,
         plugin: Plugin,
-        onReady: () => void
+        onReady: () => void,
+        project?: string
       ): TaskEntry[] {
+        const key = project ? `${project}|${tag}` : tag;
         /* 1️⃣  Already cached → return immediately */
-        if (cache[tag]) return cache[tag];
-      
+        if (cache[key]) return cache[key];
+
         /* 2️⃣  Build already in flight → return empty until done */
-        if (pending[tag]) return [];
-      
+        if (pending[key]) return [];
+
         /* 3️⃣  Kick off background build */
-        pending[tag] = true;
-        cache[tag]   = [];                 // start with empty list
-      
+        pending[key] = true;
+        cache[key]   = [];                 // start with empty list
+
         /* Fetch Dataview API + user options */
         const dv  = plugin.app.plugins.plugins["dataview"]?.api;
         const opt = {
@@ -86,51 +88,53 @@ import {
           onlyPrefixTags: true,
           ...(plugin.settings.tagQueryOptions ?? {})      // <-- future user hash
         };
-      
+
         let rows: TaskEntry[] = [];
         try {
           if (dv && (plugin as any).query) {
-            rows = (plugin as any).query(dv, tag, opt) as TaskEntry[];
+            rows = project
+              ? (plugin as any).query(dv, [project, tag], opt) as TaskEntry[]
+              : (plugin as any).query(dv, tag, opt) as TaskEntry[];
           }
         } catch (e) {
           console.error("Dataview query failed", e);
         }
-      
+
         /* Chunk the rows into the cache without blocking the UI */
         const CHUNK = 50;
         let i = 0;
-      
+
         const feed = () => {
           const slice = rows.slice(i, i + CHUNK);
-          /* inside collectTasksLazy – while pushing rows into cache[tag] */
+          /* inside collectTasksLazy – while pushing rows into cache[key] */
         function explodeLines(row: any): string[] {
             const out = [row.text];
             row.children?.forEach((c: any) => out.push(...explodeLines(c)));
             return out;
         }
-        
+
         slice.forEach(r => {
             const lines = explodeLines(r).map(s => s.trim()).filter(Boolean);
-            cache[tag].push({
+            cache[key].push({
                 ...r,
                 text: r.text.trim(),
                 lines,
             });
         });
         //   slice.forEach(r =>
-        //     cache[tag].push({ ...r, text: r.text.trim() })
+        //     cache[key].push({ ...r, text: r.text.trim() })
         //   );
           i += slice.length;
-      
+
           if (i < rows.length) {
             setTimeout(feed, 0);           // yield to UI / mobile watchdog
           } else {
-            pending[tag] = false;          // finished
+            pending[key] = false;          // finished
             onReady();                     // refresh modal
           }
         };
         feed();                            // start first slice
-      
+
         return [];                         // initial call returns nothing
     }
   
@@ -145,14 +149,16 @@ import {
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
     private activeTag = "#";
-    private cachedTag   = "";          // which tag the cache belongs to
-    private taskCache: TaskEntry[] = [];   // tasks for that tag
+    private cachedTag   = "";          // cache key currently loaded
+    private taskCache: Record<string, TaskEntry[]> = {};   // tasks by cache key
+    private projectTag: string | null = null;              // current project scope
   
     constructor(app: App, plugin: Plugin,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position }) {
       super(app);
       this.plugin = plugin;
       this.replaceRange = range;
+      this.projectTag = this.detectProject();
   
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
       this.setInstructions([
@@ -169,6 +175,25 @@ import {
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.detectMode(); // initial
+    }
+
+    /** Determine the project tag for the current cursor location */
+    private detectProject(): string | null {
+      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+      if (!view) return null;
+      const ed = view.editor;
+      for (let ln = this.replaceRange.from.line; ln >= 0; ln--) {
+        const line = ed.getLine(ln);
+        if (!line) continue;
+        const indent = line.match(/^\s*/)?.[0].length ?? 0;
+        if (indent > 0) continue;                 // not a root bullet yet
+        if (!/^[-*+]\s/.test(line.trim())) continue; // ensure it's a bullet
+        const tags = line.match(/#[^\s#]+/g) || [];
+        const projects = this.plugin.settings.projects || [];
+        const found = tags.find(t => projects.includes(t));
+        return found || null;
+      }
+      return null;
     }
 
     onOpen() {
@@ -221,11 +246,16 @@ import {
         if (m) {
           this.tagMode   = false;
           this.activeTag = m[0].trim();        // “#tag”
-      
+
+          const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
+              ? this.projectTag
+              : null;
+          const key = project ? `${project}|${this.activeTag}` : this.activeTag;
+
           /* 🆕  cache populate */
-          if (this.activeTag !== this.cachedTag) {
-            this.taskCache = this.collectTasks(this.activeTag);
-            this.cachedTag = this.activeTag;
+          if (key !== this.cachedTag) {
+            this.taskCache[key] = this.collectTasks(this.activeTag, project);
+            this.cachedTag = key;
           }
         } else {
           this.tagMode   = true;
@@ -249,9 +279,11 @@ import {
   
     /* ---------- data ---------- */
     getItems() {
-      return this.tagMode
-        ? getAllTags(this.app)
-        : this.collectTasks(this.activeTag);
+      if (this.tagMode) return getAllTags(this.app);
+      const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
+        ? this.projectTag
+        : null;
+      return this.collectTasks(this.activeTag, project);
     }
   
     /* ---------- display text in query preview ---------- */
@@ -365,14 +397,14 @@ import {
     }
   
     /* ---------- gather tasks with a given tag ---------- */
-    private collectTasks(tag: string): TaskEntry[] {
+    private collectTasks(tag: string, project?: string): TaskEntry[] {
         const dv = this.plugin.app.plugins.plugins["dataview"]?.api;
-      
+
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
           try {
             const rows = (this.plugin as any)
-              .query(dv, tag, {
+              .query(dv, project ? [project, tag] : tag, {
                 path: '""',
                 onlyOpen: !this.plugin.settings.webTags[tag],
                 onlyPrefixTags: true
@@ -380,7 +412,7 @@ import {
             return (rows ?? []).map(r => ({ ...r, text: r.text.trim() }));
           } catch (e) { console.error("Dataview query failed", e); }
         }
-      
+
         /* 2️⃣  Fallback – none (empty) because file reads are async */
         return [];
     }
@@ -414,23 +446,27 @@ import {
         /* ---------- TASK MODE ---------- */
         const tag   = this.activeTag;                         // "#todo"
         const body  = query.replace(/^#\S+\s/, "");           // user’s filter
-        
+        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
+          ? this.projectTag
+          : null;
+        const key = project ? `${project}|${tag}` : tag;
+
         /* ①  sync local cache with global one (if available)  */
-        if (!this.taskCache[tag] && cache[tag]?.length) {
-          this.taskCache[tag] = cache[tag];                   // ← add this line
+        if (!this.taskCache[key] && cache[key]?.length) {
+          this.taskCache[key] = cache[key];
         }
-        
+
         /* ②  build lazily if still missing */
-        if (!this.taskCache[tag]) {
-          collectTasksLazy(tag, this.plugin, () => this.updateSuggestions());
+        if (!this.taskCache[key]) {
+          collectTasksLazy(tag, this.plugin, () => this.updateSuggestions(), project);
           return [];                                         // nothing yet
         }
-        
+
         /* ③  we now have tasks → fuzzy‑filter and display */
         const scorer = prepareFuzzySearch(body);
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
 
-        return this.taskCache[tag]!.flatMap(t => {
+        return this.taskCache[key]!.flatMap(t => {
             let bestLine = null;
             let bestScore = -Infinity;
           
