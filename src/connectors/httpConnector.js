@@ -141,42 +141,74 @@ export default class HttpConnector extends TagConnector {
         return { headers };
     }
 
-    async sendRequest(url, data, options = {}) {
-        // Determine the HTTP method
-        const method = (this.config.method ?? "GET").toUpperCase();
+    // async sendRequest(url, data, options = {}) {
+    //     // Determine the HTTP method
+    //     const method = (this.config.method ?? "GET").toUpperCase();
 
-        // Merge headers: connector defaults  + auth  + per-call extras
+    //     // Merge headers: connector defaults  + auth  + per-call extras
+    //     const headers = {
+    //         "Content-Type": "application/json",
+    //         ...(this.config.headers ?? {}),
+    //         ...options.headers
+    //     };
+
+    //     // Build requestUrl param
+    //     const req = {
+    //         url,
+    //         method,
+    //         headers,
+    //         // Obsidian expects string | ArrayBuffer for the body
+    //         body: method === "GET" ? undefined : JSON.stringify(data),
+    //         throw: false,                   // we’ll handle non-2xx ourselves
+    //     };
+
+    //     try {
+    //         const response = await requestUrl(req);
+    //         console.log('HTTP request sent successfully', response);
+            
+    //         // Check for a successful status
+    //         if (response.status !== 200) {
+    //             // Log or handle errors as needed
+    //             throw new Error(`HTTP error! status: ${response.status}`);
+    //         }
+
+    //         return response;
+    //     } catch (error) {
+    //         console.error(`Failed to send: ${error}`);
+    //         // Optionally implement retry logic or further error handling
+    //         throw error;
+    //     }
+    // }
+    async sendRequest(url, data, options = {}) {
+        const method  = (this.config.method ?? "GET").toUpperCase();
         const headers = {
             "Content-Type": "application/json",
             ...(this.config.headers ?? {}),
-            ...options.headers
+            ...options.headers,
         };
 
-        // Build requestUrl param
-        const req = {
-            url,
+        // ---------- default (requestUrl) ----------
+        if (!this.config.useFetch) {
+            const response = await requestUrl({
+                url,
+                method,
+                headers,
+                body: method === "GET" ? undefined : JSON.stringify(data),
+                throw: false,
+            });
+            if (response.status !== 200)
+                throw new Error(`HTTP ${response.status}`);
+            return response;
+        }
+
+        // ---------- optional raw fetch ----------
+        const fetchOpts = {
             method,
             headers,
-            // Obsidian expects string | ArrayBuffer for the body
             body: method === "GET" ? undefined : JSON.stringify(data),
-            throw: false,                   // we’ll handle non-2xx ourselves
         };
-
-        try {
-            const response = await requestUrl(req);
-            console.log('HTTP request sent successfully', response);
-            
-            // Check for a successful status
-            if (response.status !== 200) {
-                // Log or handle errors as needed
-                throw new Error(`HTTP error! status: ${response.status}`);
-            }
-
-            return response;
-        } catch (error) {
-            console.error(`Failed to send: ${error}`);
-            // Optionally implement retry logic or further error handling
-            throw error;
-        }
+        const res = await fetch(url, fetchOpts);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        return res;
     }
 }

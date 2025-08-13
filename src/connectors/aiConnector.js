@@ -144,73 +144,123 @@ export default class AiConnector extends HttpConnector {
 
     // This is basically a clone of super.sendRequest that uses native fetch to allow streaming.
     // Streaming doesn't work with requestUrl, which is used in httpConnector to bypass CORS.
-    async sendRequest(url, data, options = {}) {
-        const method = (this.config.method ?? "GET").toUpperCase();
+    // async sendRequest(url, data, options = {}) {
+    //     const method = (this.config.method ?? "GET").toUpperCase();
     
+    //     const headers = {
+    //         "Content-Type": "application/json",
+    //         ...(this.config.headers ?? {}),
+    //         ...options.headers
+    //     };
+    
+    //     const fetchOptions = {
+    //         method,
+    //         headers,
+    //         body: method === "GET" ? undefined : JSON.stringify(data),
+    //     };
+    
+    //     try {
+    //         const response = await fetch(url, fetchOptions);
+    
+    //         if (!response.ok) {
+    //             throw new Error(`HTTP error! status: ${response.status}`);
+    //         }
+    
+    //         // STREAM MODE
+    //         if (data.stream) {
+    //             if (!response.body) throw new Error("No body in response for stream");
+    
+    //             const reader = response.body.getReader();
+    //             const decoder = new TextDecoder("utf-8");
+    
+    //             // Use this to accumulate streamed chunks
+    //             const streamParser = options.onChunk || console.log;
+    
+    //             while (true) {
+    //                 const { done, value } = await reader.read();
+    //                 if (done) break;
+    
+    //                 const chunk = decoder.decode(value);
+    //                 const lines = chunk.split("\n").filter(line => line.startsWith("data: "));
+    
+    //                 for (const line of lines) {
+    //                     const payload = line.slice(6).trim(); // strip "data: "
+    
+    //                     if (payload === "[DONE]") return;
+    
+    //                     try {
+    //                         const parsed = JSON.parse(payload);
+    //                         streamParser(parsed);
+    //                     } catch (err) {
+    //                         console.warn("Malformed chunk ignored:", payload);
+    //                     }
+    //                 }
+    //             }
+    
+    //             return; // stream is already handled
+    //         }
+    
+    //         // NON-STREAM MODE
+    //         const json = await response.json();
+    //         return {
+    //             status: response.status,
+    //             json,
+    //             headers: Object.fromEntries(response.headers.entries())
+    //         };
+    //     } catch (error) {
+    //         console.error(`Failed to send request to ${url}:`, error);
+    //         throw error;
+    //     }
+    // }
+    async sendRequest(url, data = {}, options = {}) {
+        const method  = (options.method || this.config.method || "POST").toUpperCase();
         const headers = {
-            "Content-Type": "application/json",
-            ...(this.config.headers ?? {}),
-            ...options.headers
+          "Content-Type": "application/json",
+          ...(this.config.headers ?? {}),
+          ...(options.headers ?? {}),
         };
     
-        const fetchOptions = {
-            method,
-            headers,
-            body: method === "GET" ? undefined : JSON.stringify(data),
-        };
+        const res = await fetch(url, {
+          method,
+          headers,
+          body: method === "GET" || method === "HEAD" ? undefined : JSON.stringify(data),
+          signal: options.signal,
+        });
     
-        try {
-            const response = await fetch(url, fetchOptions);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
     
-            if (!response.ok) {
-                throw new Error(`HTTP error! status: ${response.status}`);
+        // If caller supplied streaming handlers, stream the body:
+        if (options.onChunk || options.onEvent) {
+          const reader  = res.body.getReader();
+          const decoder = new TextDecoder();
+    
+          let buf = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+    
+            // SSE parsing if server uses text/event-stream
+            if (options.onEvent && (res.headers.get("content-type") || "").includes("text/event-stream")) {
+              buf += chunk;
+              let idx;
+              while ((idx = buf.indexOf("\n\n")) !== -1) {
+                const frame = buf.slice(0, idx);
+                buf = buf.slice(idx + 2);
+                // Basic SSE: look for "data: ..."
+                const dataLine = frame.split("\n").find(l => l.startsWith("data:"));
+                if (dataLine) options.onEvent(dataLine.slice(5).trim());
+              }
+            } else if (options.onChunk) {
+              options.onChunk(chunk);
             }
-    
-            // STREAM MODE
-            if (data.stream) {
-                if (!response.body) throw new Error("No body in response for stream");
-    
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-    
-                // Use this to accumulate streamed chunks
-                const streamParser = options.onChunk || console.log;
-    
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-    
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split("\n").filter(line => line.startsWith("data: "));
-    
-                    for (const line of lines) {
-                        const payload = line.slice(6).trim(); // strip "data: "
-    
-                        if (payload === "[DONE]") return;
-    
-                        try {
-                            const parsed = JSON.parse(payload);
-                            streamParser(parsed);
-                        } catch (err) {
-                            console.warn("Malformed chunk ignored:", payload);
-                        }
-                    }
-                }
-    
-                return; // stream is already handled
-            }
-    
-            // NON-STREAM MODE
-            const json = await response.json();
-            return {
-                status: response.status,
-                json,
-                headers: Object.fromEntries(response.headers.entries())
-            };
-        } catch (error) {
-            console.error(`Failed to send request to ${url}:`, error);
-            throw error;
+          }
+          // return a minimal response-like object
+          return { ok: true, status: res.status };
         }
+    
+        // Non-streaming fallback
+        return res;
     }
 
     prepareAiPayload(prompt, context) {

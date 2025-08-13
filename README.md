@@ -1,5 +1,6 @@
 # Obsidian Plus Plugin
 NOTE: This plugin is currently a work in progress, and not yet recommended for public use.
+![preview.png]
 
 Here are the features it adds to Obsidian:
 

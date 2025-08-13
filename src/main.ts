@@ -1,7 +1,7 @@
 import path from 'path';
 import {
 	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf
+	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -14,6 +14,7 @@ import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 import { TaskTagTrigger } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
+import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
@@ -23,13 +24,13 @@ const dimLineDecoration = Decoration.line({
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 interface ObsidianPlusSettings {
-        tagListFilePath: string;
-        tagColors: string[];
-        taskTags: string[];
-        webTags: { [key: string]: string };
-        tagDescriptions: { [key: string]: string };
-        subscribe: Record<string,{ connector:TagConnector; interval:number }>;
-
+	tagListFilePath: string;
+	tagColors: string[];
+	taskTags: string[];
+	webTags: { [key: string]: string };
+	tagDescriptions: { [key: string]: string };
+	subscribe: Record<string,{ connector:TagConnector; interval:number }>;
+	
         /** tags representing projects (root bullets) */
         projects: string[];
         /** tags that should be scoped to a project */
@@ -40,15 +41,15 @@ interface ObsidianPlusSettings {
 }
 
 const DEFAULT_SETTINGS: ObsidianPlusSettings = {
-        tagListFilePath: "TaskTags.md",
-        tagColors: [],
-        taskTags: [],
-        webTags: {},
-        tagDescriptions: {},
-        subscribe: {},
+	tagListFilePath: "TaskTags.md",
+	tagColors: [],
+	taskTags: [],
+	webTags: {},
+	tagDescriptions: {},
+	subscribe: {},
 
-        projects: [],
-        projectTags: [],
+	projects: [],
+	projectTags: [],
 
 	aiConnector: null,
 	summarizeWithAi: false,
@@ -140,6 +141,22 @@ export default class ObsidianPlus extends Plugin {
 		styleEl.textContent = cssText;
 		document.head.appendChild(styleEl);
 		this.register(() => styleEl.remove());
+
+		// render outline icon next to block IDs in both editor and preview
+		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
+		this.registerMarkdownPostProcessor((el) => this.addIconsWithin(el));
+		this.registerEvent(
+				this.app.workspace.on('file-open', () => {
+						const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+						if (view) {
+								this.addIconsWithin(view.containerEl);
+						}
+				})
+		);
+		const initialView = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (initialView) {
+				this.addIconsWithin(initialView.containerEl);
+		}
 
 		// Instantiate ConfigLoader
 		this.configLoader = new ConfigLoader(this.app, this);
@@ -404,7 +421,6 @@ export default class ObsidianPlus extends Plugin {
 				const pos = view.posAtCoords({ x, y }, false);
 				
 				if (pos === null) return;
-				console.log('pos', pos);
 
 				// Get complete editor text
 				const fullText = view.state.doc.toString();
@@ -412,7 +428,6 @@ export default class ObsidianPlus extends Plugin {
 				// Handle multi-line code blocks first
 				const multiLineSelection = this.selectMultiLineCode(fullText, pos);
 				if (multiLineSelection) {
-					console.log('multiLineSelection', multiLineSelection);
 					evt.preventDefault();
 					evt.stopPropagation();
 					view.dispatch({
@@ -427,7 +442,6 @@ export default class ObsidianPlus extends Plugin {
 				// Handle inline code blocks
 				const inlineSelection = this.selectInlineCode(fullText, pos);
 				if (inlineSelection) {
-					console.log('inlineSelection', inlineSelection);
 					evt.preventDefault();
 					evt.stopPropagation();
 					view.dispatch({
@@ -557,14 +571,14 @@ export default class ObsidianPlus extends Plugin {
 		// --- End Scroll Listener ---
 	}
 
-        public query(dv: any, identifier: string | string[], options: any): Promise<void | ListItem[]> {
-                this.dv = dv;
-                if (!this.tagQuery) {
-                        console.error('TagQuery is not initialized.');
-                        return;
-                }
-                return this.tagQuery.query(dv, identifier, options);
-        }
+    public query(dv: any, identifier: string | string[], options: any): Promise<void | ListItem[]> {
+		this.dv = dv;
+		if (!this.tagQuery) {
+			console.error('TagQuery is not initialized.');
+			return;
+		}
+		return this.tagQuery.query(dv, identifier, options);
+	}
 	 
 	public getSummary(dv: any, identifier: string, options: any): Promise<void | ListItem[]> {
 		this.dv = dv;
@@ -852,6 +866,54 @@ export default class ObsidianPlus extends Plugin {
 		}
 	}
 
+	private addIconsWithin(container: HTMLElement): void {
+		const spans = container.querySelectorAll('span.cm-blockid, span.task-block-link');
+		// console.log({ container, spans });
+		spans.forEach((span: Element) => {
+				const text = span.textContent || '';
+				const blockId = text.replace(/^\^/, '');
+				if (!blockId) {
+						return;
+				}
+				if (!this.hasBlockBacklinks(blockId)) {
+						return;
+				}
+				const li = span.closest('li') as HTMLElement | null;
+				if (!li || li.querySelector('.task-outline-button')) {
+						return;
+				}
+				const button = document.createElement('span');
+				button.classList.add('task-outline-button');
+				setIcon(button, 'list-check');
+				button.addEventListener('click', (ev: MouseEvent) => {
+						ev.stopPropagation();
+						this.openTaskOutline(blockId);
+				});
+				li.insertBefore(button, li.firstChild);
+		});
+	}
+
+	private hasBlockBacklinks(blockId: string): boolean {
+		const file = this.app.workspace.getActiveFile();
+		if (!file) {
+				return false;
+		}
+		const backlinks = this.app.metadataCache.getBacklinksForFile(file);
+		if (!backlinks) {
+				return false;
+		}
+		const data: Record<string, { link: string }[]> = backlinks.data;
+		for (const key in data) {
+				const links = data[key];
+				for (const link of links) {
+						if (link.link && link.link.includes(`#^${blockId}`)) {
+								return true;
+						}
+				}
+		}
+		return false;
+	}
+
 	private selectMultiLineCode(fullText: string, clickPos: number) {
 		// Find previous ```
 		let start = clickPos;
@@ -859,7 +921,6 @@ export default class ObsidianPlus extends Plugin {
 		  start--;
 		}
 		if (start < 0) return null;
-		console.log('start', start);
 	  
 		// Find next ``` after start
 		let end = start + 3;
@@ -868,7 +929,6 @@ export default class ObsidianPlus extends Plugin {
 		  end++;
 		}
 		if (end >= fullText.length) return null;
-		console.log('end', end);
 	  
 		// Adjust to exclude delimiters
 		return {
@@ -884,7 +944,6 @@ export default class ObsidianPlus extends Plugin {
 		  start--;
 		}
 		if (start < 0 || fullText[start] !== '`') return null;
-		console.log('start', start);
 	  
 		// Find closing `
 		let end = clickPos;
@@ -892,7 +951,6 @@ export default class ObsidianPlus extends Plugin {
 		  end++;
 		}
 		if (end >= fullText.length || fullText[end] !== '`') return null;
-		console.log('end', end);
 	  
 		// Adjust to exclude backticks
 		return {
@@ -939,13 +997,13 @@ export default class ObsidianPlus extends Plugin {
 
 		// Explicitly reset runtime state managed by ConfigLoader
 		// This prevents loading potentially invalid data from data.json
-                this.settings.webTags = {};
-                this.settings.aiConnector = null;
-                this.settings.taskTags = []; // Always derived from the config file
-                this.settings.tagDescriptions = {};
-                this.settings.subscribe = {};
-                this.settings.projects = [];
-                this.settings.projectTags = [];
+		this.settings.webTags = {};
+		this.settings.aiConnector = null;
+		this.settings.taskTags = []; // Always derived from the config file
+		this.settings.tagDescriptions = {};
+		this.settings.subscribe = {};
+		this.settings.projects = [];
+		this.settings.projectTags = [];
  
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
@@ -962,12 +1020,12 @@ export default class ObsidianPlus extends Plugin {
 		const settingsToSave = { ...this.settings };
 
 		// Remove properties that should NOT be saved
-                delete settingsToSave.webTags;
-                delete settingsToSave.aiConnector;
-                // taskTags are derived by ConfigLoader, no need to save them
-                delete settingsToSave.taskTags;
-                delete settingsToSave.projects;
-                delete settingsToSave.projectTags;
+		delete settingsToSave.webTags;
+		delete settingsToSave.aiConnector;
+		// taskTags are derived by ConfigLoader, no need to save them
+		delete settingsToSave.taskTags;
+		delete settingsToSave.projects;
+		delete settingsToSave.projectTags;
 
 		// Save only the serializable parts
 		await this.saveData(settingsToSave);

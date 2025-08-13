@@ -9,6 +9,7 @@ import {
     text:   string;
     id?:    string;
     path?:  string;        // returned by Dataview
+    lines:  string[];
   }
   
   /* ------------------------------------------------------------------ */
@@ -62,6 +63,12 @@ import {
 
     const pending: Record<string, boolean> = {};       // tag -> scan in‑progress
     const cache:   Record<string, TaskEntry[]> = {};   // tag -> tasks[]
+
+    function explodeLines(row: any): string[] {
+      const out = [row.text];
+      row.children?.forEach((c: any) => out.push(...explodeLines(c)));
+      return out;
+    }
 
     function collectTasksLazy(
         tag: string,
@@ -230,6 +237,7 @@ import {
         const isTask = (this.plugin.settings.taskTags ?? []).includes(tag);
         const bullet = isTask ? "- [ ] " : "- ";
         const line   = `${indent}${bullet}${tag} `;
+        console.log({ tag, isTask, bullet, line });
       
         ed.replaceRange(line,
           { line: ln, ch: 0 },
@@ -409,7 +417,10 @@ import {
                 onlyOpen: !this.plugin.settings.webTags[tag],
                 onlyPrefixTags: true
             }) as TaskEntry[];
-            return (rows ?? []).map(r => ({ ...r, text: r.text.trim() }));
+            return (rows ?? []).map(r => {
+              const lines = explodeLines(r).map(s => s.trim()).filter(Boolean);
+              return { ...r, text: r.text.trim(), lines };
+            });
           } catch (e) { console.error("Dataview query failed", e); }
         }
 
