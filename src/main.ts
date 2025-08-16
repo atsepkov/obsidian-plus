@@ -735,8 +735,9 @@ export default class ObsidianPlus extends Plugin {
 	// Called to mark/color-code lines based on type/error for user's attention
 	private buildDecorationSet(state: EditorState): DecorationSet {
 		// console.log('STATE', state, this)
-		if (this.app.workspace.getActiveFile().path === this.settings.tagListFilePath) {
-			return Decoration.none;
+		const activeFile = this.app.workspace.getActiveFile();
+		if (activeFile?.path === this.settings.tagListFilePath) {
+				return Decoration.none;
 		}
 
 		const lines = state.doc.toString().split("\n");
