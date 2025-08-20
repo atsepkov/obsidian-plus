@@ -357,12 +357,13 @@ export default class ObsidianPlus extends Plugin {
 		);
 
 		this.registerEvent(
-            this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
-                if (info instanceof MarkdownView) {
-                    this.handleBulletPreference(editor); // Keep this line
-                }
-            })
-        );
+		this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
+			if (info instanceof MarkdownView) {
+				this.handleBulletPreference(editor); // Keep this line
+				this.autoConvertTagToTask(editor);
+			}
+		})
+		);
 
 		function expandIfNeeded(evt: MouseEvent) {
 			const target = evt.target.closest('.op-expandable-item');
@@ -815,6 +816,21 @@ export default class ObsidianPlus extends Plugin {
 			const newLine = line.replace(/[+*] /, '- ');
 			editor.setLine(cursor.line, newLine);
 		}
+	}
+
+	private autoConvertTagToTask(editor: Editor) {
+		const cursor = editor.getCursor();
+		const line = editor.getLine(cursor.line);
+		const match = line.match(/^(\s*)[-*+]\s(#\S+)\s$/);
+		if (!match) return;
+
+		const indent = match[1];
+		const tag = match[2];
+		if (!(this.settings.taskTags ?? []).includes(tag)) return;
+
+		const newLine = `${indent}- [ ] ${tag} `;
+		editor.setLine(cursor.line, newLine);
+		editor.setCursor({ line: cursor.line, ch: newLine.length });
 	}
 
 	private highlightFlaggedLinesExtension(getFlaggedLines: () => number[]) {
