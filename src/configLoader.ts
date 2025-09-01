@@ -181,7 +181,9 @@ export class ConfigLoader {
                     if (line.tags && line.tags.length > 0) {
                         const tag = line.tags[0];
                         this.plugin.settings.projectTags.push(tag);
-                        foundTags.push(tag);
+                        // Project tags should not be treated as task tags,
+                        // so avoid adding them to the list of found task tags.
+                        // foundTags.push(tag);
                     }
                 }
 
@@ -276,8 +278,10 @@ export class ConfigLoader {
                     }
                 }
 
-                // Update plugin settings taskTags
-                this.plugin.settings.taskTags = [...new Set(foundTags)]; // Deduplicate
+                // Update plugin settings taskTags without including project tags
+                this.plugin.settings.taskTags = [...new Set(foundTags)].filter(
+                    tag => !this.plugin.settings.projectTags.includes(tag)
+                );
                 console.log("Loaded tags from file:", this.plugin.settings.taskTags);
                 console.log("Configured connectors:", Object.keys(this.plugin.settings.webTags));
 
