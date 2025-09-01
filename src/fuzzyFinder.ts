@@ -3,14 +3,15 @@ import {
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
   
-  interface TaskEntry {
-    file:   TFile;
-    line:   number;
-    text:   string;
-    id?:    string;
-    path?:  string;        // returned by Dataview
-    lines:  string[];
-  }
+interface TaskEntry {
+  file:   TFile;
+  line:   number;
+  text:   string;
+  id?:    string;
+  path?:  string;        // returned by Dataview
+  lines:  string[];
+  status?: string;       // task status char: 'x', '-', '!', ' '
+}
   
   /* ------------------------------------------------------------------ */
   /*                              HELPERS                               */
@@ -89,10 +90,12 @@ import {
 
         /* Fetch Dataview API + user options */
         const dv  = plugin.app.plugins.plugins["dataview"]?.api;
+        const includeCheckboxes = (plugin.settings.taskTags ?? []).includes(tag);
         const opt = {
           path: '""',
           onlyOpen: !plugin.settings.webTags?.[tag],
           onlyPrefixTags: true,
+          includeCheckboxes,
           ...(plugin.settings.tagQueryOptions ?? {})      // <-- future user hash
         };
 
@@ -126,6 +129,7 @@ import {
                 ...r,
                 text: r.text.trim(),
                 lines,
+                status: (r as any).status,
             });
         });
         //   slice.forEach(r =>
@@ -323,7 +327,14 @@ import {
             task = item.item as TaskEntry;
             hit    = (item as any).matchLine;        // the line that matched
             file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-            text = `${this.activeTag} ${task.text}  [[${this.app.metadataCache.fileToLinktext(file)}]]`;
+            const linktext = this.app.metadataCache.fileToLinktext(file);
+            text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
+            const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
+            if (showCheckbox) {
+              const status = task.status ?? " ";
+              // always render checkbox before the tag for valid markdown
+              text = `- [${status}] ${text}`;
+            }
         }
         /* parent line (always shown) */
         await MarkdownRenderer.renderMarkdown(
@@ -411,15 +422,17 @@ import {
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
           try {
+            const includeCheckboxes = (this.plugin.settings.taskTags ?? []).includes(tag);
             const rows = (this.plugin as any)
               .query(dv, project ? [project, tag] : tag, {
                 path: '""',
                 onlyOpen: !this.plugin.settings.webTags[tag],
-                onlyPrefixTags: true
+                onlyPrefixTags: true,
+                includeCheckboxes
             }) as TaskEntry[];
             return (rows ?? []).map(r => {
               const lines = explodeLines(r).map(s => s.trim()).filter(Boolean);
-              return { ...r, text: r.text.trim(), lines };
+              return { ...r, text: r.text.trim(), lines, status: (r as any).status };
             });
           } catch (e) { console.error("Dataview query failed", e); }
         }
@@ -456,7 +469,10 @@ import {
       
         /* ---------- TASK MODE ---------- */
         const tag   = this.activeTag;                         // "#todo"
-        const body  = query.replace(/^#\S+\s/, "");           // user’s filter
+        let body  = query.replace(/^#\S+\s/, "");           // user’s filter
+        const statusMatch = body.match(/\bstatus:(\w+)\b/i);
+        const statusFilter = statusMatch ? statusMatch[1].toLowerCase() : null;
+        if (statusMatch) body = body.replace(statusMatch[0], "").trim();
         const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
           ? this.projectTag
           : null;
@@ -478,6 +494,22 @@ import {
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
 
         return this.taskCache[key]!.flatMap(t => {
+            if (statusFilter) {
+              const map: Record<string, string> = {
+                done: "x",
+                cancel: "-",
+                cancelled: "-",
+                canceled: "-",
+                error: "!",
+                todo: " ",
+                wip: " ",
+                pending: " ",
+                open: " ",
+                incomplete: " ",
+              };
+              const want = map[statusFilter];
+              if (!want || (t.status ?? " ") !== want) return [];
+            }
             let bestLine = null;
             let bestScore = -Infinity;
           
