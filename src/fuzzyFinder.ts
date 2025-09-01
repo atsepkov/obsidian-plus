@@ -470,9 +470,10 @@ interface TaskEntry {
         /* ---------- TASK MODE ---------- */
         const tag   = this.activeTag;                         // "#todo"
         let body  = query.replace(/^#\S+\s/, "");           // user’s filter
-        const statusMatch = body.match(/\bstatus:(\w+)\b/i);
-        const statusFilter = statusMatch ? statusMatch[1].toLowerCase() : null;
+        const statusMatch = body.match(/\bstatus:\s*([^\s]*)/i);
+        let statusFilter = statusMatch ? statusMatch[1].toLowerCase() : null;
         if (statusMatch) body = body.replace(statusMatch[0], "").trim();
+        if (statusFilter === "") statusFilter = null;
         const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
           ? this.projectTag
           : null;
@@ -494,21 +495,40 @@ interface TaskEntry {
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
 
         return this.taskCache[key]!.flatMap(t => {
-            if (statusFilter) {
-              const map: Record<string, string> = {
-                done: "x",
-                cancel: "-",
-                cancelled: "-",
-                canceled: "-",
-                error: "!",
-                todo: " ",
-                wip: " ",
-                pending: " ",
-                open: " ",
-                incomplete: " ",
-              };
-              const want = map[statusFilter];
-              if (!want || (t.status ?? " ") !== want) return [];
+            if (statusFilter !== null) {
+                const aliases: Record<string, string> = {
+                  done: "x",
+                  complete: "x",
+                  completed: "x",
+                  x: "x",
+                  cancel: "-",
+                  cancelled: "-",
+                  canceled: "-",
+                  can: "-",
+                  "-": "-",
+                  error: "!",
+                  err: "!",
+                  e: "!",
+                  "!": "!",
+                  todo: " ",
+                  wip: " ",
+                  pending: " ",
+                  open: " ",
+                  incomplete: " ",
+                };
+                let want: string | null = null;
+                if (statusFilter.length === 1 && ["x", "-", "!"].includes(statusFilter)) {
+                  want = statusFilter;
+                } else {
+                  for (const [alias, ch] of Object.entries(aliases)) {
+                    if (alias.startsWith(statusFilter)) {
+                      want = ch;
+                      break;
+                    }
+                  }
+                }
+                if (want && (t.status ?? " ") !== want) return [];
+                if (!want) return [];
             }
             let bestLine = null;
             let bestScore = -Infinity;
