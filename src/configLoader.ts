@@ -162,10 +162,10 @@ export class ConfigLoader {
 
                 const foundTags: string[] = [];
 
-                // Process Basic Tags (add all tags from each line)
+                // Process Basic Tags (just add the first tag from each line)
                 for (const line of basicTags) {
                     if (line.tags && line.tags.length > 0) {
-                        foundTags.push(...line.tags);
+                        foundTags.push(line.tags[0]);
                     }
                 }
 

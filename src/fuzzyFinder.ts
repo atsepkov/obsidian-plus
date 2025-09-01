@@ -93,7 +93,7 @@ interface TaskEntry {
         const includeCheckboxes = (plugin.settings.taskTags ?? []).includes(tag);
         const opt = {
           path: '""',
-          onlyOpen: !plugin.settings.webTags?.[tag],
+          onlyOpen: includeCheckboxes ? false : !plugin.settings.webTags?.[tag],
           onlyPrefixTags: true,
           includeCheckboxes,
           ...(plugin.settings.tagQueryOptions ?? {})      // <-- future user hash
@@ -426,7 +426,7 @@ interface TaskEntry {
             const rows = (this.plugin as any)
               .query(dv, project ? [project, tag] : tag, {
                 path: '""',
-                onlyOpen: !this.plugin.settings.webTags[tag],
+                onlyOpen: includeCheckboxes ? false : !this.plugin.settings.webTags[tag],
                 onlyPrefixTags: true,
                 includeCheckboxes
             }) as TaskEntry[];
@@ -495,6 +495,8 @@ interface TaskEntry {
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
 
         return this.taskCache[key]!.flatMap(t => {
+            const statusChar = t.status ?? " ";
+
             if (statusFilter !== null) {
                 const aliases: Record<string, string> = {
                   done: "x",
@@ -527,8 +529,10 @@ interface TaskEntry {
                     }
                   }
                 }
-                if (want && (t.status ?? " ") !== want) return [];
+                if (want && statusChar !== want) return [];
                 if (!want) return [];
+            } else {
+                if (statusChar !== " ") return [];
             }
             let bestLine = null;
             let bestScore = -Infinity;
