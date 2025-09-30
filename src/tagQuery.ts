@@ -4,6 +4,7 @@ import { App, TFile, MarkdownRenderer } from 'obsidian';
 import { DataviewApi, ListItem } from 'obsidian-dataview'; // Use ListItem or specific DV types
 import { TaskManager } from './taskManager'; // Import TaskManager
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities'; // Import necessary basic utils
+import { isActiveStatus, parseStatusFilter } from './statusFilters';
 
 // Define structure for child/parent entries (if needed internally, or import if defined elsewhere)
 interface TaskEntry {
@@ -204,8 +205,8 @@ export class TagQuery {
             if (hideCompleted && c.task && c.status === "x") return false;
             if (hideCancelled && c.task && c.status === "-") return false;
             if (onlyCompleted && c.task && c.status !== "x") return false;
-            if (onlyOpen && c.task && c.status !== " ") return false;
-            if (hideOpen && c.task && c.status === " ") return false;
+            if (onlyOpen && c.task && !isActiveStatus(c.status)) return false;
+            if (hideOpen && c.task && isActiveStatus(c.status)) return false;
             if (hideTasks && c.task) return false;
             if (onlyTasks && !c.task) return false;
             if (onlyPrefixTags && c.tagPosition !== 0 && (
@@ -628,15 +629,29 @@ export class TagQuery {
                 e.preventDefault();
                 e.stopPropagation();
 
-                const query = (e.target as HTMLInputElement).value.toLowerCase();
+                const rawQuery = (e.target as HTMLInputElement).value;
+                const loweredRaw = rawQuery.toLowerCase();
+                const { cleanedQuery, statusChar, hadStatusFilter } = parseStatusFilter(rawQuery);
+                const loweredClean = cleanedQuery.toLowerCase();
+                const tokens = loweredClean.split(/\s+/).filter(Boolean);
+                const invalidStatus = hadStatusFilter && statusChar === null;
 
                 // Filter the original flat list of items
                 const filteredItems = items.filter(item => {
-                    if (customSearch) return customSearch(item, query);
-                    // Default search: check item text and children text
-                    const hasQuery = item.text.toLowerCase().includes(query);
-                    const hasChild = item.children?.some(child => child.text.toLowerCase().includes(query));
-                    return hasQuery || hasChild;
+                    if (invalidStatus) return false;
+                    if (hadStatusFilter) {
+                        if (statusChar === null) return false;
+                        if (!item.task) return false;
+                        const itemStatus = (typeof item.status === "string" ? item.status : " ").toLowerCase();
+                        if (itemStatus !== statusChar) return false;
+                    }
+
+                    if (customSearch) return customSearch(item, loweredRaw);
+
+                    if (!tokens.length) return true;
+                    const haystacks = [item.text, ...(item.children?.map(child => child.text) ?? [])]
+                        .map(str => (str ?? "").toLowerCase());
+                    return tokens.every(token => haystacks.some(text => text.includes(token)));
                 });
 
                 // Re-group if groupBy was originally used

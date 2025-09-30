@@ -160,19 +160,47 @@ export class ConfigLoader {
                     this.plugin.settings.tagDescriptions[desc.tags[0]] = text.trim();
                 })
 
-                const foundTags: string[] = [];
+                const taskTags: string[] = [];
+                const taskTagSet = new Set<string>();
+                const addTaskTag = (tag: string) => {
+                    if (!tag) return;
+                    if (!taskTagSet.has(tag)) {
+                        taskTagSet.add(tag);
+                        taskTags.push(tag);
+                    }
+                };
+
+                const projects: string[] = [];
+                const projectSet = new Set<string>();
+                const addProject = (tag: string) => {
+                    if (!tag) return;
+                    if (!projectSet.has(tag)) {
+                        projectSet.add(tag);
+                        projects.push(tag);
+                    }
+                };
+
+                const projectTags: string[] = [];
+                const projectTagSet = new Set<string>();
+                const addProjectTag = (tag: string) => {
+                    if (!tag) return;
+                    if (!projectTagSet.has(tag)) {
+                        projectTagSet.add(tag);
+                        projectTags.push(tag);
+                    }
+                };
 
                 // Process Basic Tags (just add the first tag from each line)
                 for (const line of basicTags) {
                     if (line.tags && line.tags.length > 0) {
-                        foundTags.push(line.tags[0]);
+                        addTaskTag(line.tags[0]);
                     }
                 }
 
                 // Process Projects (list of tags considered projects)
                 for (const line of projectSection) {
                     if (line.tags && line.tags.length > 0) {
-                        this.plugin.settings.projects.push(line.tags[0]);
+                        addProject(line.tags[0]);
                     }
                 }
 
@@ -180,9 +208,7 @@ export class ConfigLoader {
                 for (const line of projectTagSection) {
                     if (line.tags && line.tags.length > 0) {
                         const tag = line.tags[0];
-                        this.plugin.settings.projectTags.push(tag);
-                        // Project tags are also valid task tags
-                        foundTags.push(tag);
+                        addProjectTag(tag);
                     }
                 }
 
@@ -222,10 +248,9 @@ export class ConfigLoader {
                     // Create connector using the factory method (buildTagConnector)
                     // This method now updates plugin.settings directly
                     // this.buildTagConnector(tag, config);
-                    // foundTags.push(tag); // Add to the list of tags requiring task format
                     const connector = createConnector(tag, config, this.plugin);
                     if (connector) {
-                        foundTags.push(tag); // Add to the list of tags requiring task format
+                        addTaskTag(tag); // Add to the list of tags requiring task format
                         this.plugin.settings.webTags[tag] = connector;
                         if (connector instanceof AiConnector) {
                             this.plugin.settings.aiConnector = connector;
@@ -273,12 +298,13 @@ export class ConfigLoader {
                 // Process Recurring Tags (just add to taskTags)
                 for (const line of recurringTags) {
                      if (line.tags && line.tags.length > 0) {
-                        foundTags.push(line.tags[0]);
+                        addTaskTag(line.tags[0]);
                     }
                 }
 
-                // Update plugin settings taskTags, including project tags
-                this.plugin.settings.taskTags = [...new Set(foundTags)];
+                this.plugin.settings.projects = projects;
+                this.plugin.settings.projectTags = projectTags;
+                this.plugin.settings.taskTags = taskTags;
                 console.log("Loaded tags from file:", this.plugin.settings.taskTags);
                 console.log("Configured connectors:", Object.keys(this.plugin.settings.webTags));
 

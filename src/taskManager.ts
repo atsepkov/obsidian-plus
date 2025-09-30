@@ -4,6 +4,7 @@ import { DataviewApi, Task } from 'obsidian-dataview'; // Assuming Task type exi
 
 // Import helpers - fetchExternalLinkContent will be moved into this class
 import { generateId } from './utilities';
+import { isActiveStatus } from './statusFilters';
 
 // Define TaskInfo structure used by findDvTask
 interface TaskInfo {
@@ -157,7 +158,7 @@ export class TaskManager {
             const currentStatusMatch = line.match(/\[(.)\]/);
             if (currentStatusMatch) {
                 const currentStatus = currentStatusMatch[1];
-                const newStatus = (currentStatus === " " || currentStatus === "!") ? "x" : " ";
+                const newStatus = (currentStatus === "!" || isActiveStatus(currentStatus)) ? "x" : " ";
                 line = line.replace(/\[.\]/, `[${newStatus}]`);
                 lines[task.line] = line;
                 await this.saveFileLines(file.path, lines);
