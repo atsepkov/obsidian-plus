@@ -4,6 +4,7 @@ import { App, TFile, MarkdownRenderer } from 'obsidian';
 import { DataviewApi, ListItem } from 'obsidian-dataview'; // Use ListItem or specific DV types
 import { TaskManager } from './taskManager'; // Import TaskManager
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities'; // Import necessary basic utils
+import { isActiveStatus, parseStatusFilter } from './statusFilters';
 
 // Define structure for child/parent entries (if needed internally, or import if defined elsewhere)
 interface TaskEntry {
@@ -199,13 +200,8 @@ export class TagQuery {
         }
 
         // 3) Filter + Sort results
-        const filtered = results.filter(c => {
+        const nonStatusFiltered = results.filter(c => {
             if (customFilter && !customFilter(c)) return false;
-            if (hideCompleted && c.task && c.status === "x") return false;
-            if (hideCancelled && c.task && c.status === "-") return false;
-            if (onlyCompleted && c.task && c.status !== "x") return false;
-            if (onlyOpen && c.task && c.status !== " ") return false;
-            if (hideOpen && c.task && c.status === " ") return false;
             if (hideTasks && c.task) return false;
             if (onlyTasks && !c.task) return false;
             if (onlyPrefixTags && c.tagPosition !== 0 && (
@@ -234,16 +230,32 @@ export class TagQuery {
             return true;
         });
 
+        const filtered = nonStatusFiltered.filter(c => {
+            if (hideCompleted && c.task && c.status === "x") return false;
+            if (hideCancelled && c.task && c.status === "-") return false;
+            if (onlyCompleted && c.task && c.status !== "x") return false;
+            if (onlyOpen && c.task && !isActiveStatus(c.status)) return false;
+            if (hideOpen && c.task && isActiveStatus(c.status)) return false;
+            return true;
+        });
+
         if (customSort) {
             filtered.sort(customSort);
         }
 
         // 4) Return data if requested
+        if (options.showSearchbox) {
+            (filtered as any).__searchBase = nonStatusFiltered;
+        }
         return filtered;
     }
 
     async renderQuery(dv: any, identifier: string | string[] | null, options: QueryOptions = {}): Promise<void | ListItem[]> {
         const filtered = this.query(dv, identifier, options);
+        const searchBase = (filtered as any).__searchBase as ListItem[] | undefined;
+        if (searchBase) {
+            delete (filtered as any).__searchBase;
+        }
 
         if (options.onlyChildren && options.hideChildren) {
             dv.paragraph("Error: onlyChildren and hideChildren cannot be used together.");
@@ -275,7 +287,7 @@ export class TagQuery {
 
         // 6) Render results (using internal helper)
         // Pass both the flat filtered list (for checksum/search) and the grouped list (if exists)
-        await this.renderResults(dv, filtered, options, groupedResults);
+        await this.renderResults(dv, filtered, options, groupedResults, searchBase);
     }
 
 
@@ -497,7 +509,13 @@ export class TagQuery {
      * (Previously renderResults helper inside getSummary)
      * Requires App instance access.
      */
-    private async renderResults(dv: any, items: ListItem[], options: QueryOptions, groupedItems: Map<string, ListItem[]> | null): Promise<void> {
+    private async renderResults(
+        dv: any,
+        items: ListItem[],
+        options: QueryOptions,
+        groupedItems: Map<string, ListItem[]> | null,
+        searchBase?: ListItem[]
+    ): Promise<void> {
         // --- Logic from renderResults ---
         // Needs this.app
         const {
@@ -628,15 +646,40 @@ export class TagQuery {
                 e.preventDefault();
                 e.stopPropagation();
 
-                const query = (e.target as HTMLInputElement).value.toLowerCase();
+                const rawQuery = (e.target as HTMLInputElement).value;
+                const trimmed = rawQuery.trim();
+                if (!trimmed.length) {
+                    if (groupedItems) {
+                        await renderGroupedList(groupedItems, resultsEl);
+                    } else {
+                        resultsEl.empty();
+                        await renderFlatList(items, resultsEl);
+                    }
+                    return;
+                }
+                const loweredRaw = rawQuery.toLowerCase();
+                const { cleanedQuery, statusChar, hadStatusFilter } = parseStatusFilter(rawQuery);
+                const loweredClean = cleanedQuery.toLowerCase();
+                const tokens = loweredClean.split(/\s+/).filter(Boolean);
+                const invalidStatus = hadStatusFilter && statusChar === null;
 
                 // Filter the original flat list of items
-                const filteredItems = items.filter(item => {
-                    if (customSearch) return customSearch(item, query);
-                    // Default search: check item text and children text
-                    const hasQuery = item.text.toLowerCase().includes(query);
-                    const hasChild = item.children?.some(child => child.text.toLowerCase().includes(query));
-                    return hasQuery || hasChild;
+                const searchSource = hadStatusFilter ? (searchBase ?? items) : items;
+                const filteredItems = searchSource.filter(item => {
+                    if (invalidStatus) return false;
+                    if (hadStatusFilter) {
+                        if (statusChar === null) return false;
+                        if (!item.task) return false;
+                        const itemStatus = (typeof item.status === "string" ? item.status : " ").toLowerCase();
+                        if (itemStatus !== statusChar) return false;
+                    }
+
+                    if (customSearch) return customSearch(item, loweredRaw);
+
+                    if (!tokens.length) return true;
+                    const haystacks = [item.text, ...(item.children?.map(child => child.text) ?? [])]
+                        .map(str => (str ?? "").toLowerCase());
+                    return tokens.every(token => haystacks.some(text => text.includes(token)));
                 });
 
                 // Re-group if groupBy was originally used

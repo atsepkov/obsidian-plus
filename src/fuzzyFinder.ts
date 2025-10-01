@@ -2,6 +2,7 @@ import {
     App, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
+import { isActiveStatus, parseStatusFilter } from "./statusFilters";
   
 interface TaskEntry {
   file:   TFile;
@@ -10,7 +11,7 @@ interface TaskEntry {
   id?:    string;
   path?:  string;        // returned by Dataview
   lines:  string[];
-  status?: string;       // task status char: 'x', '-', '!', ' '
+  status?: string;       // task status char: 'x', '-', '!', ' ', '/'
 }
   
   /* ------------------------------------------------------------------ */
@@ -470,10 +471,11 @@ interface TaskEntry {
         /* ---------- TASK MODE ---------- */
         const tag   = this.activeTag;                         // "#todo"
         let body  = query.replace(/^#\S+\s/, "");           // user’s filter
-        const statusMatch = body.match(/\bstatus:\s*([^\s]*)/i);
-        let statusFilter = statusMatch ? statusMatch[1].toLowerCase() : null;
-        if (statusMatch) body = body.replace(statusMatch[0], "").trim();
-        if (statusFilter === "") statusFilter = null;
+        const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(body);
+        body = cleanedQuery;
+        if (hadStatusFilter && desiredStatus === null) {
+          return [];
+        }
         const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
           ? this.projectTag
           : null;
@@ -497,42 +499,10 @@ interface TaskEntry {
         return this.taskCache[key]!.flatMap(t => {
             const statusChar = t.status ?? " ";
 
-            if (statusFilter !== null) {
-                const aliases: Record<string, string> = {
-                  done: "x",
-                  complete: "x",
-                  completed: "x",
-                  x: "x",
-                  cancel: "-",
-                  cancelled: "-",
-                  canceled: "-",
-                  can: "-",
-                  "-": "-",
-                  error: "!",
-                  err: "!",
-                  e: "!",
-                  "!": "!",
-                  todo: " ",
-                  wip: " ",
-                  pending: " ",
-                  open: " ",
-                  incomplete: " ",
-                };
-                let want: string | null = null;
-                if (statusFilter.length === 1 && ["x", "-", "!"].includes(statusFilter)) {
-                  want = statusFilter;
-                } else {
-                  for (const [alias, ch] of Object.entries(aliases)) {
-                    if (alias.startsWith(statusFilter)) {
-                      want = ch;
-                      break;
-                    }
-                  }
-                }
-                if (want && statusChar !== want) return [];
-                if (!want) return [];
+            if (hadStatusFilter) {
+                if (desiredStatus === null || statusChar !== desiredStatus) return [];
             } else {
-                if (statusChar !== " ") return [];
+                if (!isActiveStatus(statusChar)) return [];
             }
             let bestLine = null;
             let bestScore = -Infinity;

@@ -726,7 +726,7 @@ export default class ObsidianPlus extends Plugin {
 			if (headerEl) { // Check if headerEl exists before manipulating
 				headerEl.classList.remove('obsidian-plus-sticky-header--visible');
 				headerEl.empty();
-+				delete headerEl.dataset.renderedContent;
+				delete headerEl.dataset.renderedContent;
 			}
 		}
 	}
@@ -741,33 +741,81 @@ export default class ObsidianPlus extends Plugin {
 				return Decoration.none;
 		}
 
-		const lines = state.doc.toString().split("\n");
-		const decorations: Range<Decoration>[] = [];
-	
-		let prevLine = ''
-		for (let i = 0; i < lines.length; i++) {
-			const line = lines[i];
-			const cleanLine = line.trim();
+                const lines = state.doc.toString().split("\n");
+                const decorations: Range<Decoration>[] = [];
+                const taskTagSet = new Set(this.settings.taskTags ?? []);
+                const projectTagSet = new Set(this.settings.projectTags ?? []);
+                const projectRootSet = new Set(this.settings.projects ?? []);
+                const contextStack: { indent: number; inProject: boolean }[] = [];
+                const bulletRegex = /^(\s*)([-*+])\s+/;
+                const tagRegex = /#[^\s#]+/g;
 
-			// highlight tasks that don't match the proper task format
-			for (const tag of this.settings.taskTags) {
-				if (line.includes(tag)) {
-					// If it doesn't match "proper task format," then highlight
-					const invalidRegex = new RegExp(`^[-*]\\s*${tag}\\s`);
-					if (invalidRegex.test(line.trim())) {
-						// Convert 0-based line number to a CodeMirror line range
-						const cmLine = state.doc.line(i + 1);
-						decorations.push(
-							Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
-						);
-					}
-				}
-			}
+                let prevLine = ''
+                for (let i = 0; i < lines.length; i++) {
+                        const line = lines[i];
+                        const cleanLine = line.trim();
 
-			// TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
+                        const leadingWhitespace = (line.match(/^\s*/) ?? [""])[0];
+                        let indent = leadingWhitespace.replace(/\t/g, "    ").length;
+                        const bulletMatch = line.match(bulletRegex);
+                        let isBullet = false;
+                        if (bulletMatch) {
+                                isBullet = true;
+                                const indentSource = bulletMatch[1] ?? "";
+                                indent = indentSource.replace(/\t/g, "    ").length;
+                        }
+                        if (isBullet || cleanLine.length > 0) {
+                                while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
+                                        contextStack.pop();
+                                }
+                        }
 
-			// highlight errors and responses
-			if (cleanLine.startsWith('+ ')) {
+                        const parentInProject = contextStack.length ? contextStack[contextStack.length - 1].inProject : false;
+                        const tagMatches = line.match(tagRegex) ?? [];
+                        const tags = Array.from(new Set(tagMatches));
+                        const isProjectLine = tags.some(tag => projectRootSet.has(tag));
+                        const lineInProject = isProjectLine || parentInProject;
+
+                        let shouldFlag = false;
+                        for (const tag of tags) {
+                                if (!shouldFlag && taskTagSet.has(tag)) {
+                                        const trimmed = cleanLine;
+                                        const bulletPrefix = trimmed.match(/^[-*+]\s+/);
+                                        if (bulletPrefix) {
+                                                const rest = trimmed.slice(bulletPrefix[0].length);
+                                                const hasCheckbox = /^\[[^\]]\]\s+/.test(rest);
+                                                if (!hasCheckbox) {
+                                                        const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                                                        const tagAtStart = new RegExp(`^${escapedTag}(?:$|\s|[.,:;!?])`);
+                                                        if (tagAtStart.test(rest)) {
+                                                                shouldFlag = true;
+                                                        }
+                                                }
+                                        }
+                                }
+
+                                if (!shouldFlag && projectTagSet.has(tag) && !lineInProject) {
+                                        shouldFlag = true;
+                                }
+
+                                if (shouldFlag) break;
+                        }
+
+                        if (shouldFlag) {
+                                const cmLine = state.doc.line(i + 1);
+                                decorations.push(
+                                        Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
+                                );
+                        }
+
+                        if (isBullet) {
+                                contextStack.push({ indent, inProject: lineInProject });
+                        }
+
+                        // TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
+
+                        // highlight errors and responses
+                        if (cleanLine.startsWith('+ ')) {
 				// - = outgoing request, + = incoming response
 				const cmLine = state.doc.line(i + 1);
 				decorations.push(
