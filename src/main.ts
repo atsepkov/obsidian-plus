@@ -362,6 +362,7 @@ export default class ObsidianPlus extends Plugin {
                         if (info instanceof MarkdownView) {
                                 this.handleBulletPreference(editor); // Keep this line
                                 this.autoConvertTagToTask(editor);
+                                this.applyTaskTagEnterBehavior(editor);
                         }
                 })
                 );
@@ -882,11 +883,36 @@ export default class ObsidianPlus extends Plugin {
 		editor.setCursor({ line: cursor.line, ch: newLine.length });
 	}
 
-	private highlightFlaggedLinesExtension(getFlaggedLines: () => number[]) {
-		const self = this;
+	private applyTaskTagEnterBehavior(editor: Editor) {
+		const cursor = editor.getCursor();
+		if (cursor.line === 0) return;
 
-		// We'll define a StateField that decorates lines
-		return StateField.define<ReturnType<typeof Decoration.set>>({
+		const currentLine = editor.getLine(cursor.line);
+		const currentMatch = currentLine.match(/^(\s*)- \[ \] ?$/);
+		if (!currentMatch) return;
+
+		const previousLine = editor.getLine(cursor.line - 1);
+		if (!previousLine) return;
+
+		const prevMatch = previousLine.match(/^(\s*)- \[ \] (#\S+)/);
+		if (!prevMatch) return;
+
+		const [, prevIndent, tag] = prevMatch;
+		if (!(this.settings.taskTags ?? []).includes(tag)) return;
+
+		const currentIndent = currentMatch[1];
+		if (currentIndent !== prevIndent) return;
+
+		const newLine = `${prevIndent}- `;
+		editor.setLine(cursor.line, newLine);
+		editor.setCursor({ line: cursor.line, ch: newLine.length });
+	}
+
+        private highlightFlaggedLinesExtension(getFlaggedLines: () => number[]) {
+                const self = this;
+
+                // We'll define a StateField that decorates lines
+                return StateField.define<ReturnType<typeof Decoration.set>>({
 			// Called once when the editor state is created
 			create(state: EditorState) {
 				return self.buildDecorationSet(state, getFlaggedLines());
