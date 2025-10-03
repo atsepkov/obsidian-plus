@@ -356,14 +356,15 @@ export default class ObsidianPlus extends Plugin {
 			})
 		);
 
-		this.registerEvent(
-		this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
-			if (info instanceof MarkdownView) {
-				this.handleBulletPreference(editor); // Keep this line
-				this.autoConvertTagToTask(editor);
-			}
-		})
-		);
+                this.registerEvent(
+                this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
+                        this._suggester?.resetPromptGuard();
+                        if (info instanceof MarkdownView) {
+                                this.handleBulletPreference(editor); // Keep this line
+                                this.autoConvertTagToTask(editor);
+                        }
+                })
+                );
 
 		function expandIfNeeded(evt: MouseEvent) {
 			const target = evt.target.closest('.op-expandable-item');
