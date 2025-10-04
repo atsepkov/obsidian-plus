@@ -541,23 +541,39 @@ interface TaskEntry {
   import { EditorSuggest, EditorPosition, Editor, EditorSuggestTriggerInfo } from "obsidian";
   
   export class TaskTagTrigger extends EditorSuggest<null> {
+    private lastPromptKey: string | null = null;
+
     constructor(app: App, private plugin: Plugin) { super(app); }
-  
+
+    /**
+     * Clear the cached prompt signature so the suggester can trigger again on
+     * the next freshly typed `- ?` sequence.
+     */
+    public resetPromptGuard(): void {
+      this.lastPromptKey = null;
+    }
+
     onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
         /* inside TaskTagTrigger.onTrigger() – tighten the regex */
         const before = editor.getLine(cursor.line).slice(0, cursor.ch);
         const line   = editor.getLine(cursor.line);      // full current line
         const atEOL  = cursor.ch === line.length;        // cursor at end‑of‑line
-      
+
         /*  New, stricter pattern:
             - optional leading spaces / tabs
             - a list bullet  (- or * or +) followed by one space
             - a single question‑mark
             - nothing else                              */
         const isExactPrompt = /^\s*[-*+] \?\s*$/.test(line);
-      
+
         if (!atEOL || !isExactPrompt) return null;       // 🚫 don’t trigger
-  
+
+        const file = this.app.workspace.getActiveFile();
+        const promptKey = `${file?.path ?? ""}:${cursor.line}:${line}`;
+
+        if (this.lastPromptKey === promptKey) return null;  // already handled
+        this.lastPromptKey = promptKey;
+
         new TaskTagModal(this.app, this.plugin, {
             from: { line: cursor.line, ch: before.length - 2 }, // start of "- ?"
             to:   { line: cursor.line, ch: cursor.ch }
@@ -565,6 +581,6 @@ interface TaskEntry {
     
         return null; // never show inline suggest
     }
-  
+
     getSuggestions() { return []; }   // required stub
   }
