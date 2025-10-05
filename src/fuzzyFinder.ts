@@ -1,5 +1,5 @@
 import {
-    App, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
+    App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
@@ -403,17 +403,18 @@ interface TaskEntry {
         }
 
         if (!this.allowInsertion || !this.replaceRange) {
-            this.app.workspace.openLinkText(file.path, "", false);
-            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-            const editor = view?.editor;
-            if (editor) {
-                const line = task.line ?? 0;
-                editor.setCursor({ line, ch: 0 });
-                const cmEditor = editor as any;
-                if (cmEditor.scrollIntoView) {
-                    cmEditor.scrollIntoView({ from: { line, ch: 0 }, to: { line: line + 1, ch: 0 } });
-                }
-            }
+            const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+            const line = Math.max(0, task.line ?? 0);
+
+            await this.app.workspace.openLinkText(
+                file.path,
+                sourcePath,
+                false,
+                { eState: { line } }
+            );
+
+            await this.revealTaskInFile(file, line);
+
             this.close();
             return;
         }
@@ -458,6 +459,72 @@ interface TaskEntry {
         }, 0);
 
         this.close();
+    }
+
+    private async revealTaskInFile(file: TFile, line: number): Promise<void> {
+        const tryReveal = async (): Promise<boolean> => {
+            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+            if (!view || view.file?.path !== file.path) {
+                return false;
+            }
+
+            await view.leaf?.loadIfDeferred?.();
+
+            const anyView = view as MarkdownView & { revealLine?: (line: number) => void };
+            if (typeof anyView.revealLine === "function") {
+                anyView.revealLine(line);
+            }
+
+            const editor = view.editor;
+            if (editor) {
+                const lineCount = editor.lineCount();
+                const clampedLine = Math.max(0, Math.min(line, Math.max(0, lineCount - 1)));
+                const lineLength = editor.getLine(clampedLine)?.length ?? 0;
+
+                editor.setCursor({ line: clampedLine, ch: 0 });
+                editor.scrollIntoView({
+                    from: { line: clampedLine, ch: 0 },
+                    to: { line: clampedLine, ch: Math.max(lineLength, 1) }
+                });
+                editor.focus();
+            }
+
+            return true;
+        };
+
+        if (await tryReveal()) {
+            return;
+        }
+
+        await new Promise<void>(resolve => {
+            let settled = false;
+            let ref: EventRef | null = null;
+
+            const finish = () => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (ref) {
+                    this.app.workspace.offref(ref);
+                }
+                resolve();
+            };
+
+            ref = this.app.workspace.on("file-open", async opened => {
+                if (!opened || opened.path !== file.path) {
+                    return;
+                }
+
+                if (await tryReveal()) {
+                    finish();
+                }
+            });
+
+            window.setTimeout(() => {
+                finish();
+            }, 1500);
+        });
     }
   
     /* ---------- gather tasks with a given tag ---------- */
