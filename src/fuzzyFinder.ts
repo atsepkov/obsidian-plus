@@ -156,7 +156,8 @@ interface TaskEntry {
   
   export class TaskTagModal extends FuzzySuggestModal<string | TaskEntry> {
     private plugin: Plugin;
-    private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position };
+    private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position } | null;
+    private readonly allowInsertion: boolean;
   
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
@@ -166,10 +167,12 @@ interface TaskEntry {
     private projectTag: string | null = null;              // current project scope
   
     constructor(app: App, plugin: Plugin,
-                range: { from: CodeMirror.Position; to: CodeMirror.Position }) {
+                range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
+                options?: { allowInsertion?: boolean }) {
       super(app);
       this.plugin = plugin;
-      this.replaceRange = range;
+      this.replaceRange = range ?? null;
+      this.allowInsertion = options?.allowInsertion ?? true;
       this.projectTag = this.detectProject();
   
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
@@ -194,7 +197,10 @@ interface TaskEntry {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view) return null;
       const ed = view.editor;
-      for (let ln = this.replaceRange.from.line; ln >= 0; ln--) {
+      const cursorLine = this.replaceRange?.from.line ?? ed.getCursor().line;
+      if (cursorLine == null) return null;
+
+      for (let ln = cursorLine; ln >= 0; ln--) {
         const line = ed.getLine(ln);
         if (!line) continue;
         const indent = line.match(/^\s*/)?.[0].length ?? 0;
@@ -233,6 +239,9 @@ interface TaskEntry {
     }
 
     private insertNewTemplate(tag: string) {
+        if (!this.allowInsertion || !this.replaceRange) {
+            return;
+        }
         const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
         const ed     = view.editor;
         const ln     = this.replaceRange.from.line;
@@ -276,13 +285,21 @@ interface TaskEntry {
         }
 
         /* after you build instructions array */
-        this.setInstructions([
-            this.tagMode
-            ? { command: "⏎", purpose: "insert new bullet · close" }
-            : { command: "⏎", purpose: "link task · close" },
-            this.tagMode
+        const enterInstruction = this.allowInsertion
+            ? (this.tagMode
+                ? { command: "⏎", purpose: "insert new bullet · close" }
+                : { command: "⏎", purpose: "link task · close" })
+            : (this.tagMode
+                ? { command: "⏎", purpose: "select tag" }
+                : { command: "⏎", purpose: "open task" });
+
+        const tabInstruction = this.tagMode
             ? { command: "Tab", purpose: "autocomplete tag" }
-            : { command: "Tab", purpose: "—" },
+            : { command: "Tab", purpose: "—" };
+
+        this.setInstructions([
+            enterInstruction,
+            tabInstruction,
             { command: "Esc", purpose: "cancel" }
         ]);
 
@@ -366,14 +383,41 @@ interface TaskEntry {
         const item = raw.item ?? raw;
     
         if ("tag" in item) {
+            if (!this.allowInsertion) {
+                this.inputEl.value = `${item.tag} `;
+                this.detectMode();
+                this.updateSuggestions();
+                return;
+            }
             this.insertNewTemplate(item.tag);
             this.close();
             return;
         }
-    
+
         /* ─── TASK chosen ───────────────────────────────────────────── */
         const task  = item as TaskEntry;
         const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
+        if (!file) {
+            this.close();
+            return;
+        }
+
+        if (!this.allowInsertion || !this.replaceRange) {
+            this.app.workspace.openLinkText(file.path, "", false);
+            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+            const editor = view?.editor;
+            if (editor) {
+                const line = task.line ?? 0;
+                editor.setCursor({ line, ch: 0 });
+                const cmEditor = editor as any;
+                if (cmEditor.scrollIntoView) {
+                    cmEditor.scrollIntoView({ from: { line, ch: 0 }, to: { line: line + 1, ch: 0 } });
+                }
+            }
+            this.close();
+            return;
+        }
+
         const id    = await ensureBlockId(this.app, task);
         const link  = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
 
