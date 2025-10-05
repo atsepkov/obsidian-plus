@@ -607,90 +607,88 @@ function escapeCssIdentifier(value: string): string {
 
     private scrollTaskDomTargetIntoView(target: HTMLElement, container: HTMLElement): void {
         const scroller = this.findScrollContainer(target) ?? container;
+        const docScroller = document.scrollingElement;
+        const searchRoot = docScroller && scroller === docScroller ? container : scroller;
 
-        let interval: number | null = null;
-        let observer: ResizeObserver | null = null;
-        let cleanupTimeout: number | null = null;
+        const align = async () => {
+            const tolerance = 2;
+            let deadline = performance.now() + 4000;
+            let lastTop: number | null = null;
+            let stableFrames = 0;
 
-        const cleanup = () => {
-            if (interval !== null) {
-                window.clearInterval(interval);
-                interval = null;
-            }
-            if (observer) {
-                observer.disconnect();
-                observer = null;
-            }
-            if (cleanupTimeout !== null) {
-                window.clearTimeout(cleanupTimeout);
-                cleanupTimeout = null;
+            while (performance.now() < deadline) {
+                if (!target.isConnected) {
+                    break;
+                }
+
+                const viewport = scroller.getBoundingClientRect();
+                const rect = target.getBoundingClientRect();
+
+                if (lastTop !== null && Math.abs(rect.top - lastTop) > tolerance) {
+                    deadline = Math.max(deadline, performance.now() + 1000);
+                }
+                lastTop = rect.top;
+
+                let adjusted = false;
+
+                const delta = rect.top - viewport.top;
+                const direction = delta > tolerance ? 1 : (delta < -tolerance ? -1 : 0);
+
+                if (direction !== 0 && this.canScrollInDirection(scroller, direction)) {
+                    const previous = scroller.scrollTop;
+                    const next = this.clampScrollTop(scroller, previous + delta);
+                    if (Math.abs(next - previous) > 0.5) {
+                        scroller.scrollTop = next;
+                        adjusted = true;
+                    }
+                }
+
+                const topBullet = this.findTopVisibleBullet(searchRoot, viewport.top);
+                const topIsTarget = !topBullet || topBullet === target ||
+                    topBullet.contains(target) || target.contains(topBullet);
+
+                if (!adjusted && !topIsTarget && this.canScrollInDirection(scroller, 1)) {
+                    const topRect = topBullet?.getBoundingClientRect();
+                    if (topRect) {
+                        const overlap = Math.max(0, topRect.bottom - viewport.top);
+                        if (overlap > tolerance) {
+                            const previous = scroller.scrollTop;
+                            const next = this.clampScrollTop(scroller, previous + overlap);
+                            if (Math.abs(next - previous) > 0.5) {
+                                scroller.scrollTop = next;
+                                adjusted = true;
+                            }
+                        }
+                    }
+                }
+
+                if (adjusted) {
+                    stableFrames = 0;
+                    deadline = Math.max(deadline, performance.now() + 800);
+                    await this.waitForNextFrame();
+                    continue;
+                }
+
+                if (topIsTarget) {
+                    const canScrollDown = this.canScrollInDirection(scroller, 1);
+                    const aligned = Math.abs(delta) <= tolerance || !canScrollDown;
+                    if (aligned) {
+                        stableFrames++;
+                        if (stableFrames >= 4) {
+                            break;
+                        }
+                    } else {
+                        stableFrames = 0;
+                    }
+                } else {
+                    stableFrames = 0;
+                }
+
+                await this.waitForNextFrame();
             }
         };
 
-        const scheduleCleanup = (ms: number) => {
-            if (cleanupTimeout !== null) {
-                window.clearTimeout(cleanupTimeout);
-            }
-            cleanupTimeout = window.setTimeout(() => {
-                cleanup();
-            }, ms);
-        };
-
-        const centerTarget = () => {
-            if (!target.isConnected) {
-                cleanup();
-                return;
-            }
-            target.scrollIntoView({ block: "center", inline: "nearest" });
-        };
-
-        const ensureVisible = () => {
-            if (!target.isConnected) {
-                cleanup();
-                return;
-            }
-
-            const viewport = scroller.getBoundingClientRect();
-            const rect = target.getBoundingClientRect();
-
-            if (rect.top < viewport.top + 8 || rect.bottom > viewport.bottom - 8) {
-                centerTarget();
-            }
-        };
-
-        centerTarget();
-
-        const initialTargetRect = target.getBoundingClientRect();
-        const pendingImages = Array.from(container.querySelectorAll<HTMLImageElement>("img"))
-            .filter(img => !img.complete)
-            .filter(img => {
-                const rect = img.getBoundingClientRect();
-                return rect.top < initialTargetRect.bottom;
-            });
-
-        if (pendingImages.length) {
-            const refresh = () => ensureVisible();
-            for (const img of pendingImages) {
-                img.addEventListener("load", refresh, { once: true });
-                img.addEventListener("error", refresh, { once: true });
-            }
-        }
-
-        const frameChecks = 4;
-        for (let i = 0; i < frameChecks; i++) {
-            this.waitForNextFrame().then(ensureVisible);
-        }
-
-        interval = window.setInterval(() => {
-            ensureVisible();
-        }, 120);
-
-        if (typeof ResizeObserver !== "undefined") {
-            observer = new ResizeObserver(() => ensureVisible());
-            observer.observe(scroller);
-        }
-
-        scheduleCleanup(pendingImages.length ? 3200 : 1600);
+        void align();
     }
 
     private pickScrollTarget(el: Element | null): HTMLElement | null {
@@ -719,6 +717,65 @@ function escapeCssIdentifier(value: string): string {
 
         const scrolling = document.scrollingElement;
         return scrolling instanceof HTMLElement ? scrolling : null;
+    }
+
+    private clampScrollTop(scroller: HTMLElement, value: number): number {
+        const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (!Number.isFinite(max)) {
+            return value;
+        }
+        if (value < 0) {
+            return 0;
+        }
+        if (value > max) {
+            return max;
+        }
+        return value;
+    }
+
+    private canScrollInDirection(scroller: HTMLElement, direction: 1 | -1): boolean {
+        const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (!Number.isFinite(max)) {
+            return false;
+        }
+        if (direction < 0) {
+            return scroller.scrollTop > 1;
+        }
+        return scroller.scrollTop < max - 1;
+    }
+
+    private findTopVisibleBullet(root: HTMLElement, viewportTop: number): HTMLElement | null {
+        const selectors = [
+            ".cm-line",
+            ".HyperMD-list-line",
+            ".cm-list-1",
+            ".cm-list-2",
+            ".list-bullet",
+            "li.task-list-item",
+            "li",
+            ".markdown-preview-section"
+        ].join(", ");
+
+        let best: { element: HTMLElement; top: number } | null = null;
+
+        const candidates = Array.from(root.querySelectorAll<HTMLElement>(selectors));
+        for (const el of candidates) {
+            if (!el.offsetParent && el !== root) {
+                continue;
+            }
+
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom <= viewportTop + 1) {
+                continue;
+            }
+
+            const top = Math.max(rect.top, viewportTop);
+            if (!best || top < best.top) {
+                best = { element: el, top };
+            }
+        }
+
+        return best?.element ?? null;
     }
 
     private async waitForNextFrame(): Promise<void> {
