@@ -1,4 +1,4 @@
-import {
+import { 
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
@@ -13,7 +13,15 @@ interface TaskEntry {
   lines:  string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
 }
-  
+
+function escapeCssIdentifier(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+
+  return value.replace(/[^a-zA-Z0-9_-]/g, ch => `\\${ch}`);
+}
+
   /* ------------------------------------------------------------------ */
   /*                              HELPERS                               */
   /* ------------------------------------------------------------------ */
@@ -402,6 +410,8 @@ interface TaskEntry {
             return;
         }
 
+        task.file = file;
+
         if (!this.allowInsertion || !this.replaceRange) {
             const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
             const line = Math.max(0, task.line ?? 0);
@@ -413,7 +423,7 @@ interface TaskEntry {
                 { eState: { line } }
             );
 
-            await this.revealTaskInFile(file, line);
+            await this.revealTaskInFile(task);
 
             this.close();
             return;
@@ -461,7 +471,14 @@ interface TaskEntry {
         this.close();
     }
 
-    private async revealTaskInFile(file: TFile, line: number): Promise<void> {
+    private async revealTaskInFile(task: TaskEntry): Promise<void> {
+        const file = task.file ?? (task.path ? this.app.vault.getFileByPath(task.path) : null);
+        if (!file) {
+            return;
+        }
+
+        const targetLine = Math.max(0, task.line ?? 0);
+
         const tryReveal = async (): Promise<boolean> => {
             const view = this.app.workspace.getActiveViewOfType(MarkdownView);
             if (!view || view.file?.path !== file.path) {
@@ -470,29 +487,30 @@ interface TaskEntry {
 
             await view.leaf?.loadIfDeferred?.();
 
-            const anyView = view as MarkdownView & { revealLine?: (line: number) => void };
-            if (typeof anyView.revealLine === "function") {
-                anyView.revealLine(line);
+            const revealed = this.revealTaskInEditor(view, targetLine) ||
+                this.revealTaskInDom(view, task, targetLine);
+
+            if (revealed) {
+                await this.waitForNextFrame();
             }
 
-            const editor = view.editor;
-            if (editor) {
-                const lineCount = editor.lineCount();
-                const clampedLine = Math.max(0, Math.min(line, Math.max(0, lineCount - 1)));
-                const lineLength = editor.getLine(clampedLine)?.length ?? 0;
-
-                editor.setCursor({ line: clampedLine, ch: 0 });
-                editor.scrollIntoView({
-                    from: { line: clampedLine, ch: 0 },
-                    to: { line: clampedLine, ch: Math.max(lineLength, 1) }
-                });
-                editor.focus();
-            }
-
-            return true;
+            return revealed;
         };
 
-        if (await tryReveal()) {
+        const tryWithRetries = async (): Promise<boolean> => {
+            const delays = [0, 30, 80, 160, 320, 640];
+            for (const delay of delays) {
+                if (delay) {
+                    await this.sleep(delay);
+                }
+                if (await tryReveal()) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if (await tryWithRetries()) {
             return;
         }
 
@@ -516,7 +534,7 @@ interface TaskEntry {
                     return;
                 }
 
-                if (await tryReveal()) {
+                if (await tryWithRetries()) {
                     finish();
                 }
             });
@@ -525,6 +543,86 @@ interface TaskEntry {
                 finish();
             }, 1500);
         });
+    }
+
+    private revealTaskInEditor(view: MarkdownView, line: number): boolean {
+        const editor = view.editor;
+        if (!editor) {
+            return false;
+        }
+
+        const lineCount = editor.lineCount();
+        const clampedLine = Math.max(0, Math.min(line, Math.max(0, lineCount - 1)));
+        const lineLength = editor.getLine(clampedLine)?.length ?? 0;
+
+        editor.setCursor({ line: clampedLine, ch: 0 });
+        editor.scrollIntoView({
+            from: { line: clampedLine, ch: 0 },
+            to: { line: clampedLine, ch: Math.max(lineLength, 1) }
+        }, true);
+        editor.focus();
+
+        return true;
+    }
+
+    private revealTaskInDom(view: MarkdownView, task: TaskEntry, line: number): boolean {
+        const container = view.containerEl;
+        const selectors = new Set<string>();
+
+        if (task.id) {
+            selectors.add(`[data-task-id="${escapeCssIdentifier(task.id)}"]`);
+        }
+
+        selectors.add(`[data-line="${line}"]`);
+        selectors.add(`[data-source-line="${line}"]`);
+        selectors.add(`[data-line-start="${line}"]`);
+
+        for (const selector of selectors) {
+            const el = container.querySelector(selector);
+            const target = this.pickScrollTarget(el);
+            if (target) {
+                target.scrollIntoView({ block: "center" });
+                target.classList.add("mod-flashing");
+                return true;
+            }
+        }
+
+        const sections = Array.from(container.querySelectorAll<HTMLElement>("[data-line-start]"));
+        for (const section of sections) {
+            const start = Number(section.dataset.lineStart);
+            const end = Number(section.dataset.lineEnd ?? section.dataset.lineStart ?? start);
+            if (!Number.isFinite(start) || !Number.isFinite(end)) {
+                continue;
+            }
+
+            if (start <= line && line <= end) {
+                section.scrollIntoView({ block: "center" });
+                section.classList.add("mod-flashing");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private pickScrollTarget(el: Element | null): HTMLElement | null {
+        if (!(el instanceof HTMLElement)) {
+            return null;
+        }
+
+        const target = el.closest<HTMLElement>(
+            ".cm-line, .HyperMD-list-line, .cm-list-1, .cm-list-2, .list-bullet, li, p, .markdown-preview-section"
+        );
+
+        return target ?? el;
+    }
+
+    private async waitForNextFrame(): Promise<void> {
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+    }
+
+    private async sleep(ms: number): Promise<void> {
+        await new Promise<void>(resolve => window.setTimeout(resolve, ms));
     }
   
     /* ---------- gather tasks with a given tag ---------- */
