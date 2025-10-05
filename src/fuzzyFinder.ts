@@ -581,7 +581,7 @@ function escapeCssIdentifier(value: string): string {
             const el = container.querySelector(selector);
             const target = this.pickScrollTarget(el);
             if (target) {
-                target.scrollIntoView({ block: "center" });
+                this.scrollTaskDomTargetIntoView(target, container);
                 target.classList.add("mod-flashing");
                 return true;
             }
@@ -596,13 +596,101 @@ function escapeCssIdentifier(value: string): string {
             }
 
             if (start <= line && line <= end) {
-                section.scrollIntoView({ block: "center" });
+                this.scrollTaskDomTargetIntoView(section, container);
                 section.classList.add("mod-flashing");
                 return true;
             }
         }
 
         return false;
+    }
+
+    private scrollTaskDomTargetIntoView(target: HTMLElement, container: HTMLElement): void {
+        const scroller = this.findScrollContainer(target) ?? container;
+
+        let interval: number | null = null;
+        let observer: ResizeObserver | null = null;
+        let cleanupTimeout: number | null = null;
+
+        const cleanup = () => {
+            if (interval !== null) {
+                window.clearInterval(interval);
+                interval = null;
+            }
+            if (observer) {
+                observer.disconnect();
+                observer = null;
+            }
+            if (cleanupTimeout !== null) {
+                window.clearTimeout(cleanupTimeout);
+                cleanupTimeout = null;
+            }
+        };
+
+        const scheduleCleanup = (ms: number) => {
+            if (cleanupTimeout !== null) {
+                window.clearTimeout(cleanupTimeout);
+            }
+            cleanupTimeout = window.setTimeout(() => {
+                cleanup();
+            }, ms);
+        };
+
+        const centerTarget = () => {
+            if (!target.isConnected) {
+                cleanup();
+                return;
+            }
+            target.scrollIntoView({ block: "center", inline: "nearest" });
+        };
+
+        const ensureVisible = () => {
+            if (!target.isConnected) {
+                cleanup();
+                return;
+            }
+
+            const viewport = scroller.getBoundingClientRect();
+            const rect = target.getBoundingClientRect();
+
+            if (rect.top < viewport.top + 8 || rect.bottom > viewport.bottom - 8) {
+                centerTarget();
+            }
+        };
+
+        centerTarget();
+
+        const initialTargetRect = target.getBoundingClientRect();
+        const pendingImages = Array.from(container.querySelectorAll<HTMLImageElement>("img"))
+            .filter(img => !img.complete)
+            .filter(img => {
+                const rect = img.getBoundingClientRect();
+                return rect.top < initialTargetRect.bottom;
+            });
+
+        if (pendingImages.length) {
+            const refresh = () => ensureVisible();
+            for (const img of pendingImages) {
+                img.addEventListener("load", refresh, { once: true });
+                img.addEventListener("error", refresh, { once: true });
+            }
+        }
+
+        const frameChecks = 4;
+        for (let i = 0; i < frameChecks; i++) {
+            this.waitForNextFrame().then(ensureVisible);
+        }
+
+        interval = window.setInterval(() => {
+            ensureVisible();
+        }, 120);
+
+        if (typeof ResizeObserver !== "undefined") {
+            observer = new ResizeObserver(() => ensureVisible());
+            observer.observe(scroller);
+        }
+
+        scheduleCleanup(pendingImages.length ? 3200 : 1600);
     }
 
     private pickScrollTarget(el: Element | null): HTMLElement | null {
@@ -615,6 +703,22 @@ function escapeCssIdentifier(value: string): string {
         );
 
         return target ?? el;
+    }
+
+    private findScrollContainer(target: HTMLElement): HTMLElement | null {
+        let current: HTMLElement | null = target;
+        while (current) {
+            const style = window.getComputedStyle(current);
+            const overflowY = style?.overflowY ?? "";
+            if ((overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+                current.scrollHeight > current.clientHeight + 4) {
+                return current;
+            }
+            current = current.parentElement;
+        }
+
+        const scrolling = document.scrollingElement;
+        return scrolling instanceof HTMLElement ? scrolling : null;
     }
 
     private async waitForNextFrame(): Promise<void> {
