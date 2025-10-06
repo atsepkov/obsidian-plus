@@ -37,6 +37,10 @@ interface OutlineSection {
 export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promise<void> {
   const { app, plugin, container, task, activeTag, blockId, searchQuery, context } = options;
 
+  console.log("[TreeOfThought] clearing container", {
+    childCount: container.children.length,
+    searchQuery
+  });
   container.empty();
 
   const file = resolveTaskFile(app, task);
@@ -96,6 +100,14 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   for (const section of filteredSections) {
     await renderSection(section, container, plugin);
   }
+
+  const htmlPreview = container.innerHTML.slice(0, 500);
+  console.log("[TreeOfThought] render complete", {
+    renderedSections: filteredSections.length,
+    totalSections: sections.length,
+    containerChildren: container.children.length,
+    htmlPreview
+  });
 }
 
 function resolveTaskFile(app: App, task: TaskEntry): TFile | null {
@@ -316,9 +328,21 @@ async function renderSection(section: OutlineSection, container: HTMLElement, pl
   wrapper.createEl("h3", { text: section.title });
   const body = wrapper.createDiv({ cls: "tree-of-thought__markdown" });
   try {
+    console.log("[TreeOfThought] rendering section", {
+      title: section.title,
+      markdownLength: section.markdown.length
+    });
     await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, plugin);
     const renderedText = body.textContent?.trim() ?? "";
+    console.log("[TreeOfThought] section rendered", {
+      title: section.title,
+      hasContent: Boolean(renderedText),
+      childNodes: body.childNodes.length
+    });
     if (!renderedText) {
+      console.log("[TreeOfThought] section rendered empty, inserting <pre>", {
+        title: section.title
+      });
       body.createEl("pre", { text: section.markdown });
     }
   } catch (error) {
