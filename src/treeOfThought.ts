@@ -11,14 +11,10 @@ export interface TreeOfThoughtOptions {
   searchQuery?: string;
 }
 
-interface ReferenceContext {
+interface OutlineSection {
+  title: string;
   file: TFile;
   markdown: string;
-}
-
-interface FilteredMarkdown {
-  markdown: string;
-  hasMatches: boolean;
 }
 
 export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promise<void> {
@@ -26,153 +22,187 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
 
   container.empty();
 
-  const sourcePath = task.path ?? task.file?.path ?? "";
-  const file: TFile | null = task.file ?? (sourcePath ? app.vault.getFileByPath(sourcePath) : null);
+  const file = resolveTaskFile(app, task);
   if (!file) {
-    container.setText("Unable to load task context.");
+    container.setText("Unable to resolve the source note for this task.");
     return;
   }
 
   const header = container.createDiv({ cls: "tree-of-thought__header" });
-  header.createSpan({ text: `${activeTag} ${task.text}` });
+  header.createSpan({ text: `${activeTag} ${task.text}`.trim() });
   const linktext = app.metadataCache.fileToLinktext(file, "");
   header.createSpan({ text: `  [[${linktext}]]`, cls: "tree-of-thought__file" });
 
-  const body = container.createDiv({ cls: "tree-of-thought__body" });
+  const sections: OutlineSection[] = [];
 
-  const fileLines = await readFileLines(app, file);
-  const candidateLines = new LinkedOrderedSet<number>();
-  if (Number.isFinite(task.line)) {
-    const rawLine = task.line as number;
-    candidateLines.add(clampLineIndex(rawLine, fileLines.length));
-    if (rawLine > 0) {
-      candidateLines.add(clampLineIndex(rawLine - 1, fileLines.length));
-    }
-  }
-  if (blockId) {
-    const anchorLine = fileLines.findIndex(line => line.includes(`^${blockId}`));
-    if (anchorLine >= 0) {
-      candidateLines.add(anchorLine);
-    }
-  }
-  const trimmedTaskText = (task.text ?? "").trim();
-  if (trimmedTaskText) {
-    const normalizedNeedle = normalizeTaskLine(trimmedTaskText);
-    const loweredNeedle = trimmedTaskText.toLowerCase();
-    const textLine = fileLines.findIndex(line => {
-      const normalizedHaystack = normalizeTaskLine(line);
-      if (normalizedNeedle && normalizedHaystack.includes(normalizedNeedle)) {
-        return true;
-      }
-      return line.toLowerCase().includes(loweredNeedle);
+  const originMarkdown = await buildOriginSection(app, file, task);
+  if (originMarkdown) {
+    sections.push({
+      title: `Origin · [[${linktext}]]`,
+      file,
+      markdown: originMarkdown
     });
-    if (textLine >= 0) {
-      candidateLines.add(textLine);
+  }
+
+  const backlinks = blockId ? await buildBacklinkSections(app, file, blockId) : [];
+  sections.push(...backlinks);
+
+  const filter = (searchQuery ?? "").trim().toLowerCase();
+  const filteredSections = filter
+    ? sections.filter(section => section.markdown.toLowerCase().includes(filter))
+    : sections;
+
+  if (!sections.length) {
+    container.createDiv({ cls: "tree-of-thought__empty" }).setText("No outline available for this task yet.");
+    return;
+  }
+
+  if (filter && filteredSections.length === 0) {
+    container.createDiv({ cls: "tree-of-thought__empty" }).setText(`No matches for “${searchQuery?.trim()}” in this thought.`);
+    return;
+  }
+
+  for (const section of filteredSections) {
+    await renderSection(section, container, plugin);
+  }
+}
+
+function resolveTaskFile(app: App, task: TaskEntry): TFile | null {
+  if (task.file) {
+    return task.file;
+  }
+  const existingFile = (task as TaskEntry & { file?: TFile }).file;
+  const path = task.path ?? existingFile?.path;
+  if (!path) {
+    return null;
+  }
+  const resolved = app.vault.getAbstractFileByPath(path);
+  return resolved instanceof TFile ? resolved : null;
+}
+
+async function buildOriginSection(app: App, file: TFile, task: TaskEntry): Promise<string> {
+  const lines = await readFileLines(app, file);
+  const startLine = findTaskLine(task, lines);
+  if (startLine == null) {
+    return task.lines?.length ? task.lines.join("\n") : "";
+  }
+  return extractListSubtree(lines, startLine);
+}
+
+async function buildBacklinkSections(app: App, sourceFile: TFile, blockId: string): Promise<OutlineSection[]> {
+  const backlinks = (app.metadataCache as any).getBacklinksForFile?.(sourceFile);
+  if (!backlinks?.data) {
+    return [];
+  }
+
+  const sections: OutlineSection[] = [];
+  const targets = backlinks.data as Record<string, any[]>;
+
+  for (const path of Object.keys(targets)) {
+    const abstractFile = app.vault.getAbstractFileByPath(path);
+    if (!(abstractFile instanceof TFile)) {
+      continue;
+    }
+
+    const entries = targets[path].filter((entry: any) => {
+      const link = entry?.link ?? "";
+      return typeof link === "string" && link.includes(`^${blockId}`);
+    });
+    if (!entries.length) {
+      continue;
+    }
+
+    const lines = await readFileLines(app, abstractFile);
+    const snippets = new Set<string>();
+
+    for (const entry of entries) {
+      const line = entry?.position?.start?.line ?? entry?.position?.line ?? null;
+      if (line == null) {
+        continue;
+      }
+      const snippet = extractListSubtree(lines, line);
+      if (snippet.trim()) {
+        snippets.add(snippet);
+      }
+    }
+
+    if (!snippets.size) {
+      continue;
+    }
+
+    const linktext = app.metadataCache.fileToLinktext(abstractFile, sourceFile.path);
+    sections.push({
+      title: `[[${linktext}]]`,
+      file: abstractFile,
+      markdown: Array.from(snippets).join("\n\n")
+    });
+  }
+
+  return sections;
+}
+
+async function renderSection(section: OutlineSection, container: HTMLElement, plugin: Plugin): Promise<void> {
+  const wrapper = container.createDiv({ cls: "tree-of-thought__section" });
+  wrapper.createEl("h3", { text: section.title });
+  const body = wrapper.createDiv({ cls: "tree-of-thought__markdown" });
+  await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, plugin);
+}
+
+async function readFileLines(app: App, file: TFile): Promise<string[]> {
+  const contents = await app.vault.read(file);
+  return contents.split(/\r?\n/);
+}
+
+function findTaskLine(task: TaskEntry, lines: string[]): number | null {
+  if (Number.isFinite(task.line) && task.line! >= 0 && task.line! < lines.length) {
+    return task.line!;
+  }
+  const text = (task.text ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const normalizedNeedle = normalizeTaskLine(text);
+  for (let i = 0; i < lines.length; i++) {
+    const normalized = normalizeTaskLine(lines[i]);
+    if (normalizedNeedle && normalized.includes(normalizedNeedle)) {
+      return i;
     }
   }
+  return null;
+}
 
-  if (candidateLines.isEmpty()) {
-    candidateLines.add(0);
+function extractListSubtree(lines: string[], startLine: number): string {
+  if (startLine < 0 || startLine >= lines.length) {
+    return "";
   }
 
-  let originalMarkdown = "";
-  for (const candidate of candidateLines.values()) {
-    originalMarkdown = buildContextMarkdown(fileLines, candidate);
-    if (originalMarkdown.trim()) {
+  const root = lines[startLine];
+  const rootIndent = leadingSpace(root);
+  const snippet: string[] = [root];
+
+  for (let i = startLine + 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) {
+      snippet.push(line);
+      continue;
+    }
+    const indent = leadingSpace(line);
+    if (indent <= rootIndent && isListItem(line)) {
       break;
     }
-  }
-  if (!originalMarkdown.trim()) {
-    const fallback = buildFallbackMarkdown(task);
-    if (fallback) {
-      originalMarkdown = fallback;
-    }
-  }
-  const references = await collectReferenceContexts(app, file, blockId);
-
-  const search = (searchQuery ?? "").trim();
-  const combinedSection = body.createDiv({ cls: "tree-of-thought__section" });
-  combinedSection.createEl("h3", { text: "Combined outline" });
-  const combinedBody = combinedSection.createDiv({ cls: "tree-of-thought__markdown" });
-
-  const contexts: ReferenceContext[] = [];
-  if (originalMarkdown) {
-    contexts.push({ file, markdown: originalMarkdown });
-  }
-  contexts.push(...references);
-
-  const hasContextContent = contexts.some(ctx => ctx.markdown.trim().length > 0);
-  const mergedMarkdown = hasContextContent ? mergeContextMarkdown(contexts.map(ctx => ctx.markdown)) : "";
-  const combined = filterMarkdownBySearch(mergedMarkdown, search);
-
-  if (!hasContextContent) {
-    combinedBody.setText("No outline available for this task yet.");
-  } else if (combined.markdown) {
-    if (search) {
-      combinedSection.createDiv({ cls: "tree-of-thought__meta" }).setText(`Filtered by “${search}”.`);
-    }
-    await MarkdownRenderer.renderMarkdown(combined.markdown, combinedBody, file.path, plugin);
-  } else if (search) {
-    combinedBody.setText(`No matches for “${search}” in this thought.`);
-  } else {
-    combinedBody.setText("No outline available for this task yet.");
+    snippet.push(line);
   }
 
-  const originSection = body.createDiv({ cls: "tree-of-thought__section" });
-  originSection.createEl("h3", { text: "Original context" });
-  const originBody = originSection.createDiv({ cls: "tree-of-thought__markdown" });
-  if (originalMarkdown) {
-    await MarkdownRenderer.renderMarkdown(originalMarkdown, originBody, file.path, plugin);
-  } else {
-    originBody.setText("Unable to locate the original bullet.");
-  }
-
-  const referencesSection = body.createDiv({ cls: "tree-of-thought__section" });
-  referencesSection.createEl("h3", { text: "Referenced from" });
-
-  if (references.length === 0) {
-    referencesSection.createDiv({ cls: "tree-of-thought__empty" }).setText("No backlinks reference this task yet.");
-  } else {
-    for (const reference of references) {
-      const refWrapper = referencesSection.createDiv({ cls: "tree-of-thought__reference" });
-      const refHeader = refWrapper.createDiv({ cls: "tree-of-thought__reference-header" });
-      const refLinktext = app.metadataCache.fileToLinktext(reference.file, file.path);
-      refHeader.createSpan({ text: `[[${refLinktext}]]` });
-      const refMarkdownEl = refWrapper.createDiv({ cls: "tree-of-thought__markdown" });
-      await MarkdownRenderer.renderMarkdown(reference.markdown, refMarkdownEl, reference.file.path, plugin);
-    }
-  }
+  return snippet.join("\n");
 }
 
-class LinkedOrderedSet<T> {
-  private readonly order: T[] = [];
-  private readonly seen = new Set<T>();
-
-  add(value: T): void {
-    if (this.seen.has(value)) {
-      return;
-    }
-    this.seen.add(value);
-    this.order.push(value);
-  }
-
-  values(): T[] {
-    return this.order;
-  }
-
-  isEmpty(): boolean {
-    return this.order.length === 0;
-  }
+function leadingSpace(value: string): number {
+  const match = value.match(/^\s*/);
+  return match ? match[0].length : 0;
 }
 
-function clampLineIndex(line: number, total: number): number {
-  if (!Number.isFinite(line)) {
-    return 0;
-  }
-  const idx = Math.floor(line);
-  if (idx < 0) return 0;
-  if (idx >= total) return Math.max(0, total - 1);
-  return idx;
+function isListItem(value: string): boolean {
+  return /^\s*[-*+]/.test(value);
 }
 
 function normalizeTaskLine(value: string): string {
@@ -181,303 +211,4 @@ function normalizeTaskLine(value: string): string {
     .replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "")
     .trim()
     .toLowerCase();
-}
-
-function mergeContextMarkdown(snippets: string[]): string {
-  const merged: string[] = [];
-  const seen = new Set<string>();
-
-  for (const snippet of snippets) {
-    if (!snippet) {
-      continue;
-    }
-    const lines = snippet.split(/\r?\n/);
-    for (const line of lines) {
-      if (!line.trim()) {
-        if (merged.length && merged[merged.length - 1].trim()) {
-          merged.push("");
-        }
-        continue;
-      }
-      const key = `${measureIndent(line)}:${line.trim()}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-      merged.push(line);
-    }
-    if (merged.length && merged[merged.length - 1].trim()) {
-      merged.push("");
-    }
-  }
-
-  while (merged.length && !merged[merged.length - 1].trim()) {
-    merged.pop();
-  }
-
-  return merged.join("\n");
-}
-
-function filterMarkdownBySearch(markdown: string, search: string): FilteredMarkdown {
-  const trimmed = markdown.trim();
-  if (!trimmed) {
-    return { markdown: "", hasMatches: false };
-  }
-
-  const tokens = search.split(/\s+/).map(token => token.trim()).filter(Boolean);
-  if (tokens.length === 0) {
-    return { markdown, hasMatches: trimmed.length > 0 };
-  }
-
-  const loweredTokens = tokens.map(token => token.toLowerCase());
-  const lines = markdown.split(/\r?\n/);
-  const include = new Set<number>();
-  const indents = lines.map(line => measureIndent(line));
-  const lowered = lines.map(line => line.toLowerCase());
-
-  lines.forEach((line, idx) => {
-    if (!loweredTokens.every(token => lowered[idx].includes(token))) {
-      return;
-    }
-    include.add(idx);
-
-    let currentIndent = indents[idx];
-    for (let j = idx - 1; j >= 0; j--) {
-      if (!lines[j].trim()) {
-        include.add(j);
-        continue;
-      }
-      if (indents[j] < currentIndent) {
-        include.add(j);
-        currentIndent = indents[j];
-      }
-      if (indents[j] === 0) {
-        break;
-      }
-    }
-
-    for (let j = idx + 1; j < lines.length; j++) {
-      if (!lines[j].trim()) {
-        include.add(j);
-        continue;
-      }
-      if (indents[j] <= indents[idx]) {
-        break;
-      }
-      include.add(j);
-    }
-  });
-
-  if (include.size === 0) {
-    return { markdown: "", hasMatches: false };
-  }
-
-  const highlighted = lines
-    .map((line, idx) => {
-      if (!include.has(idx)) {
-        return null;
-      }
-      let result = line;
-      for (const token of tokens) {
-        if (!token) {
-          continue;
-        }
-        const regex = new RegExp(`(${escapeRegExp(token)})`, "gi");
-        result = result.replace(regex, "==$1==");
-      }
-      return result;
-    })
-    .filter((line): line is string => line !== null);
-
-  return {
-    markdown: highlighted.join("\n"),
-    hasMatches: true
-  };
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-}
-
-function buildFallbackMarkdown(task: TaskEntry): string {
-  const lines = Array.isArray(task.lines) ? task.lines.map(line => line.trim()).filter(Boolean) : [];
-  if (lines.length) {
-    return lines.join("\n");
-  }
-  const text = (task.text ?? "").trim();
-  if (!text) {
-    return "";
-  }
-  return /^[-*+]\s/.test(text) ? text : `- ${text}`;
-}
-
-async function collectReferenceContexts(app: App, sourceFile: TFile, blockId: string): Promise<ReferenceContext[]> {
-  if (!blockId) {
-    return [];
-  }
-
-  const backlinks = (app.metadataCache as any).getBacklinksForFile?.(sourceFile);
-  if (!backlinks) {
-    return [];
-  }
-
-  const results: ReferenceContext[] = [];
-  const cache = new Map<string, string[]>();
-  const seen = new Set<string>();
-  const anchor = `#^${blockId}`;
-  const data = backlinks.data as Record<string, { link?: string; position?: any }[]>;
-
-  for (const [path, entries] of Object.entries(data)) {
-    const relevant = entries.filter(entry => typeof entry.link === "string" && entry.link.includes(anchor));
-    if (relevant.length === 0) {
-      continue;
-    }
-
-    const file = app.vault.getFileByPath(path);
-    if (!file) {
-      continue;
-    }
-
-    let lines = cache.get(path);
-    if (!lines) {
-      const contents = await app.vault.cachedRead(file);
-      lines = contents.split(/\r?\n/);
-      cache.set(path, lines);
-    }
-
-    for (const entry of relevant) {
-      const anchorLine = resolveAnchorLine(entry);
-      const listLine = findListRoot(lines, anchorLine);
-      const key = `${path}:${listLine}`;
-      if (seen.has(key)) {
-        continue;
-      }
-      seen.add(key);
-
-      const markdown = buildContextMarkdown(lines, listLine);
-      if (!markdown) {
-        continue;
-      }
-
-      results.push({ file, markdown });
-    }
-  }
-
-  return results;
-}
-
-function resolveAnchorLine(entry: { position?: any }): number {
-  const pos = entry.position ?? {};
-  if (typeof pos.start?.line === "number") {
-    return pos.start.line;
-  }
-  if (typeof pos.line === "number") {
-    return pos.line;
-  }
-  return 0;
-}
-
-function buildContextMarkdown(lines: string[], lineIndex: number): string {
-  if (!Number.isFinite(lineIndex) || lineIndex < 0 || lineIndex >= lines.length) {
-    return "";
-  }
-
-  const startIndex = isListItem(lines[lineIndex]) ? lineIndex : findListRoot(lines, lineIndex);
-  const parents = collectParentLines(lines, startIndex);
-  const subtree = collectSubtree(lines, startIndex);
-  const combined = [...parents, ...subtree].join("\n");
-  return combined.trimEnd();
-}
-
-function collectParentLines(lines: string[], startIndex: number): string[] {
-  const parents: string[] = [];
-  if (!isListItem(lines[startIndex] ?? "")) {
-    return parents;
-  }
-  let currentIndent = measureIndent(lines[startIndex]);
-
-  for (let i = startIndex - 1; i >= 0; i--) {
-    const line = lines[i];
-    if (!line.trim()) {
-      continue;
-    }
-    if (!isListItem(line)) {
-      continue;
-    }
-    const indent = measureIndent(line);
-    if (indent < currentIndent) {
-      parents.unshift(line);
-      currentIndent = indent;
-      if (indent === 0) {
-        break;
-      }
-    }
-  }
-
-  return parents;
-}
-
-function collectSubtree(lines: string[], startIndex: number): string[] {
-  const subtree: string[] = [];
-  if (startIndex < 0 || startIndex >= lines.length) {
-    return subtree;
-  }
-
-  if (!isListItem(lines[startIndex])) {
-    subtree.push(lines[startIndex]);
-    return subtree;
-  }
-
-  const baseIndent = measureIndent(lines[startIndex]);
-  subtree.push(lines[startIndex]);
-
-  for (let i = startIndex + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) {
-      subtree.push(line);
-      continue;
-    }
-
-    const indent = measureIndent(line);
-    if (isListItem(line)) {
-      if (indent <= baseIndent) {
-        break;
-      }
-      subtree.push(line);
-      continue;
-    }
-
-    if (indent <= baseIndent) {
-      break;
-    }
-
-    subtree.push(line);
-  }
-
-  return subtree;
-}
-
-function findListRoot(lines: string[], lineIndex: number): number {
-  let idx = Math.max(0, Math.min(lineIndex, lines.length - 1));
-  while (idx > 0 && !isListItem(lines[idx])) {
-    idx--;
-  }
-  if (!isListItem(lines[idx])) {
-    return Math.max(0, Math.min(lineIndex, lines.length - 1));
-  }
-  return idx;
-}
-
-function isListItem(line: string): boolean {
-  return /^\s*[-*+]\s/.test(line);
-}
-
-function measureIndent(line: string): number {
-  const whitespace = line.match(/^\s*/)?.[0] ?? "";
-  return whitespace.replace(/\t/g, "    ").length;
-}
-
-async function readFileLines(app: App, file: TFile): Promise<string[]> {
-  const contents = await app.vault.cachedRead(file);
-  return contents.split(/\r?\n/);
 }
