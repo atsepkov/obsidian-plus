@@ -14,6 +14,7 @@ interface ThoughtBacklink {
   filePath: string;
   line: number;
   link?: string;
+  snippet?: string;
 }
 
 export interface TreeOfThoughtOptions {
@@ -49,9 +50,10 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   const linktext = app.metadataCache.fileToLinktext(file, "");
   header.createSpan({ text: `  [[${linktext}]]`, cls: "tree-of-thought__file" });
 
+  const resolvedBlockId = blockId || context?.blockId || "";
   const sections: OutlineSection[] = [];
 
-  const originMarkdown = await buildOriginSection(app, file, task);
+  const originMarkdown = await buildOriginSection(app, file, task, resolvedBlockId, context);
   if (originMarkdown.trim()) {
     sections.push({
       title: `Origin · [[${linktext}]]`,
@@ -60,7 +62,6 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
     });
   }
 
-  const resolvedBlockId = blockId || context?.blockId || "";
   const referenceSections = await buildContextBacklinks(app, file, context?.linksToTask ?? [], resolvedBlockId);
   sections.push(...referenceSections);
 
@@ -110,14 +111,22 @@ function resolveTaskFile(app: App, task: TaskEntry): TFile | null {
   return resolved instanceof TFile ? resolved : null;
 }
 
-async function buildOriginSection(app: App, file: TFile, task: TaskEntry): Promise<string> {
+async function buildOriginSection(
+  app: App,
+  file: TFile,
+  task: TaskEntry,
+  blockId: string,
+  context?: TaskContextSnapshot | null
+): Promise<string> {
   const lines = await readFileLines(app, file);
-  const startLine = findTaskLine(task, lines);
+  const startLine = findTaskLine(task, lines, blockId);
   if (startLine == null) {
-    if (task.lines?.length) {
-      return task.lines.join("\n");
+    const fallback = task.lines?.length ? task.lines.join("\n") : "";
+    if (fallback.trim()) {
+      return fallback;
     }
-    return "";
+    const contextMarkdown = buildContextOutline(task, context);
+    return contextMarkdown;
   }
   return extractListSubtree(lines, startLine);
 }
@@ -129,6 +138,7 @@ async function buildContextBacklinks(app: App, sourceFile: TFile, backlinks: Tho
 
   const sections: OutlineSection[] = [];
   const grouped = new Map<string, number[]>();
+  const snippetLookup = new Map<string, string>();
 
   for (const backlink of backlinks) {
     if (!backlink?.filePath) {
@@ -139,6 +149,9 @@ async function buildContextBacklinks(app: App, sourceFile: TFile, backlinks: Tho
       list.push(backlink.line);
     }
     grouped.set(backlink.filePath, list);
+    if (typeof backlink.snippet === "string" && backlink.snippet.trim()) {
+      snippetLookup.set(`${backlink.filePath}:${backlink.line}`, backlink.snippet);
+    }
   }
 
   for (const [path, lines] of grouped.entries()) {
@@ -150,7 +163,13 @@ async function buildContextBacklinks(app: App, sourceFile: TFile, backlinks: Tho
     const fileLines = await readFileLines(app, file);
     const snippets = lines
       .sort((a, b) => a - b)
-      .map(line => extractReferenceSnippet(fileLines, line, blockId))
+      .map(line => {
+        const cached = snippetLookup.get(`${path}:${line}`);
+        if (cached && cached.trim()) {
+          return cached;
+        }
+        return extractReferenceSnippet(fileLines, line, blockId);
+      })
       .filter(snippet => snippet.trim().length > 0);
 
     if (!snippets.length) {
@@ -309,7 +328,13 @@ async function readFileLines(app: App, file: TFile): Promise<string[]> {
   return contents.split(/\r?\n/);
 }
 
-function findTaskLine(task: TaskEntry, lines: string[]): number | null {
+function findTaskLine(task: TaskEntry, lines: string[], blockId?: string): number | null {
+  if (blockId) {
+    const blockIndex = lines.findIndex(line => line.includes(`^${blockId}`));
+    if (blockIndex >= 0) {
+      return blockIndex;
+    }
+  }
   if (Number.isFinite(task.line) && task.line! >= 0 && task.line! < lines.length) {
     return task.line!;
   }
@@ -328,6 +353,64 @@ function findTaskLine(task: TaskEntry, lines: string[]): number | null {
     }
   }
   return null;
+}
+
+function buildContextOutline(task: TaskEntry, context?: TaskContextSnapshot | null): string {
+  if (!context) {
+    return "";
+  }
+
+  const parents = Array.isArray(context.parents) ? context.parents : [];
+  const children = Array.isArray(context.children) ? context.children : [];
+  if (!parents.length && !children.length) {
+    return "";
+  }
+
+  const indentStep = 2;
+  const lines: string[] = [];
+
+  parents.forEach((parent, index) => {
+    if (!parent) {
+      return;
+    }
+    const bullet = typeof parent.bullet === "string" && parent.bullet.trim() ? parent.bullet.trim() : "-";
+    const text = typeof parent.text === "string" ? parent.text : "";
+    const spaces = " ".repeat(index * indentStep);
+    lines.push(`${spaces}${bullet} ${text}`.trimEnd());
+  });
+
+  const rootIndent = parents.length * indentStep;
+  const rootBullet = deriveTaskBullet(task);
+  const rootLine = `${" ".repeat(rootIndent)}${rootBullet} ${task.text ?? ""}`.trimEnd();
+  lines.push(rootLine);
+
+  children.forEach(child => {
+    if (!child) {
+      return;
+    }
+    const bullet = typeof child.bullet === "string" && child.bullet.trim() ? child.bullet.trim() : "-";
+    const rawIndent = Number.isFinite(child.indent) ? Math.max(0, Math.round(Number(child.indent))) : 0;
+    const extraIndent = rawIndent > 0 ? rawIndent : indentStep;
+    const spaces = " ".repeat(rootIndent + extraIndent);
+    const text = typeof child.text === "string" ? child.text : "";
+    lines.push(`${spaces}${bullet} ${text}`.trimEnd());
+  });
+
+  return lines.join("\n");
+}
+
+function deriveTaskBullet(task: TaskEntry): string {
+  if (task.lines?.length) {
+    const firstLine = task.lines[0];
+    const match = firstLine.match(/^(\s*[-*+]\s*(?:\[[^\]]*\]\s*)?)/);
+    if (match) {
+      return match[1].trim();
+    }
+  }
+  if (typeof task.status === "string" && task.status.trim()) {
+    return `- [${task.status}]`;
+  }
+  return "-";
 }
 
 function extractListSubtree(lines: string[], startLine: number): string {

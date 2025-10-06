@@ -43,6 +43,7 @@ interface TaskBacklinkEntry {
     filePath: string;
     line: number;
     link?: string;
+    snippet?: string;
 }
 
 export class TaskManager {
@@ -536,58 +537,60 @@ export class TaskManager {
         }
 
         const backlinksApi = (this.app.metadataCache as any).getBacklinksForFile?.(sourceFile);
-        if (!backlinksApi?.data) {
-            return backlinks;
-        }
-
         const seen = new Set<string>();
+        const originLine = Number.isFinite(listItem?.line) ? Math.max(0, Math.floor(listItem.line)) : -1;
 
-        for (const [backlinkPath, entries] of Object.entries(backlinksApi.data as Record<string, any[]>)) {
-            const backlinkFile = this.app.vault.getAbstractFileByPath(backlinkPath);
-            if (!(backlinkFile instanceof TFile)) {
-                continue;
-            }
-
-            const backlinkLines = await this.getFileLines(backlinkFile.path);
-
-            for (const entry of entries) {
-                if (!entry) continue;
-
-                const entryLink = typeof entry.link === 'string' ? entry.link : '';
-                const explicitMatch = entryLink.includes(`^${blockId}`);
-
-                let rawLine = entry?.position?.start?.line;
-                if (!Number.isFinite(rawLine)) {
-                    rawLine = entry?.position?.line;
+        if (backlinksApi?.data) {
+            for (const [backlinkPath, entries] of Object.entries(backlinksApi.data as Record<string, any[]>)) {
+                const backlinkFile = this.app.vault.getAbstractFileByPath(backlinkPath);
+                if (!(backlinkFile instanceof TFile)) {
+                    continue;
                 }
 
-                let lineIndex = Number.isFinite(rawLine) ? Math.max(0, Math.floor(rawLine)) : -1;
+                const backlinkLines = await this.getFileLines(backlinkFile.path);
 
-                if (!explicitMatch) {
-                    if (lineIndex < 0 || !backlinkLines[lineIndex]?.includes(`^${blockId}`)) {
-                        lineIndex = backlinkLines.findIndex(line => line.includes(`^${blockId}`));
+                for (const entry of entries) {
+                    if (!entry) continue;
+
+                    const entryLink = typeof entry.link === 'string' ? entry.link : '';
+                    const explicitMatch = entryLink.includes(`^${blockId}`);
+
+                    let rawLine = entry?.position?.start?.line;
+                    if (!Number.isFinite(rawLine)) {
+                        rawLine = entry?.position?.line;
+                    }
+
+                    let lineIndex = Number.isFinite(rawLine) ? Math.max(0, Math.floor(rawLine)) : -1;
+
+                    if (!explicitMatch) {
+                        if (lineIndex < 0 || !backlinkLines[lineIndex]?.includes(`^${blockId}`)) {
+                            lineIndex = backlinkLines.findIndex(line => line.includes(`^${blockId}`));
+                        }
+                    }
+
+                    if (lineIndex < 0 || lineIndex >= backlinkLines.length) {
+                        continue;
+                    }
+
+                    const entryResult = this.collectBacklinkEntry(backlinkFile, backlinkLines, lineIndex, blockId, seen, sourceFile.path, originLine, entryLink);
+                    if (entryResult) {
+                        backlinks.push(entryResult);
                     }
                 }
+            }
+        }
 
-                if (lineIndex < 0 || lineIndex >= backlinkLines.length) {
+        const pattern = new RegExp(`\\^${this.escapeRegex(blockId)}\\b`);
+        for (const markdownFile of this.app.vault.getMarkdownFiles()) {
+            const fileLines = await this.getFileLines(markdownFile.path);
+            for (let i = 0; i < fileLines.length; i++) {
+                if (!pattern.test(fileLines[i])) {
                     continue;
                 }
-
-                if (!backlinkLines[lineIndex].includes(`^${blockId}`)) {
-                    continue;
+                const entry = this.collectBacklinkEntry(markdownFile, fileLines, i, blockId, seen, sourceFile.path, originLine);
+                if (entry) {
+                    backlinks.push(entry);
                 }
-
-                const key = `${backlinkFile.path}:${lineIndex}`;
-                if (seen.has(key)) {
-                    continue;
-                }
-                seen.add(key);
-
-                backlinks.push({
-                    filePath: backlinkFile.path,
-                    line: lineIndex,
-                    link: entryLink || undefined,
-                });
             }
         }
 
@@ -612,6 +615,82 @@ export class TaskManager {
 
     private escapeRegex(str: string): string {
         return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+
+    private collectBacklinkEntry(
+        file: TFile,
+        lines: string[],
+        lineIndex: number,
+        blockId: string,
+        seen: Set<string>,
+        sourcePath: string,
+        originLine: number,
+        link?: string
+    ): TaskBacklinkEntry | null {
+        if (lineIndex < 0 || lineIndex >= lines.length) {
+            return null;
+        }
+
+        const key = `${file.path}:${lineIndex}`;
+        if (seen.has(key)) {
+            return null;
+        }
+
+        if (file.path === sourcePath && Number.isFinite(originLine) && originLine >= 0 && lineIndex === originLine) {
+            return null;
+        }
+
+        const snippet = this.extractListSubtreeFromLines(lines, lineIndex);
+        if (!snippet.trim()) {
+            return null;
+        }
+
+        if (!snippet.includes(`^${blockId}`)) {
+            return null;
+        }
+
+        seen.add(key);
+
+        return {
+            filePath: file.path,
+            line: lineIndex,
+            link: link || undefined,
+            snippet,
+        };
+    }
+
+    private extractListSubtreeFromLines(lines: string[], startLine: number): string {
+        if (startLine < 0 || startLine >= lines.length) {
+            return '';
+        }
+
+        const root = lines[startLine];
+        const rootIndent = this.leadingSpace(root);
+        const snippet: string[] = [root];
+
+        for (let i = startLine + 1; i < lines.length; i++) {
+            const line = lines[i];
+            if (line.trim().length === 0) {
+                snippet.push(line);
+                continue;
+            }
+            const indent = this.leadingSpace(line);
+            if (indent <= rootIndent && this.isListItem(line)) {
+                break;
+            }
+            snippet.push(line);
+        }
+
+        return snippet.join('\n');
+    }
+
+    private leadingSpace(value: string): number {
+        const match = value.match(/^\s*/);
+        return match ? match[0].length : 0;
+    }
+
+    private isListItem(value: string): boolean {
+        return /^\s*[-*+]/.test(value);
     }
 
     private toStructured(children: any[], parentIndent: string, defaultBullet: string): any[] {
