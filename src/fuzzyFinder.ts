@@ -182,8 +182,11 @@ function escapeCssIdentifier(value: string): string {
     private activeTag = "#";
     private thoughtMode = false;
     private thoughtTaskIndex: number | null = null;
+    private thoughtDisplayIndex: number | null = null;
+    private thoughtSearchQuery = "";
     private thoughtContainerEl: HTMLElement | null = null;
     private thoughtCacheKey: string | null = null;
+    private lastTaskSuggestions: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
     private cachedTag   = "";          // cache key currently loaded
     private taskCache: Record<string, TaskEntry[]> = {};   // tasks by cache key
     private projectTag: string | null = null;              // current project scope
@@ -259,16 +262,23 @@ function escapeCssIdentifier(value: string): string {
 
         if (!this.tagMode && !this.thoughtMode && evt.key === ">") {
           evt.preventDefault();
-          if (!item || typeof item.item !== "object") {
-            return;
-          }
-          const taskSuggestion = item as any as (FuzzyMatch<TaskEntry> & { sourceIdx?: number });
           const key = this.getTaskCacheKey();
           if (!key) {
             return;
           }
-          const sourceIdx = taskSuggestion.sourceIdx ?? this.lookupTaskIndex(key, taskSuggestion.item as TaskEntry);
-          this.enterThoughtMode(key, sourceIdx ?? null, taskSuggestion.item as TaskEntry, { displayIndex: true });
+          const selectedIndex = list?.selectedItem ?? 0;
+          const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
+          const suggestion = this.lastTaskSuggestions[displayIndex];
+          if (!suggestion) {
+            return;
+          }
+          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, suggestion.item as TaskEntry);
+          this.enterThoughtMode(key, {
+            displayIndex,
+            cacheIndex: cacheIndex ?? null,
+            task: suggestion.item as TaskEntry,
+            showIndex: true
+          });
         }
     }
 
@@ -299,7 +309,7 @@ function escapeCssIdentifier(value: string): string {
         const q = this.inputEl.value;
         const thought = this.parseThoughtQuery(q);
         const baseQuery = thought.baseQuery;
-        const m = baseQuery.match(/^#\S+\s/);          // “#tag␠...”
+        const m = baseQuery.match(/^#\S+(?:\s|$)/);          // “#tag␠...”
 
         if (m) {
           this.tagMode   = false;
@@ -318,8 +328,16 @@ function escapeCssIdentifier(value: string): string {
 
           if (thought.active) {
             this.thoughtMode = true;
+            this.thoughtSearchQuery = thought.search.trim();
             if (thought.index !== null) {
-              this.thoughtTaskIndex = thought.index;
+              this.thoughtDisplayIndex = thought.index;
+              const resolved = this.resolveCacheIndexFromDisplay(key, this.thoughtDisplayIndex);
+              if (resolved.cacheIndex != null) {
+                this.thoughtTaskIndex = resolved.cacheIndex;
+                if (resolved.task) {
+                  this.ensureTaskCached(key, resolved.task, resolved.cacheIndex);
+                }
+              }
             }
             this.thoughtCacheKey = key;
           } else {
@@ -341,18 +359,20 @@ function escapeCssIdentifier(value: string): string {
         this.updateSuggestions();
     }
 
-    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null; active: boolean } {
+    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null; active: boolean; search: string } {
         const trimmed = query.replace(/\s+$/, " ");
-        const thoughtMatch = trimmed.match(/^(.*?)(?:\s*\((\d+)\))?\s*>\s*$/);
+        const thoughtMatch = trimmed.match(/^(.*?)(?:\s*\((\d+)\))?\s*>\s*(.*)$/s);
         if (!thoughtMatch) {
-          return { baseQuery: query, index: null, active: false };
+          return { baseQuery: query, index: null, active: false, search: "" };
         }
         const base = thoughtMatch[1] ?? "";
         const idx = thoughtMatch[2] != null ? Number(thoughtMatch[2]) : null;
+        const search = (thoughtMatch[3] ?? "").replace(/\s+$/, "");
         return {
           baseQuery: base.trimEnd(),
           index: Number.isFinite(idx) ? idx : null,
-          active: true
+          active: true,
+          search
         };
     }
 
@@ -369,6 +389,7 @@ function escapeCssIdentifier(value: string): string {
           instructions.push({ command: "Tab", purpose: "autocomplete tag" });
         } else if (this.thoughtMode) {
           instructions.push({ command: "Esc", purpose: "return to results" });
+          instructions.push({ command: "Type", purpose: "search within thought" });
           if (this.allowInsertion) {
             instructions.push({ command: "⏎", purpose: "close" });
           }
@@ -413,6 +434,8 @@ function escapeCssIdentifier(value: string): string {
     private exitThoughtMode() {
         this.thoughtMode = false;
         this.thoughtTaskIndex = null;
+        this.thoughtDisplayIndex = null;
+        this.thoughtSearchQuery = "";
         this.thoughtCacheKey = null;
         if (this.thoughtContainerEl) {
           this.thoughtContainerEl.empty();
@@ -435,33 +458,66 @@ function escapeCssIdentifier(value: string): string {
         return idx >= 0 ? idx : null;
     }
 
-    private enterThoughtMode(key: string, index: number | null, task?: TaskEntry, options?: { displayIndex?: boolean }) {
-        if (index == null) {
+    private resolveCacheIndexFromDisplay(key: string, displayIndex: number | null): { cacheIndex: number | null; task: TaskEntry | null } {
+        if (displayIndex == null || displayIndex < 0) {
+          return { cacheIndex: null, task: null };
+        }
+        const suggestion = this.lastTaskSuggestions[displayIndex];
+        if (!suggestion) {
+          return { cacheIndex: null, task: null };
+        }
+        const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, suggestion.item as TaskEntry);
+        return {
+          cacheIndex: cacheIndex ?? null,
+          task: cacheIndex != null ? (suggestion.item as TaskEntry) : null
+        };
+    }
+
+    private enterThoughtMode(key: string, payload: { displayIndex: number | null; cacheIndex: number | null; task?: TaskEntry; showIndex?: boolean; search?: string }) {
+        const { displayIndex, cacheIndex, task, showIndex = false } = payload;
+        const search = payload.search ?? this.thoughtSearchQuery;
+        if (cacheIndex == null) {
           return;
         }
-        if (this.thoughtMode && this.thoughtCacheKey === key && this.thoughtTaskIndex === index) {
+        const normalizedSearch = search.trim();
+
+        if (this.thoughtMode &&
+            this.thoughtCacheKey === key &&
+            this.thoughtTaskIndex === cacheIndex &&
+            this.thoughtDisplayIndex === displayIndex &&
+            this.thoughtSearchQuery === normalizedSearch) {
           void this.renderThoughtPane();
           return;
         }
 
         const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
-        const showIndex = options?.displayIndex ?? false;
-        const indexFragment = showIndex ? ` (${index})` : "";
-        const next = `${base}${indexFragment} > `;
+        const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex})` : "";
+        let next = `${base}${indexFragment} > `;
+        if (normalizedSearch.length) {
+          next += `${normalizedSearch} `;
+        }
+        if (!next.endsWith(" ")) {
+          next += " ";
+        }
         if (this.inputEl.value !== next) {
           this.inputEl.value = next;
         }
 
         this.thoughtCacheKey = key;
-        this.thoughtTaskIndex = index;
+        this.thoughtTaskIndex = cacheIndex;
+        this.thoughtDisplayIndex = displayIndex;
+        this.thoughtSearchQuery = normalizedSearch;
         if (task) {
-          this.ensureTaskCached(key, task, index);
+          this.ensureTaskCached(key, task, cacheIndex);
         }
         this.thoughtMode = true;
         this.detectMode();
     }
 
-    private ensureTaskCached(key: string, task: TaskEntry, index: number) {
+    private ensureTaskCached(key: string, task: TaskEntry, index: number | null) {
+        if (index == null) {
+          return;
+        }
         if (!this.taskCache[key]) {
           this.taskCache[key] = [];
         }
@@ -581,7 +637,8 @@ function escapeCssIdentifier(value: string): string {
           container: this.thoughtContainerEl,
           task,
           activeTag: this.activeTag,
-          blockId
+          blockId,
+          searchQuery: this.thoughtSearchQuery
         });
     }
   
@@ -1018,6 +1075,7 @@ function escapeCssIdentifier(value: string): string {
     getSuggestions(query: string) {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
+            this.lastTaskSuggestions = [];
             const tags      = getAllTags(this.app);   // already sorted
             const q         = query.replace(/^#/, "").trim();
 
@@ -1062,6 +1120,7 @@ function escapeCssIdentifier(value: string): string {
         /* ②  build lazily if still missing */
         if (!this.taskCache[key]) {
           collectTasksLazy(tag, this.plugin, () => this.updateSuggestions(), project);
+          this.lastTaskSuggestions = [];
           return [];                                         // nothing yet
         }
 
@@ -1107,6 +1166,8 @@ function escapeCssIdentifier(value: string): string {
             }];
         }).sort((a, b) => b.score - a.score);
 
+        this.lastTaskSuggestions = suggestions;
+
         if (!this.thoughtMode && suggestions.length === 1) {
           const [first] = suggestions;
           if (first?.item) {
@@ -1115,7 +1176,12 @@ function escapeCssIdentifier(value: string): string {
               if (this.thoughtMode) return;
               if (this.inputEl.value !== snapshot) return;
               const resolvedIdx = (first as any).sourceIdx ?? this.lookupTaskIndex(key, first.item as TaskEntry);
-              this.enterThoughtMode(key, resolvedIdx ?? null, first.item as TaskEntry);
+              this.enterThoughtMode(key, {
+                displayIndex: 0,
+                cacheIndex: resolvedIdx ?? null,
+                task: first.item as TaskEntry,
+                showIndex: false
+              });
             }, 0);
           }
         }

@@ -8,6 +8,7 @@ export interface TreeOfThoughtOptions {
   task: TaskEntry;
   activeTag: string;
   blockId: string;
+  searchQuery?: string;
 }
 
 interface ReferenceContext {
@@ -15,8 +16,13 @@ interface ReferenceContext {
   markdown: string;
 }
 
+interface FilteredMarkdown {
+  markdown: string;
+  hasMatches: boolean;
+}
+
 export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promise<void> {
-  const { app, plugin, container, task, activeTag, blockId } = options;
+  const { app, plugin, container, task, activeTag, blockId, searchQuery } = options;
 
   container.empty();
 
@@ -37,6 +43,35 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   const fileLines = await readFileLines(app, file);
   const lineIndex = Math.max(0, task.line ?? 0);
   const originalMarkdown = buildContextMarkdown(fileLines, lineIndex);
+  const references = await collectReferenceContexts(app, file, blockId);
+
+  const search = (searchQuery ?? "").trim();
+  const combinedSection = body.createDiv({ cls: "tree-of-thought__section" });
+  combinedSection.createEl("h3", { text: "Combined outline" });
+  const combinedBody = combinedSection.createDiv({ cls: "tree-of-thought__markdown" });
+
+  const contexts: ReferenceContext[] = [];
+  if (originalMarkdown) {
+    contexts.push({ file, markdown: originalMarkdown });
+  }
+  contexts.push(...references);
+
+  const hasContextContent = contexts.some(ctx => ctx.markdown.trim().length > 0);
+  const mergedMarkdown = hasContextContent ? mergeContextMarkdown(contexts.map(ctx => ctx.markdown)) : "";
+  const combined = filterMarkdownBySearch(mergedMarkdown, search);
+
+  if (!hasContextContent) {
+    combinedBody.setText("No outline available for this task yet.");
+  } else if (combined.markdown) {
+    if (search) {
+      combinedSection.createDiv({ cls: "tree-of-thought__meta" }).setText(`Filtered by “${search}”.`);
+    }
+    await MarkdownRenderer.renderMarkdown(combined.markdown, combinedBody, file.path, plugin);
+  } else if (search) {
+    combinedBody.setText(`No matches for “${search}” in this thought.`);
+  } else {
+    combinedBody.setText("No outline available for this task yet.");
+  }
 
   const originSection = body.createDiv({ cls: "tree-of-thought__section" });
   originSection.createEl("h3", { text: "Original context" });
@@ -49,7 +84,6 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
 
   const referencesSection = body.createDiv({ cls: "tree-of-thought__section" });
   referencesSection.createEl("h3", { text: "Referenced from" });
-  const references = await collectReferenceContexts(app, file, blockId);
 
   if (references.length === 0) {
     referencesSection.createDiv({ cls: "tree-of-thought__empty" }).setText("No backlinks reference this task yet.");
@@ -63,6 +97,122 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
       await MarkdownRenderer.renderMarkdown(reference.markdown, refMarkdownEl, reference.file.path, plugin);
     }
   }
+}
+
+function mergeContextMarkdown(snippets: string[]): string {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+
+  for (const snippet of snippets) {
+    if (!snippet) {
+      continue;
+    }
+    const lines = snippet.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line.trim()) {
+        if (merged.length && merged[merged.length - 1].trim()) {
+          merged.push("");
+        }
+        continue;
+      }
+      const key = `${measureIndent(line)}:${line.trim()}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      merged.push(line);
+    }
+    if (merged.length && merged[merged.length - 1].trim()) {
+      merged.push("");
+    }
+  }
+
+  while (merged.length && !merged[merged.length - 1].trim()) {
+    merged.pop();
+  }
+
+  return merged.join("\n");
+}
+
+function filterMarkdownBySearch(markdown: string, search: string): FilteredMarkdown {
+  const trimmed = markdown.trim();
+  if (!trimmed) {
+    return { markdown: "", hasMatches: false };
+  }
+
+  const tokens = search.split(/\s+/).map(token => token.trim()).filter(Boolean);
+  if (tokens.length === 0) {
+    return { markdown, hasMatches: trimmed.length > 0 };
+  }
+
+  const loweredTokens = tokens.map(token => token.toLowerCase());
+  const lines = markdown.split(/\r?\n/);
+  const include = new Set<number>();
+  const indents = lines.map(line => measureIndent(line));
+  const lowered = lines.map(line => line.toLowerCase());
+
+  lines.forEach((line, idx) => {
+    if (!loweredTokens.every(token => lowered[idx].includes(token))) {
+      return;
+    }
+    include.add(idx);
+
+    let currentIndent = indents[idx];
+    for (let j = idx - 1; j >= 0; j--) {
+      if (!lines[j].trim()) {
+        include.add(j);
+        continue;
+      }
+      if (indents[j] < currentIndent) {
+        include.add(j);
+        currentIndent = indents[j];
+      }
+      if (indents[j] === 0) {
+        break;
+      }
+    }
+
+    for (let j = idx + 1; j < lines.length; j++) {
+      if (!lines[j].trim()) {
+        include.add(j);
+        continue;
+      }
+      if (indents[j] <= indents[idx]) {
+        break;
+      }
+      include.add(j);
+    }
+  });
+
+  if (include.size === 0) {
+    return { markdown: "", hasMatches: false };
+  }
+
+  const highlighted = lines
+    .map((line, idx) => {
+      if (!include.has(idx)) {
+        return null;
+      }
+      let result = line;
+      for (const token of tokens) {
+        if (!token) {
+          continue;
+        }
+        const regex = new RegExp(`(${escapeRegExp(token)})`, "gi");
+        result = result.replace(regex, "==$1==");
+      }
+      return result;
+    })
+    .filter((line): line is string => line !== null);
+
+  return {
+    markdown: highlighted.join("\n"),
+    hasMatches: true
+  };
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function collectReferenceContexts(app: App, sourceFile: TFile, blockId: string): Promise<ReferenceContext[]> {
