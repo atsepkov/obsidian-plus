@@ -12,7 +12,7 @@ import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
-import { TaskTagTrigger } from './fuzzyFinder';
+import { TaskTagTrigger, TaskTagModal } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 
@@ -223,24 +223,32 @@ export default class ObsidianPlus extends Plugin {
 			}
 		});
 		// This adds a complex command that can check whether the current state of the app allows execution of the command
-		this.addCommand({
-			id: 'open-sample-modal-complex',
-			name: 'Open sample modal (complex)',
-			checkCallback: (checking: boolean) => {
-				// Conditions to check
-				const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
-				if (markdownView) {
-					// If checking is true, we're simply "checking" if the command can be run.
-					// If checking is false, then we want to actually perform the operation.
-					if (!checking) {
-						new SampleModal(this.app).open();
-					}
+                this.addCommand({
+                        id: 'open-sample-modal-complex',
+                        name: 'Open sample modal (complex)',
+                        checkCallback: (checking: boolean) => {
+                                // Conditions to check
+                                const markdownView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                                if (markdownView) {
+                                        // If checking is true, we're simply "checking" if the command can be run.
+                                        // If checking is false, then we want to actually perform the operation.
+                                        if (!checking) {
+                                                new SampleModal(this.app).open();
+                                        }
 
-					// This command will only show up in Command Palette when the check function returns true
-					return true;
-				}
-			}
-		});
+                                        // This command will only show up in Command Palette when the check function returns true
+                                        return true;
+                                }
+                        }
+                });
+
+                this.addCommand({
+                        id: 'open-task-tag-fuzzy-finder',
+                        name: 'Open FuzzyFinder',
+                        callback: () => {
+                                new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
+                        }
+                });
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));

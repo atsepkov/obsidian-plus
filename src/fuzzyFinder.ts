@@ -1,5 +1,5 @@
-import {
-    App, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
+import { 
+    App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
@@ -13,7 +13,15 @@ interface TaskEntry {
   lines:  string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
 }
-  
+
+function escapeCssIdentifier(value: string): string {
+  if (typeof CSS !== "undefined" && typeof CSS.escape === "function") {
+    return CSS.escape(value);
+  }
+
+  return value.replace(/[^a-zA-Z0-9_-]/g, ch => `\\${ch}`);
+}
+
   /* ------------------------------------------------------------------ */
   /*                              HELPERS                               */
   /* ------------------------------------------------------------------ */
@@ -156,7 +164,8 @@ interface TaskEntry {
   
   export class TaskTagModal extends FuzzySuggestModal<string | TaskEntry> {
     private plugin: Plugin;
-    private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position };
+    private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position } | null;
+    private readonly allowInsertion: boolean;
   
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
@@ -166,10 +175,12 @@ interface TaskEntry {
     private projectTag: string | null = null;              // current project scope
   
     constructor(app: App, plugin: Plugin,
-                range: { from: CodeMirror.Position; to: CodeMirror.Position }) {
+                range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
+                options?: { allowInsertion?: boolean }) {
       super(app);
       this.plugin = plugin;
-      this.replaceRange = range;
+      this.replaceRange = range ?? null;
+      this.allowInsertion = options?.allowInsertion ?? true;
       this.projectTag = this.detectProject();
   
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
@@ -194,7 +205,10 @@ interface TaskEntry {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view) return null;
       const ed = view.editor;
-      for (let ln = this.replaceRange.from.line; ln >= 0; ln--) {
+      const cursorLine = this.replaceRange?.from.line ?? ed.getCursor().line;
+      if (cursorLine == null) return null;
+
+      for (let ln = cursorLine; ln >= 0; ln--) {
         const line = ed.getLine(ln);
         if (!line) continue;
         const indent = line.match(/^\s*/)?.[0].length ?? 0;
@@ -233,6 +247,9 @@ interface TaskEntry {
     }
 
     private insertNewTemplate(tag: string) {
+        if (!this.allowInsertion || !this.replaceRange) {
+            return;
+        }
         const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
         const ed     = view.editor;
         const ln     = this.replaceRange.from.line;
@@ -276,13 +293,21 @@ interface TaskEntry {
         }
 
         /* after you build instructions array */
-        this.setInstructions([
-            this.tagMode
-            ? { command: "⏎", purpose: "insert new bullet · close" }
-            : { command: "⏎", purpose: "link task · close" },
-            this.tagMode
+        const enterInstruction = this.allowInsertion
+            ? (this.tagMode
+                ? { command: "⏎", purpose: "insert new bullet · close" }
+                : { command: "⏎", purpose: "link task · close" })
+            : (this.tagMode
+                ? { command: "⏎", purpose: "select tag" }
+                : { command: "⏎", purpose: "open task" });
+
+        const tabInstruction = this.tagMode
             ? { command: "Tab", purpose: "autocomplete tag" }
-            : { command: "Tab", purpose: "—" },
+            : { command: "Tab", purpose: "—" };
+
+        this.setInstructions([
+            enterInstruction,
+            tabInstruction,
             { command: "Esc", purpose: "cancel" }
         ]);
 
@@ -366,14 +391,44 @@ interface TaskEntry {
         const item = raw.item ?? raw;
     
         if ("tag" in item) {
+            if (!this.allowInsertion) {
+                this.inputEl.value = `${item.tag} `;
+                this.detectMode();
+                this.updateSuggestions();
+                return;
+            }
             this.insertNewTemplate(item.tag);
             this.close();
             return;
         }
-    
+
         /* ─── TASK chosen ───────────────────────────────────────────── */
         const task  = item as TaskEntry;
         const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
+        if (!file) {
+            this.close();
+            return;
+        }
+
+        task.file = file;
+
+        if (!this.allowInsertion || !this.replaceRange) {
+            const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+            const line = Math.max(0, task.line ?? 0);
+
+            await this.app.workspace.openLinkText(
+                file.path,
+                sourcePath,
+                false,
+                { eState: { line } }
+            );
+
+            await this.revealTaskInFile(task);
+
+            this.close();
+            return;
+        }
+
         const id    = await ensureBlockId(this.app, task);
         const link  = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
 
@@ -414,6 +469,321 @@ interface TaskEntry {
         }, 0);
 
         this.close();
+    }
+
+    private async revealTaskInFile(task: TaskEntry): Promise<void> {
+        const file = task.file ?? (task.path ? this.app.vault.getFileByPath(task.path) : null);
+        if (!file) {
+            return;
+        }
+
+        const targetLine = Math.max(0, task.line ?? 0);
+
+        const tryReveal = async (): Promise<boolean> => {
+            const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+            if (!view || view.file?.path !== file.path) {
+                return false;
+            }
+
+            await view.leaf?.loadIfDeferred?.();
+
+            const revealed = this.revealTaskInEditor(view, targetLine) ||
+                this.revealTaskInDom(view, task, targetLine);
+
+            if (revealed) {
+                await this.waitForNextFrame();
+            }
+
+            return revealed;
+        };
+
+        const tryWithRetries = async (): Promise<boolean> => {
+            const delays = [0, 30, 80, 160, 320, 640];
+            for (const delay of delays) {
+                if (delay) {
+                    await this.sleep(delay);
+                }
+                if (await tryReveal()) {
+                    return true;
+                }
+            }
+            return false;
+        };
+
+        if (await tryWithRetries()) {
+            return;
+        }
+
+        await new Promise<void>(resolve => {
+            let settled = false;
+            let ref: EventRef | null = null;
+
+            const finish = () => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                if (ref) {
+                    this.app.workspace.offref(ref);
+                }
+                resolve();
+            };
+
+            ref = this.app.workspace.on("file-open", async opened => {
+                if (!opened || opened.path !== file.path) {
+                    return;
+                }
+
+                if (await tryWithRetries()) {
+                    finish();
+                }
+            });
+
+            window.setTimeout(() => {
+                finish();
+            }, 1500);
+        });
+    }
+
+    private revealTaskInEditor(view: MarkdownView, line: number): boolean {
+        const editor = view.editor;
+        if (!editor) {
+            return false;
+        }
+
+        const lineCount = editor.lineCount();
+        const clampedLine = Math.max(0, Math.min(line, Math.max(0, lineCount - 1)));
+        const lineLength = editor.getLine(clampedLine)?.length ?? 0;
+
+        editor.setCursor({ line: clampedLine, ch: 0 });
+        editor.scrollIntoView({
+            from: { line: clampedLine, ch: 0 },
+            to: { line: clampedLine, ch: Math.max(lineLength, 1) }
+        }, true);
+        editor.focus();
+
+        return true;
+    }
+
+    private revealTaskInDom(view: MarkdownView, task: TaskEntry, line: number): boolean {
+        const container = view.containerEl;
+        const selectors = new Set<string>();
+
+        if (task.id) {
+            selectors.add(`[data-task-id="${escapeCssIdentifier(task.id)}"]`);
+        }
+
+        selectors.add(`[data-line="${line}"]`);
+        selectors.add(`[data-source-line="${line}"]`);
+        selectors.add(`[data-line-start="${line}"]`);
+
+        for (const selector of selectors) {
+            const el = container.querySelector(selector);
+            const target = this.pickScrollTarget(el);
+            if (target) {
+                this.scrollTaskDomTargetIntoView(target, container);
+                target.classList.add("mod-flashing");
+                return true;
+            }
+        }
+
+        const sections = Array.from(container.querySelectorAll<HTMLElement>("[data-line-start]"));
+        for (const section of sections) {
+            const start = Number(section.dataset.lineStart);
+            const end = Number(section.dataset.lineEnd ?? section.dataset.lineStart ?? start);
+            if (!Number.isFinite(start) || !Number.isFinite(end)) {
+                continue;
+            }
+
+            if (start <= line && line <= end) {
+                this.scrollTaskDomTargetIntoView(section, container);
+                section.classList.add("mod-flashing");
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private scrollTaskDomTargetIntoView(target: HTMLElement, container: HTMLElement): void {
+        const scroller = this.findScrollContainer(target) ?? container;
+        const docScroller = document.scrollingElement;
+        const searchRoot = docScroller && scroller === docScroller ? container : scroller;
+
+        const align = async () => {
+            const tolerance = 2;
+            let deadline = performance.now() + 4000;
+            let lastTop: number | null = null;
+            let stableFrames = 0;
+
+            while (performance.now() < deadline) {
+                if (!target.isConnected) {
+                    break;
+                }
+
+                const viewport = scroller.getBoundingClientRect();
+                const rect = target.getBoundingClientRect();
+
+                if (lastTop !== null && Math.abs(rect.top - lastTop) > tolerance) {
+                    deadline = Math.max(deadline, performance.now() + 1000);
+                }
+                lastTop = rect.top;
+
+                let adjusted = false;
+
+                const delta = rect.top - viewport.top;
+                const direction = delta > tolerance ? 1 : (delta < -tolerance ? -1 : 0);
+
+                if (direction !== 0 && this.canScrollInDirection(scroller, direction)) {
+                    const previous = scroller.scrollTop;
+                    const next = this.clampScrollTop(scroller, previous + delta);
+                    if (Math.abs(next - previous) > 0.5) {
+                        scroller.scrollTop = next;
+                        adjusted = true;
+                    }
+                }
+
+                const topBullet = this.findTopVisibleBullet(searchRoot, viewport.top);
+                const topIsTarget = !topBullet || topBullet === target ||
+                    topBullet.contains(target) || target.contains(topBullet);
+
+                if (!adjusted && !topIsTarget && this.canScrollInDirection(scroller, 1)) {
+                    const topRect = topBullet?.getBoundingClientRect();
+                    if (topRect) {
+                        const overlap = Math.max(0, topRect.bottom - viewport.top);
+                        if (overlap > tolerance) {
+                            const previous = scroller.scrollTop;
+                            const next = this.clampScrollTop(scroller, previous + overlap);
+                            if (Math.abs(next - previous) > 0.5) {
+                                scroller.scrollTop = next;
+                                adjusted = true;
+                            }
+                        }
+                    }
+                }
+
+                if (adjusted) {
+                    stableFrames = 0;
+                    deadline = Math.max(deadline, performance.now() + 800);
+                    await this.waitForNextFrame();
+                    continue;
+                }
+
+                if (topIsTarget) {
+                    const canScrollDown = this.canScrollInDirection(scroller, 1);
+                    const aligned = Math.abs(delta) <= tolerance || !canScrollDown;
+                    if (aligned) {
+                        stableFrames++;
+                        if (stableFrames >= 4) {
+                            break;
+                        }
+                    } else {
+                        stableFrames = 0;
+                    }
+                } else {
+                    stableFrames = 0;
+                }
+
+                await this.waitForNextFrame();
+            }
+        };
+
+        void align();
+    }
+
+    private pickScrollTarget(el: Element | null): HTMLElement | null {
+        if (!(el instanceof HTMLElement)) {
+            return null;
+        }
+
+        const target = el.closest<HTMLElement>(
+            ".cm-line, .HyperMD-list-line, .cm-list-1, .cm-list-2, .list-bullet, li, p, .markdown-preview-section"
+        );
+
+        return target ?? el;
+    }
+
+    private findScrollContainer(target: HTMLElement): HTMLElement | null {
+        let current: HTMLElement | null = target;
+        while (current) {
+            const style = window.getComputedStyle(current);
+            const overflowY = style?.overflowY ?? "";
+            if ((overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") &&
+                current.scrollHeight > current.clientHeight + 4) {
+                return current;
+            }
+            current = current.parentElement;
+        }
+
+        const scrolling = document.scrollingElement;
+        return scrolling instanceof HTMLElement ? scrolling : null;
+    }
+
+    private clampScrollTop(scroller: HTMLElement, value: number): number {
+        const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (!Number.isFinite(max)) {
+            return value;
+        }
+        if (value < 0) {
+            return 0;
+        }
+        if (value > max) {
+            return max;
+        }
+        return value;
+    }
+
+    private canScrollInDirection(scroller: HTMLElement, direction: 1 | -1): boolean {
+        const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+        if (!Number.isFinite(max)) {
+            return false;
+        }
+        if (direction < 0) {
+            return scroller.scrollTop > 1;
+        }
+        return scroller.scrollTop < max - 1;
+    }
+
+    private findTopVisibleBullet(root: HTMLElement, viewportTop: number): HTMLElement | null {
+        const selectors = [
+            ".cm-line",
+            ".HyperMD-list-line",
+            ".cm-list-1",
+            ".cm-list-2",
+            ".list-bullet",
+            "li.task-list-item",
+            "li",
+            ".markdown-preview-section"
+        ].join(", ");
+
+        let best: { element: HTMLElement; top: number } | null = null;
+
+        const candidates = Array.from(root.querySelectorAll<HTMLElement>(selectors));
+        for (const el of candidates) {
+            if (!el.offsetParent && el !== root) {
+                continue;
+            }
+
+            const rect = el.getBoundingClientRect();
+            if (rect.bottom <= viewportTop + 1) {
+                continue;
+            }
+
+            const top = Math.max(rect.top, viewportTop);
+            if (!best || top < best.top) {
+                best = { element: el, top };
+            }
+        }
+
+        return best?.element ?? null;
+    }
+
+    private async waitForNextFrame(): Promise<void> {
+        await new Promise<void>(resolve => window.requestAnimationFrame(() => resolve()));
+    }
+
+    private async sleep(ms: number): Promise<void> {
+        await new Promise<void>(resolve => window.setTimeout(resolve, ms));
     }
   
     /* ---------- gather tasks with a given tag ---------- */
