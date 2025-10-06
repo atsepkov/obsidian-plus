@@ -98,7 +98,7 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   })));
 
   for (const section of filteredSections) {
-    await renderSection(section, container, plugin);
+    await renderSection(app, section, container, plugin);
   }
 
   const htmlPreview = container.innerHTML.slice(0, 500);
@@ -323,7 +323,7 @@ function extractReferenceSnippet(lines: string[], startLine: number, blockId: st
   return snippet;
 }
 
-async function renderSection(section: OutlineSection, container: HTMLElement, plugin: Plugin): Promise<void> {
+async function renderSection(app: App, section: OutlineSection, container: HTMLElement, plugin: Plugin): Promise<void> {
   const wrapper = container.createDiv({ cls: "tree-of-thought__section" });
   wrapper.createEl("h3", { text: section.title });
   const body = wrapper.createDiv({ cls: "tree-of-thought__markdown" });
@@ -332,7 +332,7 @@ async function renderSection(section: OutlineSection, container: HTMLElement, pl
       title: section.title,
       markdownLength: section.markdown.length
     });
-    await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, plugin);
+    await MarkdownRenderer.render(app, section.markdown, body, section.file.path, plugin);
     const renderedText = body.textContent?.trim() ?? "";
     console.log("[TreeOfThought] section rendered", {
       title: section.title,
