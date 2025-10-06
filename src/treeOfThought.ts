@@ -1,4 +1,4 @@
-import { App, MarkdownRenderer, Plugin, TFile } from "obsidian";
+import { App, TFile } from "obsidian";
 import type { TaskEntry } from "./fuzzyFinder";
 
 interface TaskContextEntry {
@@ -20,7 +20,7 @@ interface TaskContextSnapshot {
   blockId?: string | null;
 }
 
-interface ThoughtSection {
+export interface ThoughtSection {
   title: string;
   markdown: string;
   file: TFile;
@@ -28,36 +28,37 @@ interface ThoughtSection {
 
 export interface TreeOfThoughtOptions {
   app: App;
-  plugin: Plugin;
-  container: HTMLElement;
   task: TaskEntry;
-  activeTag: string;
   blockId: string;
   searchQuery?: string;
   context?: TaskContextSnapshot | null;
 }
 
-export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promise<void> {
-  const { app, plugin, container, task, activeTag, blockId, searchQuery, context } = options;
+export interface TreeOfThoughtResult {
+  sourceFile: TFile | null;
+  sections: ThoughtSection[];
+  message?: string;
+  error?: string;
+}
 
-  container.empty();
+export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<TreeOfThoughtResult> {
+  const { app, task, blockId, searchQuery, context } = options;
 
   const sourceFile = resolveTaskFile(app, task);
   if (!sourceFile) {
-    container.setText("Unable to resolve the source note for this task.");
-    return;
+    return {
+      sourceFile: null,
+      sections: [],
+      error: "Unable to resolve the source note for this task."
+    };
   }
-
-  const linktext = app.metadataCache.fileToLinktext(sourceFile, "");
-  const header = container.createDiv({ cls: "tree-of-thought__header" });
-  header.createSpan({ text: `${activeTag} ${task.text}`.trim() });
-  header.createSpan({ text: `  [[${linktext}]]`, cls: "tree-of-thought__file" });
 
   const resolvedBlockId = blockId || context?.blockId || "";
   const sections: ThoughtSection[] = [];
 
   const originMarkdown = await buildOriginMarkdown(app, sourceFile, task, resolvedBlockId, context);
   if (originMarkdown.trim()) {
+    const linktext = app.metadataCache.fileToLinktext(sourceFile, "");
     sections.push({
       title: `Origin · [[${linktext}]]`,
       markdown: originMarkdown,
@@ -69,8 +70,11 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   sections.push(...backlinkSections);
 
   if (!sections.length) {
-    container.createDiv({ cls: "tree-of-thought__empty", text: "No outline available for this task yet." });
-    return;
+    return {
+      sourceFile,
+      sections: [],
+      message: "No outline available for this task yet."
+    };
   }
 
   const filter = (searchQuery ?? "").trim().toLowerCase();
@@ -79,16 +83,17 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
     : sections;
 
   if (filter && filteredSections.length === 0) {
-    container.createDiv({
-      cls: "tree-of-thought__empty",
-      text: `No matches for “${searchQuery?.trim()}” in this thought.`
-    });
-    return;
+    return {
+      sourceFile,
+      sections: [],
+      message: `No matches for “${searchQuery?.trim()}” in this thought.`
+    };
   }
 
-  for (const section of filteredSections) {
-    await renderSection(app, plugin, container, section);
-  }
+  return {
+    sourceFile,
+    sections: filteredSections
+  };
 }
 
 async function buildOriginMarkdown(
@@ -208,29 +213,6 @@ function resolveTaskFile(app: App, task: TaskEntry): TFile | null {
   }
   const file = app.vault.getAbstractFileByPath(path);
   return file instanceof TFile ? file : null;
-}
-
-async function renderSection(
-  app: App,
-  plugin: Plugin,
-  container: HTMLElement,
-  section: ThoughtSection
-): Promise<void> {
-  const wrapper = container.createDiv({ cls: "tree-of-thought__section" });
-  wrapper.createEl("h3", { text: section.title });
-  const body = wrapper.createDiv({ cls: "tree-of-thought__markdown" });
-
-  try {
-    await MarkdownRenderer.renderMarkdown(
-      section.markdown,
-      body,
-      section.file.path,
-      plugin
-    );
-  } catch (error) {
-    console.error("Failed to render tree-of-thought markdown", error);
-    body.createEl("pre", { text: section.markdown });
-  }
 }
 
 async function readFileLines(app: App, file: TFile): Promise<string[]> {

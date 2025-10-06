@@ -2,7 +2,7 @@ import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
-import { renderTreeOfThought } from "./treeOfThought";
+import { loadTreeOfThought } from "./treeOfThought";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
   
 export interface TaskEntry {
@@ -276,7 +276,6 @@ function escapeCssIdentifier(value: string): string {
     private thoughtTaskIndex: number | null = null;
     private thoughtDisplayIndex: number | null = null;
     private thoughtSearchQuery = "";
-    private thoughtContainerEl: HTMLElement | null = null;
     private thoughtCacheKey: string | null = null;
     private autoThoughtGuard: string | null = null;
     private lastTaskSuggestions: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
@@ -479,10 +478,6 @@ function escapeCssIdentifier(value: string): string {
 
         this.configureInstructionBar();
 
-        if (this.thoughtMode) {
-          void this.renderThoughtPane();
-        }
-
         /* 👇 force redraw immediately (fixes space‑switch lag) */
         this.updateSuggestions();
     }
@@ -541,26 +536,6 @@ function escapeCssIdentifier(value: string): string {
         }
 
         this.setInstructions(instructions);
-
-        this.toggleThoughtContainer(this.thoughtMode);
-    }
-
-    private toggleThoughtContainer(show: boolean) {
-        const list = this.resultContainerEl;
-        if (list) {
-          list.classList.toggle("is-hidden", show);
-          list.style.display = show ? "none" : "";
-        }
-        if (!this.thoughtContainerEl) {
-          this.thoughtContainerEl = this.contentEl.createDiv({ cls: "task-tag-thought" });
-        }
-        this.thoughtContainerEl.classList.toggle("is-hidden", !show);
-        if (this.thoughtContainerEl) {
-          this.thoughtContainerEl.style.display = show ? "" : "none";
-          if (!show) {
-            this.thoughtContainerEl.empty();
-          }
-        }
     }
 
     private exitThoughtMode() {
@@ -570,10 +545,6 @@ function escapeCssIdentifier(value: string): string {
         this.thoughtSearchQuery = "";
         this.thoughtCacheKey = null;
         this.autoThoughtGuard = this.inputEl.value;
-        if (this.thoughtContainerEl) {
-          this.thoughtContainerEl.empty();
-          this.thoughtContainerEl.addClass("is-hidden");
-        }
     }
 
     private getTaskCacheKey(): string | null {
@@ -619,7 +590,6 @@ function escapeCssIdentifier(value: string): string {
             this.thoughtTaskIndex === cacheIndex &&
             this.thoughtDisplayIndex === displayIndex &&
             this.thoughtSearchQuery === normalizedSearch) {
-          void this.renderThoughtPane();
           return;
         }
 
@@ -671,16 +641,19 @@ function escapeCssIdentifier(value: string): string {
   
     /* ---------- display text in query preview ---------- */
     getItemText(item) {
+        if (item == null) {
+          return "";
+        }
         let text = typeof item === "string" ? item : item.text;
         // in non-tag mode, prepend active tag
         if (!this.tagMode) text = this.activeTag + " " + text;
         return text;
-    }      
+    }
   
     /* ---------- suggestion renderer ---------- */
     async renderSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
         if (this.thoughtMode) {
-          await this.renderThoughtPane();
+          await this.renderThoughtPane(el);
           return;
         }
 
@@ -746,30 +719,36 @@ function escapeCssIdentifier(value: string): string {
         });
     }
 
-    private async renderThoughtPane() {
+    private async renderThoughtPane(host?: HTMLElement) {
+        const container = host ?? (this.resultContainerEl?.querySelector<HTMLElement>(".tree-of-thought__container") ?? null);
+        if (!container) {
+          return;
+        }
+
+        container.empty();
+        container.addClass("tree-of-thought__container");
+
         if (!this.thoughtMode) {
-          this.toggleThoughtContainer(false);
           return;
         }
-        this.toggleThoughtContainer(true);
-        if (!this.thoughtContainerEl) {
-          return;
-        }
-        this.thoughtContainerEl.empty();
+
         const key = this.thoughtCacheKey ?? this.getTaskCacheKey();
         if (!key) {
-          this.thoughtContainerEl.setText("Select a tag to view its tasks.");
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Select a tag to view its tasks." });
           return;
         }
+
         const cacheList = this.taskCache[key];
         if (!cacheList || cacheList.length === 0) {
-          this.thoughtContainerEl.setText("Loading tasks…");
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Loading tasks…" });
           return;
         }
+
         if (this.thoughtTaskIndex == null || !cacheList[this.thoughtTaskIndex]) {
-          this.thoughtContainerEl.setText("Task not available.");
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Task not available." });
           return;
         }
+
         const task = cacheList[this.thoughtTaskIndex];
         if (!task.file && (task.path || task.file?.path)) {
           const resolved = this.app.vault.getFileByPath(task.path ?? task.file?.path ?? "");
@@ -777,6 +756,7 @@ function escapeCssIdentifier(value: string): string {
             task.file = resolved;
           }
         }
+
         try {
           const blockId = await ensureBlockId(this.app, task);
           let context: any = null;
@@ -788,6 +768,7 @@ function escapeCssIdentifier(value: string): string {
               console.error("Failed to load task context for thought view", contextError);
             }
           }
+
           console.log("[TreeOfThought] context", {
             task: {
               path: task.path ?? task.file?.path,
@@ -797,19 +778,50 @@ function escapeCssIdentifier(value: string): string {
             blockId,
             context
           });
-          await renderTreeOfThought({
+
+          const thought = await loadTreeOfThought({
             app: this.app,
-            plugin: this.plugin,
-            container: this.thoughtContainerEl,
             task,
-            activeTag: this.activeTag,
             blockId,
             searchQuery: this.thoughtSearchQuery,
             context
           });
+
+          const header = container.createDiv({ cls: "tree-of-thought__header" });
+          header.createSpan({ text: `${this.activeTag} ${task.text}`.trim() });
+          if (thought.sourceFile) {
+            const linktext = this.app.metadataCache.fileToLinktext(thought.sourceFile, "");
+            header.createSpan({ text: `  [[${linktext}]]`, cls: "tree-of-thought__file" });
+          }
+
+          if (thought.error) {
+            container.createDiv({ cls: "tree-of-thought__empty", text: thought.error });
+            return;
+          }
+
+          if (!thought.sections.length) {
+            container.createDiv({ cls: "tree-of-thought__empty", text: thought.message ?? "No outline available for this task yet." });
+            return;
+          }
+
+          for (const section of thought.sections) {
+            const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
+            sectionEl.createEl("h3", { text: section.title });
+            const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
+            try {
+              await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, this.plugin);
+            } catch (error) {
+              console.error("Failed to render tree-of-thought markdown", error);
+              body.createEl("pre", { text: section.markdown });
+              continue;
+            }
+            if (!body.childElementCount && !body.textContent?.trim()) {
+              body.createEl("pre", { text: section.markdown });
+            }
+          }
         } catch (error) {
           console.error("Failed to render thought view", error);
-          this.thoughtContainerEl.setText("Unable to render this thought.");
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to render this thought." });
         }
     }
   
@@ -1338,6 +1350,10 @@ function escapeCssIdentifier(value: string): string {
         }).sort((a, b) => b.score - a.score);
 
         this.lastTaskSuggestions = suggestions;
+
+        if (this.thoughtMode) {
+          return [{ item: null as any, match: null as any, score: 0 } as FuzzyMatch<string | TaskEntry>];
+        }
 
         if (!this.thoughtMode && !this.autoThoughtGuard && suggestions.length === 1) {
           const [first] = suggestions;

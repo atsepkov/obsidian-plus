@@ -129,3 +129,42 @@ input[data-task="-"] {
     opacity: 0.7;
     white-space: normal;
 }
+
+.modal-container .prompt .suggestion-item.tree-of-thought__container {
+    display: flex;
+    flex-direction: column;
+    gap: var(--size-4-2, 8px);
+    padding: var(--size-4-2, 8px);
+}
+
+.tree-of-thought__header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-weight: 600;
+}
+
+.tree-of-thought__file {
+    color: var(--text-muted);
+}
+
+.tree-of-thought__section {
+    border-top: 1px solid var(--background-modifier-border);
+    padding-top: 0.5rem;
+    margin-top: 0.5rem;
+}
+
+.tree-of-thought__section:first-of-type {
+    border-top: none;
+    padding-top: 0;
+    margin-top: 0;
+}
+
+.tree-of-thought__markdown {
+    line-height: 1.4;
+}
+
+.tree-of-thought__empty {
+    color: var(--text-muted);
+    font-style: italic;
+}
