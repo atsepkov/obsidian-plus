@@ -186,6 +186,7 @@ function escapeCssIdentifier(value: string): string {
     private thoughtSearchQuery = "";
     private thoughtContainerEl: HTMLElement | null = null;
     private thoughtCacheKey: string | null = null;
+    private autoThoughtGuard: string | null = null;
     private lastTaskSuggestions: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
     private cachedTag   = "";          // cache key currently loaded
     private taskCache: Record<string, TaskEntry[]> = {};   // tasks by cache key
@@ -307,13 +308,19 @@ function escapeCssIdentifier(value: string): string {
     /* ---------- dynamic mode detection ---------- */
     private detectMode() {
         const q = this.inputEl.value;
+        if (this.autoThoughtGuard && this.autoThoughtGuard !== q) {
+          this.autoThoughtGuard = null;
+        }
+
         const thought = this.parseThoughtQuery(q);
         const baseQuery = thought.baseQuery;
-        const m = baseQuery.match(/^#\S+(?:\s|$)/);          // “#tag␠...”
+        const tagMatch = baseQuery.match(/^#\S+/);
+        const remainder = tagMatch ? baseQuery.slice(tagMatch[0].length) : "";
+        const hasTaskSpace = /^\s/.test(remainder);
 
-        if (m) {
+        if (tagMatch && hasTaskSpace) {
           this.tagMode   = false;
-          this.activeTag = m[0].trim();        // “#tag”
+          this.activeTag = tagMatch[0];        // “#tag”
 
           const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
               ? this.projectTag
@@ -345,7 +352,7 @@ function escapeCssIdentifier(value: string): string {
           }
         } else {
           this.tagMode   = true;
-          this.activeTag = "#";
+          this.activeTag = tagMatch ? tagMatch[0] : "#";
           this.exitThoughtMode();
         }
 
@@ -366,11 +373,12 @@ function escapeCssIdentifier(value: string): string {
           return { baseQuery: query, index: null, active: false, search: "" };
         }
         const base = thoughtMatch[1] ?? "";
-        const idx = thoughtMatch[2] != null ? Number(thoughtMatch[2]) : null;
+        const idxRaw = thoughtMatch[2] != null ? Number(thoughtMatch[2]) : null;
+        const idx = Number.isFinite(idxRaw) ? Math.max(0, (idxRaw as number) - 1) : null;
         const search = (thoughtMatch[3] ?? "").replace(/\s+$/, "");
         return {
           baseQuery: base.trimEnd(),
-          index: Number.isFinite(idx) ? idx : null,
+          index: idx,
           active: true,
           search
         };
@@ -437,6 +445,7 @@ function escapeCssIdentifier(value: string): string {
         this.thoughtDisplayIndex = null;
         this.thoughtSearchQuery = "";
         this.thoughtCacheKey = null;
+        this.autoThoughtGuard = this.inputEl.value;
         if (this.thoughtContainerEl) {
           this.thoughtContainerEl.empty();
           this.thoughtContainerEl.addClass("is-hidden");
@@ -491,7 +500,7 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
-        const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex})` : "";
+        const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex + 1})` : "";
         let next = `${base}${indexFragment} > `;
         if (normalizedSearch.length) {
           next += `${normalizedSearch} `;
@@ -511,6 +520,7 @@ function escapeCssIdentifier(value: string): string {
           this.ensureTaskCached(key, task, cacheIndex);
         }
         this.thoughtMode = true;
+        this.autoThoughtGuard = null;
         this.detectMode();
     }
 
@@ -572,8 +582,11 @@ function escapeCssIdentifier(value: string): string {
         let text = "";
         const task = item.item;
         const hit    = item.matchLine;
-        const file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-        const linktext = this.app.metadataCache.fileToLinktext(file);
+        const filePath = task.path ?? task.file?.path ?? "";
+        const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+        const linktext = file
+          ? this.app.metadataCache.fileToLinktext(file)
+          : filePath.replace(/\.md$/i, "");
         text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
         const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
         if (showCheckbox) {
@@ -582,10 +595,14 @@ function escapeCssIdentifier(value: string): string {
           text = `- [${status}] ${text}`;
         }
 
+        if (file && !task.file) {
+          task.file = file;
+        }
+
         await MarkdownRenderer.renderMarkdown(
             text,
             el,
-            file?.path,
+            file?.path ?? this.app.workspace.getActiveFile()?.path ?? "",
             this.plugin
         );
 
@@ -630,6 +647,12 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
         const task = cacheList[this.thoughtTaskIndex];
+        if (!task.file && (task.path || task.file?.path)) {
+          const resolved = this.app.vault.getFileByPath(task.path ?? task.file?.path ?? "");
+          if (resolved) {
+            task.file = resolved;
+          }
+        }
         const blockId = await ensureBlockId(this.app, task);
         await renderTreeOfThought({
           app: this.app,
@@ -1168,7 +1191,7 @@ function escapeCssIdentifier(value: string): string {
 
         this.lastTaskSuggestions = suggestions;
 
-        if (!this.thoughtMode && suggestions.length === 1) {
+        if (!this.thoughtMode && !this.autoThoughtGuard && suggestions.length === 1) {
           const [first] = suggestions;
           if (first?.item) {
             const snapshot = this.inputEl.value;

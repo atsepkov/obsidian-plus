@@ -41,8 +41,47 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   const body = container.createDiv({ cls: "tree-of-thought__body" });
 
   const fileLines = await readFileLines(app, file);
-  const lineIndex = Math.max(0, task.line ?? 0);
-  const originalMarkdown = buildContextMarkdown(fileLines, lineIndex);
+  const candidateLines = new LinkedOrderedSet<number>();
+  if (Number.isFinite(task.line)) {
+    const rawLine = task.line as number;
+    candidateLines.add(clampLineIndex(rawLine, fileLines.length));
+    if (rawLine > 0) {
+      candidateLines.add(clampLineIndex(rawLine - 1, fileLines.length));
+    }
+  }
+  if (blockId) {
+    const anchorLine = fileLines.findIndex(line => line.includes(`^${blockId}`));
+    if (anchorLine >= 0) {
+      candidateLines.add(anchorLine);
+    }
+  }
+  const trimmedTaskText = (task.text ?? "").trim();
+  if (trimmedTaskText) {
+    const normalizedNeedle = normalizeTaskLine(trimmedTaskText);
+    const loweredNeedle = trimmedTaskText.toLowerCase();
+    const textLine = fileLines.findIndex(line => {
+      const normalizedHaystack = normalizeTaskLine(line);
+      if (normalizedNeedle && normalizedHaystack.includes(normalizedNeedle)) {
+        return true;
+      }
+      return line.toLowerCase().includes(loweredNeedle);
+    });
+    if (textLine >= 0) {
+      candidateLines.add(textLine);
+    }
+  }
+
+  if (candidateLines.isEmpty()) {
+    candidateLines.add(0);
+  }
+
+  let originalMarkdown = "";
+  for (const candidate of candidateLines.values()) {
+    originalMarkdown = buildContextMarkdown(fileLines, candidate);
+    if (originalMarkdown.trim()) {
+      break;
+    }
+  }
   const references = await collectReferenceContexts(app, file, blockId);
 
   const search = (searchQuery ?? "").trim();
@@ -97,6 +136,45 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
       await MarkdownRenderer.renderMarkdown(reference.markdown, refMarkdownEl, reference.file.path, plugin);
     }
   }
+}
+
+class LinkedOrderedSet<T> {
+  private readonly order: T[] = [];
+  private readonly seen = new Set<T>();
+
+  add(value: T): void {
+    if (this.seen.has(value)) {
+      return;
+    }
+    this.seen.add(value);
+    this.order.push(value);
+  }
+
+  values(): T[] {
+    return this.order;
+  }
+
+  isEmpty(): boolean {
+    return this.order.length === 0;
+  }
+}
+
+function clampLineIndex(line: number, total: number): number {
+  if (!Number.isFinite(line)) {
+    return 0;
+  }
+  const idx = Math.floor(line);
+  if (idx < 0) return 0;
+  if (idx >= total) return Math.max(0, total - 1);
+  return idx;
+}
+
+function normalizeTaskLine(value: string): string {
+  return value
+    .replace(/\^\w+\b/, "")
+    .replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "")
+    .trim()
+    .toLowerCase();
 }
 
 function mergeContextMarkdown(snippets: string[]): string {
