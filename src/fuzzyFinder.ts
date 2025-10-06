@@ -58,7 +58,16 @@ function escapeCssIdentifier(value: string): string {
     
         /* 3️⃣  No ID anywhere → append a new one */
         const id = Math.random().toString(36).slice(2, 7);
-        const file = this.app.vault.getFileByPath(entry.path ?? entry.file.path);
+        const filePath = entry.path ?? entry.file?.path;
+        if (!filePath) {
+          console.warn("Task entry is missing an associated file path; cannot assign block id.", entry);
+          return entry.id ?? "";
+        }
+        const file = app.vault.getFileByPath(filePath);
+        if (!file) {
+          console.warn("Unable to resolve task file for block-id assignment", { filePath, entry });
+          return entry.id ?? "";
+        }
         const fileContents = await app.vault.read(file);
         const lines = fileContents.split("\n");
         lines[entry.line] += ` ^${id}`;
@@ -259,7 +268,7 @@ function escapeCssIdentifier(value: string): string {
             return;
           }
           const sourceIdx = taskSuggestion.sourceIdx ?? this.lookupTaskIndex(key, taskSuggestion.item as TaskEntry);
-          this.enterThoughtMode(key, sourceIdx ?? null, taskSuggestion.item as TaskEntry);
+          this.enterThoughtMode(key, sourceIdx ?? null, taskSuggestion.item as TaskEntry, { displayIndex: true });
         }
     }
 
@@ -307,9 +316,11 @@ function escapeCssIdentifier(value: string): string {
             this.cachedTag = key;
           }
 
-          if (thought.index !== null) {
+          if (thought.active) {
             this.thoughtMode = true;
-            this.thoughtTaskIndex = thought.index;
+            if (thought.index !== null) {
+              this.thoughtTaskIndex = thought.index;
+            }
             this.thoughtCacheKey = key;
           } else {
             this.exitThoughtMode();
@@ -330,14 +341,19 @@ function escapeCssIdentifier(value: string): string {
         this.updateSuggestions();
     }
 
-    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null } {
-        const match = query.match(/^(.*?)(?:>\s*\((\d+)\)\s*)?$/);
-        if (!match) {
-          return { baseQuery: query, index: null };
+    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null; active: boolean } {
+        const trimmed = query.replace(/\s+$/, " ");
+        const thoughtMatch = trimmed.match(/^(.*?)(?:\s*\((\d+)\))?\s*>\s*$/);
+        if (!thoughtMatch) {
+          return { baseQuery: query, index: null, active: false };
         }
-        const base = match[1];
-        const idx = match[2] != null ? Number(match[2]) : null;
-        return { baseQuery: base.trimEnd(), index: Number.isFinite(idx) ? idx : null };
+        const base = thoughtMatch[1] ?? "";
+        const idx = thoughtMatch[2] != null ? Number(thoughtMatch[2]) : null;
+        return {
+          baseQuery: base.trimEnd(),
+          index: Number.isFinite(idx) ? idx : null,
+          active: true
+        };
     }
 
     private configureInstructionBar() {
@@ -419,7 +435,7 @@ function escapeCssIdentifier(value: string): string {
         return idx >= 0 ? idx : null;
     }
 
-    private enterThoughtMode(key: string, index: number | null, task?: TaskEntry) {
+    private enterThoughtMode(key: string, index: number | null, task?: TaskEntry, options?: { displayIndex?: boolean }) {
         if (index == null) {
           return;
         }
@@ -429,7 +445,9 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
-        const next = `${base} > (${index})`;
+        const showIndex = options?.displayIndex ?? false;
+        const indexFragment = showIndex ? ` (${index})` : "";
+        const next = `${base}${indexFragment} > `;
         if (this.inputEl.value !== next) {
           this.inputEl.value = next;
         }
@@ -556,12 +574,14 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
         const task = cacheList[this.thoughtTaskIndex];
+        const blockId = await ensureBlockId(this.app, task);
         await renderTreeOfThought({
           app: this.app,
           plugin: this.plugin,
           container: this.thoughtContainerEl,
           task,
-          activeTag: this.activeTag
+          activeTag: this.activeTag,
+          blockId
         });
     }
   
