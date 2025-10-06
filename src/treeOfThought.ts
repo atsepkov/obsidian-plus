@@ -36,7 +36,7 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
   const sections: OutlineSection[] = [];
 
   const originMarkdown = await buildOriginSection(app, file, task);
-  if (originMarkdown) {
+  if (originMarkdown.trim()) {
     sections.push({
       title: `Origin · [[${linktext}]]`,
       file,
@@ -44,21 +44,25 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
     });
   }
 
-  const backlinks = blockId ? await buildBacklinkSections(app, file, blockId) : [];
-  sections.push(...backlinks);
+  if (blockId) {
+    const backlinks = await buildBacklinkSections(app, file, blockId);
+    sections.push(...backlinks);
+  }
+
+  if (!sections.length) {
+    const empty = container.createDiv({ cls: "tree-of-thought__empty" });
+    empty.setText("No outline available for this task yet.");
+    return;
+  }
 
   const filter = (searchQuery ?? "").trim().toLowerCase();
   const filteredSections = filter
     ? sections.filter(section => section.markdown.toLowerCase().includes(filter))
     : sections;
 
-  if (!sections.length) {
-    container.createDiv({ cls: "tree-of-thought__empty" }).setText("No outline available for this task yet.");
-    return;
-  }
-
   if (filter && filteredSections.length === 0) {
-    container.createDiv({ cls: "tree-of-thought__empty" }).setText(`No matches for “${searchQuery?.trim()}” in this thought.`);
+    const empty = container.createDiv({ cls: "tree-of-thought__empty" });
+    empty.setText(`No matches for “${searchQuery?.trim()}” in this thought.`);
     return;
   }
 
@@ -68,11 +72,10 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
 }
 
 function resolveTaskFile(app: App, task: TaskEntry): TFile | null {
-  if (task.file) {
+  if (task.file instanceof TFile) {
     return task.file;
   }
-  const existingFile = (task as TaskEntry & { file?: TFile }).file;
-  const path = task.path ?? existingFile?.path;
+  const path = task.path ?? task.file?.path;
   if (!path) {
     return null;
   }
@@ -84,68 +87,129 @@ async function buildOriginSection(app: App, file: TFile, task: TaskEntry): Promi
   const lines = await readFileLines(app, file);
   const startLine = findTaskLine(task, lines);
   if (startLine == null) {
-    return task.lines?.length ? task.lines.join("\n") : "";
+    if (task.lines?.length) {
+      return task.lines.join("\n");
+    }
+    return "";
   }
   return extractListSubtree(lines, startLine);
 }
 
 async function buildBacklinkSections(app: App, sourceFile: TFile, blockId: string): Promise<OutlineSection[]> {
-  const backlinks = (app.metadataCache as any).getBacklinksForFile?.(sourceFile);
-  if (!backlinks?.data) {
-    return [];
-  }
-
   const sections: OutlineSection[] = [];
-  const targets = backlinks.data as Record<string, any[]>;
+  const seenMarkdown = new Set<string>();
+  const visitedPaths = new Set<string>();
 
-  for (const path of Object.keys(targets)) {
-    const abstractFile = app.vault.getAbstractFileByPath(path);
-    if (!(abstractFile instanceof TFile)) {
-      continue;
-    }
-
-    const entries = targets[path].filter((entry: any) => {
-      const link = entry?.link ?? "";
-      return typeof link === "string" && link.includes(`^${blockId}`);
-    });
-    if (!entries.length) {
-      continue;
-    }
-
-    const lines = await readFileLines(app, abstractFile);
-    const snippets = new Set<string>();
-
-    for (const entry of entries) {
-      const line = entry?.position?.start?.line ?? entry?.position?.line ?? null;
-      if (line == null) {
+  const backlinks = (app.metadataCache as any).getBacklinksForFile?.(sourceFile);
+  if (backlinks?.data) {
+    const targets = backlinks.data as Record<string, any[]>;
+    for (const [path, entries] of Object.entries(targets)) {
+      const abstractFile = app.vault.getAbstractFileByPath(path);
+      if (!(abstractFile instanceof TFile) || abstractFile.path === sourceFile.path) {
         continue;
       }
-      const snippet = extractListSubtree(lines, line);
-      if (snippet.trim()) {
-        snippets.add(snippet);
+      const lines = await readFileLines(app, abstractFile);
+      const snippets = collectBacklinkSnippetsFromEntries(entries, lines, blockId);
+      if (!snippets.length) {
+        continue;
       }
+      const markdown = joinSnippets(snippets);
+      if (!markdown.trim() || seenMarkdown.has(markdown)) {
+        continue;
+      }
+      seenMarkdown.add(markdown);
+      visitedPaths.add(abstractFile.path);
+      const linktext = app.metadataCache.fileToLinktext(abstractFile, sourceFile.path);
+      sections.push({
+        title: `[[${linktext}]]`,
+        file: abstractFile,
+        markdown
+      });
     }
+  }
 
-    if (!snippets.size) {
+  const missing = blockId ? await scanVaultForBlock(app, sourceFile, blockId, visitedPaths) : [];
+  sections.push(...missing);
+
+  return sections;
+}
+
+function collectBacklinkSnippetsFromEntries(entries: any[], lines: string[], blockId: string): string[] {
+  const snippets = new Set<string>();
+  for (const entry of entries) {
+    const link = entry?.link ?? "";
+    if (typeof link === "string" && !link.includes(`^${blockId}`)) {
       continue;
     }
+    const line = entry?.position?.start?.line ?? entry?.position?.line;
+    if (!Number.isFinite(line)) {
+      continue;
+    }
+    const snippet = extractListSubtree(lines, Math.max(0, Math.floor(line)));
+    if (snippet.trim()) {
+      snippets.add(snippet);
+    }
+  }
+  return Array.from(snippets);
+}
 
-    const linktext = app.metadataCache.fileToLinktext(abstractFile, sourceFile.path);
+async function scanVaultForBlock(app: App, sourceFile: TFile, blockId: string, skipPaths: Set<string>): Promise<OutlineSection[]> {
+  const pattern = new RegExp(`\\^${escapeRegExp(blockId)}\\b`);
+  const files = app.vault.getMarkdownFiles();
+  const sections: OutlineSection[] = [];
+
+  for (const file of files) {
+    if (file.path === sourceFile.path || skipPaths.has(file.path)) {
+      continue;
+    }
+    const lines = await readFileLines(app, file);
+    const matches = collectManualBacklinkSnippets(lines, pattern);
+    if (!matches.length) {
+      continue;
+    }
+    const markdown = joinSnippets(matches);
+    if (!markdown.trim()) {
+      continue;
+    }
+    const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
     sections.push({
       title: `[[${linktext}]]`,
-      file: abstractFile,
-      markdown: Array.from(snippets).join("\n\n")
+      file,
+      markdown
     });
   }
 
   return sections;
 }
 
+function collectManualBacklinkSnippets(lines: string[], pattern: RegExp): string[] {
+  const snippets = new Set<string>();
+  for (let i = 0; i < lines.length; i++) {
+    if (!pattern.test(lines[i])) {
+      continue;
+    }
+    const snippet = extractListSubtree(lines, i);
+    if (snippet.trim()) {
+      snippets.add(snippet);
+    }
+  }
+  return Array.from(snippets);
+}
+
+function joinSnippets(snippets: string[]): string {
+  return snippets.join("\n\n---\n\n");
+}
+
 async function renderSection(section: OutlineSection, container: HTMLElement, plugin: Plugin): Promise<void> {
   const wrapper = container.createDiv({ cls: "tree-of-thought__section" });
   wrapper.createEl("h3", { text: section.title });
   const body = wrapper.createDiv({ cls: "tree-of-thought__markdown" });
-  await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, plugin);
+  try {
+    await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, plugin);
+  } catch (error) {
+    console.error("Unable to render markdown for tree-of-thought section", error);
+    body.createEl("pre", { text: section.markdown });
+  }
 }
 
 async function readFileLines(app: App, file: TFile): Promise<string[]> {
@@ -162,9 +226,12 @@ function findTaskLine(task: TaskEntry, lines: string[]): number | null {
     return null;
   }
   const normalizedNeedle = normalizeTaskLine(text);
+  if (!normalizedNeedle) {
+    return null;
+  }
   for (let i = 0; i < lines.length; i++) {
     const normalized = normalizeTaskLine(lines[i]);
-    if (normalizedNeedle && normalized.includes(normalizedNeedle)) {
+    if (normalized.includes(normalizedNeedle)) {
       return i;
     }
   }
@@ -211,4 +278,8 @@ function normalizeTaskLine(value: string): string {
     .replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "")
     .trim()
     .toLowerCase();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
