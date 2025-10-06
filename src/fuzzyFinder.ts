@@ -1,10 +1,11 @@
-import { 
+import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
+import { renderTreeOfThought } from "./treeOfThought";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
   
-interface TaskEntry {
+export interface TaskEntry {
   file:   TFile;
   line:   number;
   text:   string;
@@ -170,6 +171,10 @@ function escapeCssIdentifier(value: string): string {
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
     private activeTag = "#";
+    private thoughtMode = false;
+    private thoughtTaskIndex: number | null = null;
+    private thoughtContainerEl: HTMLElement | null = null;
+    private thoughtCacheKey: string | null = null;
     private cachedTag   = "";          // cache key currently loaded
     private taskCache: Record<string, TaskEntry[]> = {};   // tasks by cache key
     private projectTag: string | null = null;              // current project scope
@@ -194,7 +199,7 @@ function escapeCssIdentifier(value: string): string {
       /* Keep mode in sync while user edits */
       this.inputEl.value = "#";
       this.inputEl.addEventListener("input", () => {
-        this.detectMode()
+        this.detectMode();
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.detectMode(); // initial
@@ -231,18 +236,30 @@ function escapeCssIdentifier(value: string): string {
     }
 
     private handleKeys(evt: KeyboardEvent) {
-        if (!this.tagMode) return;                // only in TAG mode
-      
         const list  = this.chooser;               // ul.suggestion-container
-        const item  = list?.values[list.selectedItem];
+        const item  = list?.values?.[list.selectedItem];
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
-      
+
         /* ---- Tab: autocomplete tag, keep modal open ---- */
-        if (evt.key === "Tab" && typeof chosen === "object") {
+        if (this.tagMode && evt.key === "Tab" && typeof chosen === "object") {
           evt.preventDefault();
           this.inputEl.value = chosen.tag + " ";  // autocomplete
           this.detectMode();                      // switches to task mode
           return;
+        }
+
+        if (!this.tagMode && !this.thoughtMode && evt.key === ">") {
+          evt.preventDefault();
+          if (!item || typeof item.item !== "object") {
+            return;
+          }
+          const taskSuggestion = item as any as (FuzzyMatch<TaskEntry> & { sourceIdx?: number });
+          const key = this.getTaskCacheKey();
+          if (!key) {
+            return;
+          }
+          const sourceIdx = taskSuggestion.sourceIdx ?? this.lookupTaskIndex(key, taskSuggestion.item as TaskEntry);
+          this.enterThoughtMode(key, sourceIdx ?? null, taskSuggestion.item as TaskEntry);
         }
     }
 
@@ -271,8 +288,10 @@ function escapeCssIdentifier(value: string): string {
     /* ---------- dynamic mode detection ---------- */
     private detectMode() {
         const q = this.inputEl.value;
-        const m = q.match(/^#\S+\s/);          // “#tag␠...”
-      
+        const thought = this.parseThoughtQuery(q);
+        const baseQuery = thought.baseQuery;
+        const m = baseQuery.match(/^#\S+\s/);          // “#tag␠...”
+
         if (m) {
           this.tagMode   = false;
           this.activeTag = m[0].trim();        // “#tag”
@@ -287,32 +306,150 @@ function escapeCssIdentifier(value: string): string {
             this.taskCache[key] = this.collectTasks(this.activeTag, project);
             this.cachedTag = key;
           }
+
+          if (thought.index !== null) {
+            this.thoughtMode = true;
+            this.thoughtTaskIndex = thought.index;
+            this.thoughtCacheKey = key;
+          } else {
+            this.exitThoughtMode();
+          }
         } else {
           this.tagMode   = true;
           this.activeTag = "#";
+          this.exitThoughtMode();
         }
 
-        /* after you build instructions array */
-        const enterInstruction = this.allowInsertion
-            ? (this.tagMode
-                ? { command: "⏎", purpose: "insert new bullet · close" }
-                : { command: "⏎", purpose: "link task · close" })
-            : (this.tagMode
-                ? { command: "⏎", purpose: "select tag" }
-                : { command: "⏎", purpose: "open task" });
+        this.configureInstructionBar();
 
-        const tabInstruction = this.tagMode
-            ? { command: "Tab", purpose: "autocomplete tag" }
-            : { command: "Tab", purpose: "—" };
-
-        this.setInstructions([
-            enterInstruction,
-            tabInstruction,
-            { command: "Esc", purpose: "cancel" }
-        ]);
+        if (this.thoughtMode) {
+          void this.renderThoughtPane();
+        }
 
         /* 👇 force redraw immediately (fixes space‑switch lag) */
         this.updateSuggestions();
+    }
+
+    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null } {
+        const match = query.match(/^(.*?)(?:>\s*\((\d+)\)\s*)?$/);
+        if (!match) {
+          return { baseQuery: query, index: null };
+        }
+        const base = match[1];
+        const idx = match[2] != null ? Number(match[2]) : null;
+        return { baseQuery: base.trimEnd(), index: Number.isFinite(idx) ? idx : null };
+    }
+
+    private configureInstructionBar() {
+        const instructions = [] as { command: string; purpose: string }[];
+
+        if (this.tagMode) {
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "insert new bullet · close" });
+          } else {
+            instructions.push({ command: "⏎", purpose: "select tag" });
+          }
+          instructions.push({ command: "␠", purpose: "view tag tasks" });
+          instructions.push({ command: "Tab", purpose: "autocomplete tag" });
+        } else if (this.thoughtMode) {
+          instructions.push({ command: "Esc", purpose: "return to results" });
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "close" });
+          }
+        } else {
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "link task · close" });
+          } else {
+            instructions.push({ command: "⏎", purpose: "open task" });
+          }
+          instructions.push({ command: ">", purpose: "expand into thought tree" });
+          instructions.push({ command: "Esc", purpose: "back to tags" });
+        }
+
+        if (!this.tagMode && !this.thoughtMode) {
+          instructions.push({ command: "Tab", purpose: "—" });
+        }
+
+        if (!instructions.find(inst => inst.command === "Esc")) {
+          instructions.push({ command: "Esc", purpose: "cancel" });
+        }
+
+        this.setInstructions(instructions);
+
+        this.toggleThoughtContainer(this.thoughtMode);
+    }
+
+    private toggleThoughtContainer(show: boolean) {
+        const list = this.resultContainerEl;
+        if (list) {
+          list.classList.toggle("is-hidden", show);
+          list.style.display = show ? "none" : "";
+        }
+        if (!this.thoughtContainerEl) {
+          this.thoughtContainerEl = this.contentEl.createDiv({ cls: "task-tag-thought" });
+        }
+        this.thoughtContainerEl.classList.toggle("is-hidden", !show);
+        if (!show) {
+          this.thoughtContainerEl?.empty();
+        }
+    }
+
+    private exitThoughtMode() {
+        this.thoughtMode = false;
+        this.thoughtTaskIndex = null;
+        this.thoughtCacheKey = null;
+        if (this.thoughtContainerEl) {
+          this.thoughtContainerEl.empty();
+          this.thoughtContainerEl.addClass("is-hidden");
+        }
+    }
+
+    private getTaskCacheKey(): string | null {
+        if (this.tagMode) return null;
+        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
+          ? this.projectTag
+          : null;
+        return project ? `${project}|${this.activeTag}` : this.activeTag;
+    }
+
+    private lookupTaskIndex(key: string, task: TaskEntry): number | null {
+        const list = this.taskCache[key];
+        if (!list) return null;
+        const idx = list.indexOf(task);
+        return idx >= 0 ? idx : null;
+    }
+
+    private enterThoughtMode(key: string, index: number | null, task?: TaskEntry) {
+        if (index == null) {
+          return;
+        }
+        if (this.thoughtMode && this.thoughtCacheKey === key && this.thoughtTaskIndex === index) {
+          void this.renderThoughtPane();
+          return;
+        }
+
+        const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
+        const next = `${base} > (${index})`;
+        if (this.inputEl.value !== next) {
+          this.inputEl.value = next;
+        }
+
+        this.thoughtCacheKey = key;
+        this.thoughtTaskIndex = index;
+        if (task) {
+          this.ensureTaskCached(key, task, index);
+        }
+        this.thoughtMode = true;
+        this.detectMode();
+    }
+
+    private ensureTaskCached(key: string, task: TaskEntry, index: number) {
+        if (!this.taskCache[key]) {
+          this.taskCache[key] = [];
+        }
+        if (!this.taskCache[key][index]) {
+          this.taskCache[key][index] = task;
+        }
     }
   
     /* ---------- data ---------- */
@@ -334,47 +471,55 @@ function escapeCssIdentifier(value: string): string {
   
     /* ---------- suggestion renderer ---------- */
     async renderSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
-        el.empty();
-        let text = "";
-        let file: TFile;
-        let hit = null;
-        let task: TaskEntry;
-    
-        if (item.item && "tag" in item.item) {
-            /* TAG row */
-            const { tag, count } = (item.item as { tag: string; count: number });
-            const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
-            // el.createSpan({ text: tag });
-            // if (desc) el.createSpan({ text: " — " + desc, cls: "tag-desc" });
-            file = this.app.vault.getAbstractFileByPath(tag) as TFile;
-            text = `${tag} ${desc ? " " + desc : ""}`;
-        } else {
-            /* TASK row – markdown */
-            task = item.item as TaskEntry;
-            hit    = (item as any).matchLine;        // the line that matched
-            file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-            const linktext = this.app.metadataCache.fileToLinktext(file);
-            text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
-            const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
-            if (showCheckbox) {
-              const status = task.status ?? " ";
-              // always render checkbox before the tag for valid markdown
-              text = `- [${status}] ${text}`;
-            }
+        if (this.thoughtMode) {
+          await this.renderThoughtPane();
+          return;
         }
-        /* parent line (always shown) */
+
+        el.empty();
+        if (item.item && "tag" in item.item) {
+            await this.renderTagSuggestion(item, el);
+            return;
+        }
+
+        await this.renderTaskSuggestion(item as any as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }), el);
+    }
+
+    private async renderTagSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
+        let file: TFile;
+        const { tag, count } = (item.item as { tag: string; count: number });
+        const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
+        file = this.app.vault.getAbstractFileByPath(tag) as TFile;
+        const text = `${tag} ${desc ? " " + desc : ""}`;
+        await MarkdownRenderer.renderMarkdown(text, el, file?.path, this.plugin);
+    }
+
+    private async renderTaskSuggestion(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }, el: HTMLElement) {
+        let text = "";
+        const task = item.item;
+        const hit    = item.matchLine;
+        const file = this.app.vault.getFileByPath(task.path ?? task.file.path);
+        const linktext = this.app.metadataCache.fileToLinktext(file);
+        text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
+        const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
+        if (showCheckbox) {
+          const status = task.status ?? " ";
+          // always render checkbox before the tag for valid markdown
+          text = `- [${status}] ${text}`;
+        }
+
         await MarkdownRenderer.renderMarkdown(
             text,
             el,
             file?.path,
             this.plugin
         );
-        /*  matched child line (if it's not the parent)  */
+
         if (hit && hit !== task.text) {
             const div = el.createDiv({ cls: "child-line" });   // style below
             await MarkdownRenderer.renderMarkdown('- ' + hit, div, file.path, this.plugin);
         }
-        /* 👇 stop link‑clicks from bubbling to the list item */
+
         el.querySelectorAll("a.internal-link").forEach(a => {
             a.addEventListener("click", evt => {
                 evt.preventDefault();
@@ -385,9 +530,47 @@ function escapeCssIdentifier(value: string): string {
             });
         });
     }
+
+    private async renderThoughtPane() {
+        if (!this.thoughtMode) {
+          this.toggleThoughtContainer(false);
+          return;
+        }
+        this.toggleThoughtContainer(true);
+        if (!this.thoughtContainerEl) {
+          return;
+        }
+        this.thoughtContainerEl.empty();
+        const key = this.thoughtCacheKey ?? this.getTaskCacheKey();
+        if (!key) {
+          this.thoughtContainerEl.setText("Select a tag to view its tasks.");
+          return;
+        }
+        const cacheList = this.taskCache[key];
+        if (!cacheList || cacheList.length === 0) {
+          this.thoughtContainerEl.setText("Loading tasks…");
+          return;
+        }
+        if (this.thoughtTaskIndex == null || !cacheList[this.thoughtTaskIndex]) {
+          this.thoughtContainerEl.setText("Task not available.");
+          return;
+        }
+        const task = cacheList[this.thoughtTaskIndex];
+        await renderTreeOfThought({
+          app: this.app,
+          plugin: this.plugin,
+          container: this.thoughtContainerEl,
+          task,
+          activeTag: this.activeTag
+        });
+    }
   
     /* ---------- choose behavior ---------- */
     async onChooseItem(raw) {
+        if (this.thoughtMode) {
+            return;
+        }
+
         const item = raw.item ?? raw;
     
         if ("tag" in item) {
@@ -866,7 +1049,7 @@ function escapeCssIdentifier(value: string): string {
         const scorer = prepareFuzzySearch(body);
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
 
-        return this.taskCache[key]!.flatMap(t => {
+        const suggestions = this.taskCache[key]!.flatMap((t, idx) => {
             const statusChar = t.status ?? " ";
 
             if (hadStatusFilter) {
@@ -899,9 +1082,25 @@ function escapeCssIdentifier(value: string): string {
             return [{
               item:  t,                   // original TaskEntry
               score: bestScore,
-              matchLine: bestLine         // 👈 keep only the line that matched
+              matchLine: bestLine,        // 👈 keep only the line that matched
+              sourceIdx: idx
             }];
         }).sort((a, b) => b.score - a.score);
+
+        if (!this.thoughtMode && suggestions.length === 1) {
+          const [first] = suggestions;
+          if (first?.item) {
+            const snapshot = this.inputEl.value;
+            window.setTimeout(() => {
+              if (this.thoughtMode) return;
+              if (this.inputEl.value !== snapshot) return;
+              const resolvedIdx = (first as any).sourceIdx ?? this.lookupTaskIndex(key, first.item as TaskEntry);
+              this.enterThoughtMode(key, resolvedIdx ?? null, first.item as TaskEntry);
+            }, 0);
+          }
+        }
+
+        return suggestions;
     }
   }
   
