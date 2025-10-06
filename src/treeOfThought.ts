@@ -82,6 +82,12 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
       break;
     }
   }
+  if (!originalMarkdown.trim()) {
+    const fallback = buildFallbackMarkdown(task);
+    if (fallback) {
+      originalMarkdown = fallback;
+    }
+  }
   const references = await collectReferenceContexts(app, file, blockId);
 
   const search = (searchQuery ?? "").trim();
@@ -291,6 +297,18 @@ function filterMarkdownBySearch(markdown: string, search: string): FilteredMarkd
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function buildFallbackMarkdown(task: TaskEntry): string {
+  const lines = Array.isArray(task.lines) ? task.lines.map(line => line.trim()).filter(Boolean) : [];
+  if (lines.length) {
+    return lines.join("\n");
+  }
+  const text = (task.text ?? "").trim();
+  if (!text) {
+    return "";
+  }
+  return /^[-*+]\s/.test(text) ? text : `- ${text}`;
 }
 
 async function collectReferenceContexts(app: App, sourceFile: TFile, blockId: string): Promise<ReferenceContext[]> {

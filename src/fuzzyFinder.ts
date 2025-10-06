@@ -46,35 +46,127 @@ function escapeCssIdentifier(value: string): string {
   
     /** Add a block‑ID to a task bullet if it doesn’t have one yet */
     async function ensureBlockId(app: App, entry: TaskEntry): Promise<string> {
-        /* 1️⃣  Already cached in the object → reuse */
         if (entry.id) return entry.id;
-    
-        /* 2️⃣  ID is in the line but wasn’t parsed (e.g. Dataview result) */
+
         const inline = entry.text.match(/\^(\w+)\b/);
         if (inline) {
-        entry.id = inline[1];          // cache for future calls
-        return entry.id;
+            entry.id = inline[1];
+            return entry.id;
         }
-    
-        /* 3️⃣  No ID anywhere → append a new one */
-        const id = Math.random().toString(36).slice(2, 7);
+
         const filePath = entry.path ?? entry.file?.path;
         if (!filePath) {
-          console.warn("Task entry is missing an associated file path; cannot assign block id.", entry);
-          return entry.id ?? "";
+            console.warn("Task entry is missing an associated file path; cannot assign block id.", entry);
+            return entry.id ?? "";
         }
+
         const file = app.vault.getFileByPath(filePath);
         if (!file) {
-          console.warn("Unable to resolve task file for block-id assignment", { filePath, entry });
-          return entry.id ?? "";
+            console.warn("Unable to resolve task file for block-id assignment", { filePath, entry });
+            return entry.id ?? "";
         }
-        const fileContents = await app.vault.read(file);
-        const lines = fileContents.split("\n");
-        lines[entry.line] += ` ^${id}`;
+
+        const contents = await app.vault.read(file);
+        const lines = contents.split(/\r?\n/);
+
+        const lineIndex = resolveTaskLineIndex(entry, lines);
+        if (lineIndex == null) {
+            console.warn("Unable to locate task line for block-id assignment", { entry, filePath });
+            return entry.id ?? "";
+        }
+
+        const existing = lines[lineIndex].match(/\^(\w+)\b/);
+        if (existing) {
+            entry.id = existing[1];
+            return entry.id;
+        }
+
+        const id = Math.random().toString(36).slice(2, 7);
+        lines[lineIndex] = `${lines[lineIndex]} ^${id}`;
         await app.vault.modify(file, lines.join("\n"));
-    
+
         entry.id = id;
         return id;
+    }
+
+    function resolveTaskLineIndex(entry: TaskEntry, lines: string[]): number | null {
+        const total = lines.length;
+        const clamp = (line: number) => {
+            if (!Number.isFinite(line)) return null;
+            const idx = Math.floor(line);
+            if (idx < 0 || idx >= total) return null;
+            return idx;
+        };
+
+        const preferred = clamp(entry.line);
+        if (preferred != null && lineMatchesTask(lines[preferred], entry)) {
+            return preferred;
+        }
+
+        const needles = collectTaskNeedles(entry);
+        if (!needles.length) {
+            return preferred;
+        }
+
+        const normalizedNeedles = needles.map(normalizeTaskLine).filter(Boolean);
+        const loweredNeedles = needles.map(n => n.toLowerCase());
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line.trim()) {
+                continue;
+            }
+            const normalized = normalizeTaskLine(line);
+            if (normalized && normalizedNeedles.some(needle => normalized.includes(needle))) {
+                return i;
+            }
+            const lowered = line.toLowerCase();
+            if (loweredNeedles.some(needle => lowered.includes(needle))) {
+                return i;
+            }
+        }
+
+        return preferred;
+    }
+
+    function lineMatchesTask(line: string | undefined, entry: TaskEntry): boolean {
+        if (!line) return false;
+        const needles = collectTaskNeedles(entry);
+        if (needles.length === 0) {
+            return false;
+        }
+        const normalized = normalizeTaskLine(line);
+        const lowered = line.toLowerCase();
+        return needles.some(needle => {
+            const normalizedNeedle = normalizeTaskLine(needle);
+            if (normalizedNeedle && normalized.includes(normalizedNeedle)) {
+                return true;
+            }
+            return lowered.includes(needle.toLowerCase());
+        });
+    }
+
+    function collectTaskNeedles(entry: TaskEntry): string[] {
+        const set = new Set<string>();
+        if (entry.text) {
+            set.add(entry.text.trim());
+        }
+        if (Array.isArray(entry.lines)) {
+            for (const line of entry.lines) {
+                if (line && typeof line === "string") {
+                    set.add(line.trim());
+                }
+            }
+        }
+        return Array.from(set).filter(Boolean);
+    }
+
+    function normalizeTaskLine(value: string): string {
+        return value
+            .replace(/\^\w+\b/, "")
+            .replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "")
+            .trim()
+            .toLowerCase();
     }
 
     /* --------------------------------------------------------------- */
@@ -653,16 +745,21 @@ function escapeCssIdentifier(value: string): string {
             task.file = resolved;
           }
         }
-        const blockId = await ensureBlockId(this.app, task);
-        await renderTreeOfThought({
-          app: this.app,
-          plugin: this.plugin,
-          container: this.thoughtContainerEl,
-          task,
-          activeTag: this.activeTag,
-          blockId,
-          searchQuery: this.thoughtSearchQuery
-        });
+        try {
+          const blockId = await ensureBlockId(this.app, task);
+          await renderTreeOfThought({
+            app: this.app,
+            plugin: this.plugin,
+            container: this.thoughtContainerEl,
+            task,
+            activeTag: this.activeTag,
+            blockId,
+            searchQuery: this.thoughtSearchQuery
+          });
+        } catch (error) {
+          console.error("Failed to render thought view", error);
+          this.thoughtContainerEl.setText("Unable to render this thought.");
+        }
     }
   
     /* ---------- choose behavior ---------- */
