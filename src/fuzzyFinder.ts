@@ -776,6 +776,24 @@ function escapeCssIdentifier(value: string): string {
         }
         try {
           const blockId = await ensureBlockId(this.app, task);
+          let context: any = null;
+          const contextProvider = (this.plugin as any)?.getTaskContext;
+          if (typeof contextProvider === "function") {
+            try {
+              context = await contextProvider.call(this.plugin, task);
+            } catch (contextError) {
+              console.error("Failed to load task context for thought view", contextError);
+            }
+          }
+          console.log("[TreeOfThought] context", {
+            task: {
+              path: task.path ?? task.file?.path,
+              line: task.line,
+              text: task.text
+            },
+            blockId,
+            context
+          });
           await renderTreeOfThought({
             app: this.app,
             plugin: this.plugin,
@@ -783,7 +801,8 @@ function escapeCssIdentifier(value: string): string {
             task,
             activeTag: this.activeTag,
             blockId,
-            searchQuery: this.thoughtSearchQuery
+            searchQuery: this.thoughtSearchQuery,
+            context
           });
         } catch (error) {
           console.error("Failed to render thought view", error);

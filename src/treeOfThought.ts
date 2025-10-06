@@ -1,6 +1,21 @@
 import { App, MarkdownRenderer, Plugin, TFile } from "obsidian";
 import type { TaskEntry } from "./fuzzyFinder";
 
+interface TaskContextSnapshot {
+  parents?: any;
+  children?: any;
+  links?: Record<string, unknown>;
+  linksFromTask?: Record<string, unknown>;
+  linksToTask?: ThoughtBacklink[];
+  blockId?: string | null;
+}
+
+interface ThoughtBacklink {
+  filePath: string;
+  line: number;
+  link?: string;
+}
+
 export interface TreeOfThoughtOptions {
   app: App;
   plugin: Plugin;
@@ -9,6 +24,7 @@ export interface TreeOfThoughtOptions {
   activeTag: string;
   blockId: string;
   searchQuery?: string;
+  context?: TaskContextSnapshot | null;
 }
 
 interface OutlineSection {
@@ -18,7 +34,7 @@ interface OutlineSection {
 }
 
 export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promise<void> {
-  const { app, plugin, container, task, activeTag, blockId, searchQuery } = options;
+  const { app, plugin, container, task, activeTag, blockId, searchQuery, context } = options;
 
   container.empty();
 
@@ -44,8 +60,12 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
     });
   }
 
-  if (blockId) {
-    const backlinks = await buildBacklinkSections(app, file, blockId);
+  const resolvedBlockId = blockId || context?.blockId || "";
+  const referenceSections = await buildContextBacklinks(app, file, context?.linksToTask ?? [], resolvedBlockId);
+  sections.push(...referenceSections);
+
+  if (!referenceSections.length && resolvedBlockId) {
+    const backlinks = await buildBacklinkSections(app, file, resolvedBlockId);
     sections.push(...backlinks);
   }
 
@@ -66,6 +86,12 @@ export async function renderTreeOfThought(options: TreeOfThoughtOptions): Promis
     return;
   }
 
+  console.log("[TreeOfThought] rendering sections", sections.map(section => ({
+    title: section.title,
+    file: section.file?.path,
+    preview: section.markdown.slice(0, 120)
+  })));
+
   for (const section of filteredSections) {
     await renderSection(section, container, plugin);
   }
@@ -75,7 +101,8 @@ function resolveTaskFile(app: App, task: TaskEntry): TFile | null {
   if (task.file instanceof TFile) {
     return task.file;
   }
-  const path = task.path ?? task.file?.path;
+  const candidateFile = (task as any).file as TFile | undefined;
+  const path = task.path ?? candidateFile?.path;
   if (!path) {
     return null;
   }
@@ -93,6 +120,53 @@ async function buildOriginSection(app: App, file: TFile, task: TaskEntry): Promi
     return "";
   }
   return extractListSubtree(lines, startLine);
+}
+
+async function buildContextBacklinks(app: App, sourceFile: TFile, backlinks: ThoughtBacklink[], blockId: string): Promise<OutlineSection[]> {
+  if (!backlinks.length) {
+    return [];
+  }
+
+  const sections: OutlineSection[] = [];
+  const grouped = new Map<string, number[]>();
+
+  for (const backlink of backlinks) {
+    if (!backlink?.filePath) {
+      continue;
+    }
+    const list = grouped.get(backlink.filePath) ?? [];
+    if (!list.includes(backlink.line)) {
+      list.push(backlink.line);
+    }
+    grouped.set(backlink.filePath, list);
+  }
+
+  for (const [path, lines] of grouped.entries()) {
+    const file = app.vault.getAbstractFileByPath(path);
+    if (!(file instanceof TFile)) {
+      continue;
+    }
+
+    const fileLines = await readFileLines(app, file);
+    const snippets = lines
+      .sort((a, b) => a - b)
+      .map(line => extractReferenceSnippet(fileLines, line, blockId))
+      .filter(snippet => snippet.trim().length > 0);
+
+    if (!snippets.length) {
+      continue;
+    }
+
+    const markdown = joinSnippets(snippets);
+    const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
+    sections.push({
+      title: `Reference · [[${linktext}]]`,
+      file,
+      markdown
+    });
+  }
+
+  return sections;
 }
 
 async function buildBacklinkSections(app: App, sourceFile: TFile, blockId: string): Promise<OutlineSection[]> {
@@ -198,6 +272,24 @@ function collectManualBacklinkSnippets(lines: string[], pattern: RegExp): string
 
 function joinSnippets(snippets: string[]): string {
   return snippets.join("\n\n---\n\n");
+}
+
+function extractReferenceSnippet(lines: string[], startLine: number, blockId: string): string {
+  const snippet = extractListSubtree(lines, startLine);
+  if (!blockId) {
+    return snippet;
+  }
+
+  if (snippet && snippet.includes(`^${blockId}`)) {
+    return snippet;
+  }
+
+  const fallbackIndex = lines.findIndex(line => line.includes(`^${blockId}`));
+  if (fallbackIndex >= 0) {
+    return extractListSubtree(lines, fallbackIndex);
+  }
+
+  return snippet;
 }
 
 async function renderSection(section: OutlineSection, container: HTMLElement, plugin: Plugin): Promise<void> {

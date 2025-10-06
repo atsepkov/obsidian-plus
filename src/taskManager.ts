@@ -39,6 +39,12 @@ interface TaskEntry {
     text: string;
 }
 
+interface TaskBacklinkEntry {
+    filePath: string;
+    line: number;
+    link?: string;
+}
+
 export class TaskManager {
     private app: App;
     private dvApi: DataviewApi;
@@ -510,6 +516,98 @@ export class TaskManager {
         return attachments;
     }
 
+    public async getDvTaskLinksTo(listItem: Task): Promise<TaskBacklinkEntry[]> {
+        const backlinks: TaskBacklinkEntry[] = [];
+        if (!listItem || !listItem.path) {
+            console.warn('[getDvTaskLinksTo] Invalid listItem provided');
+            return backlinks;
+        }
+
+        const sourceFile = this.app.metadataCache.getFirstLinkpathDest(listItem.path, "");
+        if (!(sourceFile instanceof TFile)) {
+            console.warn('[getDvTaskLinksTo] Unable to resolve source file for task', listItem.path);
+            return backlinks;
+        }
+
+        const lines = await this.getFileLines(sourceFile.path);
+        const blockId = await this.extractTaskBlockId(listItem, lines);
+        if (!blockId) {
+            return backlinks;
+        }
+
+        const backlinksApi = (this.app.metadataCache as any).getBacklinksForFile?.(sourceFile);
+        if (!backlinksApi?.data) {
+            return backlinks;
+        }
+
+        const seen = new Set<string>();
+
+        for (const [backlinkPath, entries] of Object.entries(backlinksApi.data as Record<string, any[]>)) {
+            const backlinkFile = this.app.vault.getAbstractFileByPath(backlinkPath);
+            if (!(backlinkFile instanceof TFile)) {
+                continue;
+            }
+
+            const backlinkLines = await this.getFileLines(backlinkFile.path);
+
+            for (const entry of entries) {
+                if (!entry) continue;
+
+                const entryLink = typeof entry.link === 'string' ? entry.link : '';
+                const explicitMatch = entryLink.includes(`^${blockId}`);
+
+                let rawLine = entry?.position?.start?.line;
+                if (!Number.isFinite(rawLine)) {
+                    rawLine = entry?.position?.line;
+                }
+
+                let lineIndex = Number.isFinite(rawLine) ? Math.max(0, Math.floor(rawLine)) : -1;
+
+                if (!explicitMatch) {
+                    if (lineIndex < 0 || !backlinkLines[lineIndex]?.includes(`^${blockId}`)) {
+                        lineIndex = backlinkLines.findIndex(line => line.includes(`^${blockId}`));
+                    }
+                }
+
+                if (lineIndex < 0 || lineIndex >= backlinkLines.length) {
+                    continue;
+                }
+
+                if (!backlinkLines[lineIndex].includes(`^${blockId}`)) {
+                    continue;
+                }
+
+                const key = `${backlinkFile.path}:${lineIndex}`;
+                if (seen.has(key)) {
+                    continue;
+                }
+                seen.add(key);
+
+                backlinks.push({
+                    filePath: backlinkFile.path,
+                    line: lineIndex,
+                    link: entryLink || undefined,
+                });
+            }
+        }
+
+        return backlinks;
+    }
+
+    public async resolveTaskBlockId(listItem: Task): Promise<string | null> {
+        if (!listItem || !listItem.path) {
+            return null;
+        }
+
+        const file = this.app.metadataCache.getFirstLinkpathDest(listItem.path, "");
+        if (!(file instanceof TFile)) {
+            return null;
+        }
+
+        const lines = await this.getFileLines(file.path);
+        return this.extractTaskBlockId(listItem, lines);
+    }
+
     // --- Internal Helpers ---
 
     private escapeRegex(str: string): string {
@@ -545,6 +643,49 @@ export class TaskManager {
     private extractInternalLinks(text: string): string[] {
         return [...text.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)]
             .map(match => match[1].trim());
+    }
+
+    private extractInlineBlockId(text: string | undefined): string | null {
+        if (typeof text !== 'string') return null;
+        const match = text.match(/\^(\w[\w-]*)\b/);
+        return match ? match[1] : null;
+    }
+
+    private async extractTaskBlockId(listItem: Task, cachedLines?: string[]): Promise<string | null> {
+        const inline = this.extractInlineBlockId(listItem?.text);
+        if (inline) {
+            return inline;
+        }
+
+        const file = this.app.metadataCache.getFirstLinkpathDest(listItem.path, "");
+        if (!(file instanceof TFile)) {
+            return null;
+        }
+
+        const lines = cachedLines ?? await this.getFileLines(file.path);
+
+        const preferredLine = Number.isFinite(listItem?.line) ? Math.max(0, Math.floor(listItem.line)) : -1;
+        if (preferredLine >= 0 && preferredLine < lines.length) {
+            const match = this.extractInlineBlockId(lines[preferredLine]);
+            if (match) {
+                return match;
+            }
+        }
+
+        const fallbackIndex = lines.findIndex(line => {
+            if (!line) return false;
+            const normalized = line.replace(/\[[^\]]*\]/, '').trim();
+            return normalized.includes((listItem?.text ?? '').trim());
+        });
+
+        if (fallbackIndex >= 0 && fallbackIndex < lines.length) {
+            const match = this.extractInlineBlockId(lines[fallbackIndex]);
+            if (match) {
+                return match;
+            }
+        }
+
+        return null;
     }
 
     // --- External Content Fetching (Moved from utilities) ---
