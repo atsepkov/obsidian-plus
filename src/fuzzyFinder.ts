@@ -555,8 +555,11 @@ function escapeCssIdentifier(value: string): string {
           this.thoughtContainerEl = this.contentEl.createDiv({ cls: "task-tag-thought" });
         }
         this.thoughtContainerEl.classList.toggle("is-hidden", !show);
-        if (!show) {
-          this.thoughtContainerEl?.empty();
+        if (this.thoughtContainerEl) {
+          this.thoughtContainerEl.style.display = show ? "" : "none";
+          if (!show) {
+            this.thoughtContainerEl.empty();
+          }
         }
     }
 

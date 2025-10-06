@@ -317,6 +317,10 @@ async function renderSection(section: OutlineSection, container: HTMLElement, pl
   const body = wrapper.createDiv({ cls: "tree-of-thought__markdown" });
   try {
     await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, plugin);
+    const renderedText = body.textContent?.trim() ?? "";
+    if (!renderedText) {
+      body.createEl("pre", { text: section.markdown });
+    }
   } catch (error) {
     console.error("Unable to render markdown for tree-of-thought section", error);
     body.createEl("pre", { text: section.markdown });
