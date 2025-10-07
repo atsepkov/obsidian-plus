@@ -494,7 +494,19 @@ export class TaskManager {
 
             const lineIndex = this.getTaskLineIndex(item);
             if (lineIndex >= 0 && lineIndex < fileLines.length) {
-                textSources.add(fileLines[lineIndex]);
+                const lineText = fileLines[lineIndex];
+                if (lineText?.trim()) {
+                    textSources.add(lineText);
+                }
+
+                const subtree = this.extractListSubtreeFromLines(fileLines, lineIndex);
+                if (subtree?.trim()) {
+                    subtree.split(/\r?\n/).forEach(segment => {
+                        if (segment?.trim()) {
+                            textSources.add(segment);
+                        }
+                    });
+                }
             }
 
             for (const sourceText of textSources) {

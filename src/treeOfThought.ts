@@ -24,10 +24,16 @@ interface TaskContextSnapshot {
 }
 
 export interface ThoughtSection {
-  label: "root" | "branch" | "reference";
+  label: "root" | "branch";
   markdown: string;
   file: TFile;
   linktext: string;
+}
+
+export interface ThoughtReference {
+  file: TFile;
+  linktext: string;
+  preview: string;
 }
 
 export interface TreeOfThoughtOptions {
@@ -41,6 +47,7 @@ export interface TreeOfThoughtOptions {
 export interface TreeOfThoughtResult {
   sourceFile: TFile | null;
   sections: ThoughtSection[];
+  references: ThoughtReference[];
   message?: string;
   error?: string;
 }
@@ -53,12 +60,15 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
     return {
       sourceFile: null,
       sections: [],
+      references: [],
       error: "Unable to resolve the source note for this task."
     };
   }
 
   const resolvedBlockId = blockId || context?.blockId || "";
   const sections: ThoughtSection[] = [];
+
+  const references: ThoughtReference[] = [];
 
   const originMarkdown = await buildOriginMarkdown(app, sourceFile, task, resolvedBlockId, context);
   if (originMarkdown.trim()) {
@@ -70,13 +80,20 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
     });
   }
 
-  const backlinkSections = await buildBacklinkSections(app, sourceFile, resolvedBlockId, context?.linksToTask ?? []);
-  sections.push(...backlinkSections);
+  const backlinkResult = await buildBacklinkSections(
+    app,
+    sourceFile,
+    resolvedBlockId,
+    context?.linksToTask ?? []
+  );
+  sections.push(...backlinkResult.branches);
+  references.push(...backlinkResult.references);
 
-  if (!sections.length) {
+  if (!sections.length && !references.length) {
     return {
       sourceFile,
       sections: [],
+      references: [],
       message: "No outline available for this task yet."
     };
   }
@@ -86,17 +103,26 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
     ? sections.filter(section => section.markdown.toLowerCase().includes(filter))
     : sections;
 
-  if (filter && filteredSections.length === 0) {
+  const filteredReferences = filter
+    ? references.filter(reference =>
+        reference.preview.toLowerCase().includes(filter) ||
+        reference.linktext.toLowerCase().includes(filter)
+      )
+    : references;
+
+  if (filter && filteredSections.length === 0 && filteredReferences.length === 0) {
     return {
       sourceFile,
       sections: [],
+      references: [],
       message: `No matches for “${searchQuery?.trim()}” in this thought.`
     };
   }
 
   return {
     sourceFile,
-    sections: filteredSections
+    sections: filteredSections,
+    references: filteredReferences
   };
 }
 
@@ -112,14 +138,14 @@ async function buildOriginMarkdown(
   let origin = "";
 
   if (startLine != null) {
-    const markdown = extractListSubtree(lines, startLine);
-    origin = prepareOutline(markdown);
+    const markdown = extractListSubtree(lines, startLine, { omitRoot: true });
+    origin = prepareOutline(markdown, { stripFirstMarker: false });
   } else if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
     const fallback = buildContextFallback(task, context);
-    origin = prepareOutline(fallback);
+    origin = prepareOutline(fallback, { stripFirstMarker: false });
   } else if (Array.isArray(task.lines) && task.lines.length) {
     const snippet = task.lines.join("\n");
-    origin = prepareOutline(snippet);
+    origin = prepareOutline(snippet, { stripFirstMarker: true });
   }
 
   return origin.trimEnd();
@@ -130,7 +156,7 @@ async function buildBacklinkSections(
   sourceFile: TFile,
   blockId: string,
   backlinks: ThoughtBacklink[]
-): Promise<ThoughtSection[]> {
+): Promise<{ branches: ThoughtSection[]; references: ThoughtReference[] }> {
   const grouped = new Map<string, ThoughtBacklink[]>();
 
   for (const backlink of backlinks) {
@@ -145,7 +171,7 @@ async function buildBacklinkSections(
   }
 
   const branchSections: ThoughtSection[] = [];
-  const referenceSections: ThoughtSection[] = [];
+  const referenceSections: ThoughtReference[] = [];
 
   const groupedEntries = Array.from(grouped.entries()).sort((a, b) =>
     compareBacklinkChronology(app, a[0], b[0])
@@ -183,20 +209,28 @@ async function buildBacklinkSections(
 
     const processed = Array.from(snippets)
       .map(snippet => {
-        const markdown = prepareOutline(snippet);
+        const snippetLines = snippet.split(/\r?\n/);
+        const children = extractListSubtree(snippetLines, 0, { omitRoot: true });
+        const markdown = prepareOutline(children, { stripFirstMarker: false });
+        const rootText = extractRootContent(snippet);
         return {
           markdown,
-          hasChildren: snippetHasChildren(snippet)
+          hasChildren: snippetHasChildren(snippet),
+          rootText
         };
       })
-      .filter(entry => entry.markdown.trim());
+      .filter(entry => entry.markdown.trim() || entry.rootText.trim());
 
     if (!processed.length) {
       continue;
     }
 
-    const branches = processed.filter(entry => entry.hasChildren).map(entry => entry.markdown);
-    const references = processed.filter(entry => !entry.hasChildren).map(entry => entry.markdown);
+    const branches = processed
+      .filter(entry => entry.hasChildren && entry.markdown.trim())
+      .map(entry => entry.markdown);
+    const references = processed
+      .filter(entry => !entry.hasChildren && entry.rootText.trim())
+      .map(entry => entry.rootText.trim());
 
     if (branches.length) {
       branchSections.push({
@@ -208,16 +242,18 @@ async function buildBacklinkSections(
     }
 
     if (references.length) {
-      referenceSections.push({
-        label: "reference",
-        markdown: references.join("\n\n"),
-        file,
-        linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
-      });
+      const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
+      for (const preview of references) {
+        referenceSections.push({
+          file,
+          linktext,
+          preview
+        });
+      }
     }
   }
 
-  return [...branchSections, ...referenceSections];
+  return { branches: branchSections, references: referenceSections };
 }
 
 async function collectMetadataBacklinks(
@@ -401,8 +437,6 @@ function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | n
   });
 
   const rootIndent = parents.length * indentStep;
-  const rootBullet = deriveTaskBullet(task);
-  lines.push(`${" ".repeat(rootIndent)}${rootBullet} ${task.text ?? ""}`.trimEnd());
 
   children.forEach(child => {
     if (!child) return;
@@ -418,16 +452,13 @@ function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | n
   return normalizeSnippet(lines.join("\n"));
 }
 
-function deriveTaskBullet(task: TaskEntry): string {
-  const firstLine = task.lines?.[0];
-  const match = firstLine?.match(/^(\s*[-*+]\s*(?:\[[^\]]*\]\s*)?)/);
-  if (match) {
-    return match[1].trim();
+function extractRootContent(snippet: string): string {
+  if (!snippet?.trim()) {
+    return "";
   }
-  if (typeof task.status === "string" && task.status.trim()) {
-    return `- [${task.status}]`;
-  }
-  return "-";
+  const normalized = normalizeSnippet(snippet);
+  const [firstLine] = normalized.split(/\r?\n/, 1);
+  return firstLine ? stripListMarker(firstLine).trim() : "";
 }
 
 function normalizeTaskLine(value: string): string {
@@ -455,7 +486,7 @@ function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
 }
 
-function prepareOutline(snippet: string): string {
+function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean } = {}): string {
   const normalized = normalizeSnippet(snippet);
   if (!normalized.trim()) {
     return "";
@@ -466,7 +497,9 @@ function prepareOutline(snippet: string): string {
     return "";
   }
 
-  lines[0] = stripListMarker(lines[0]);
+  if (options.stripFirstMarker) {
+    lines[0] = stripListMarker(lines[0]);
+  }
 
   while (lines.length && !lines[0].trim()) {
     lines.shift();

@@ -808,7 +808,9 @@ function escapeCssIdentifier(value: string): string {
             return;
           }
 
-          if (!thought.sections.length) {
+          const references = Array.isArray(thought.references) ? thought.references : [];
+
+          if (!thought.sections.length && !references.length) {
             container.createDiv({ cls: "tree-of-thought__empty", text: thought.message ?? "No outline available for this task yet." });
             return;
           }
@@ -822,11 +824,7 @@ function escapeCssIdentifier(value: string): string {
 
             const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
             const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
-            const labelText = section.label === "root"
-              ? "Root"
-              : section.label === "branch"
-                ? "Branch"
-                : "Reference";
+            const labelText = section.label === "root" ? "Root" : "Branch";
             meta.createSpan({
               text: labelText,
               cls: "tree-of-thought__label"
@@ -874,6 +872,55 @@ function escapeCssIdentifier(value: string): string {
                 (context?.linksFromTask as Record<string, unknown>) ?? null,
                 section.file.path
               );
+            }
+          }
+
+          if (references.length) {
+            if (!firstSection) {
+              container.createEl("hr", { cls: "tree-of-thought__divider" });
+            }
+
+            const refsEl = container.createDiv({ cls: "tree-of-thought__section tree-of-thought__section--references" });
+            const meta = refsEl.createDiv({ cls: "tree-of-thought__meta" });
+            meta.createSpan({ text: "References", cls: "tree-of-thought__label" });
+
+            const list = refsEl.createEl("ul", { cls: "tree-of-thought__reference-list" });
+
+            for (const ref of references) {
+              const item = list.createEl("li", { cls: "tree-of-thought__reference-item" });
+
+              const link = item.createEl("a", {
+                text: `[[${ref.linktext}]]`,
+                cls: "internal-link tree-of-thought__link"
+              });
+              link.setAttr("href", ref.file.path);
+              link.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
+                this.close();
+              });
+
+              if (ref.preview?.trim()) {
+                const previewEl = item.createDiv({ cls: "tree-of-thought__reference-preview" });
+                try {
+                  await MarkdownRenderer.renderMarkdown(ref.preview, previewEl, ref.file.path, this.plugin);
+                  await this.waitForNextFrame();
+                  previewEl.querySelectorAll("a.internal-link").forEach(anchor => {
+                    anchor.addEventListener("click", evt => {
+                      evt.preventDefault();
+                      evt.stopPropagation();
+                      const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
+                      if (!target) return;
+                      this.app.workspace.openLinkText(target, ref.file.path, false);
+                      this.close();
+                    });
+                  });
+                } catch (error) {
+                  console.error("Failed to render reference preview", error);
+                  previewEl.createSpan({ text: ref.preview });
+                }
+              }
             }
           }
         } catch (error) {
