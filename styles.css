@@ -211,13 +211,6 @@ input[data-task="-"] {
     color: var(--text-muted);
 }
 
-.tree-of-thought__links {
-    display: flex;
-    flex-direction: column;
-    gap: 0.6rem;
-    margin-top: 0.25rem;
-}
-
 .tree-of-thought__reference-list {
     list-style: none;
     margin: 0;
@@ -250,53 +243,6 @@ input[data-task="-"] {
 .tree-of-thought__reference-preview .internal-embed,
 .tree-of-thought__reference-preview img {
     max-width: 100%;
-}
-
-.tree-of-thought__link {
-    display: flex;
-    flex-direction: column;
-    gap: 0.35rem;
-    padding: 0.6rem;
-    border-radius: var(--radius-s);
-    background: var(--background-secondary);
-    font-size: 0.85em;
-}
-
-.tree-of-thought__link-header {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-}
-
-.tree-of-thought__link-header .internal-link {
-    text-decoration: none;
-}
-
-.tree-of-thought__link-body {
-    line-height: 1.35;
-    color: var(--text-muted);
-}
-
-.tree-of-thought__link-body .internal-embed,
-.tree-of-thought__link-body img {
-    max-width: 100%;
-    border-radius: var(--radius-s);
-}
-
-.tree-of-thought__link-image {
-    max-width: 100%;
-    border-radius: var(--radius-s);
-    display: block;
-}
-
-.tree-of-thought__link-error {
-    color: var(--text-error);
-    font-style: italic;
-}
-
-.tree-of-thought__link-empty {
-    color: var(--text-muted);
-    font-style: italic;
 }
 
 .tree-of-thought__empty {

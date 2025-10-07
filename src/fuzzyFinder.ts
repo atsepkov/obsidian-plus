@@ -672,7 +672,7 @@ function escapeCssIdentifier(value: string): string {
         const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
         file = this.app.vault.getAbstractFileByPath(tag) as TFile;
         const text = `${tag} ${desc ? " " + desc : ""}`;
-        await MarkdownRenderer.renderMarkdown(text, el, file?.path, this.plugin);
+        await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
     }
 
     private async renderTaskSuggestion(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }, el: HTMLElement) {
@@ -696,7 +696,8 @@ function escapeCssIdentifier(value: string): string {
           task.file = file;
         }
 
-        await MarkdownRenderer.renderMarkdown(
+        await MarkdownRenderer.render(
+            this.app,
             text,
             el,
             file?.path ?? this.app.workspace.getActiveFile()?.path ?? "",
@@ -705,7 +706,7 @@ function escapeCssIdentifier(value: string): string {
 
         if (hit && hit !== task.text) {
             const div = el.createDiv({ cls: "child-line" });   // style below
-            await MarkdownRenderer.renderMarkdown('- ' + hit, div, file.path, this.plugin);
+            await MarkdownRenderer.render(this.app, '- ' + hit, div, file?.path ?? filePath ?? "", this.plugin);
         }
 
         el.querySelectorAll("a.internal-link").forEach(a => {
@@ -844,7 +845,7 @@ function escapeCssIdentifier(value: string): string {
 
             const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
             try {
-              await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, this.plugin);
+              await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
               await this.waitForNextFrame();
             } catch (error) {
               console.error("Failed to render tree-of-thought markdown", error);
@@ -866,13 +867,6 @@ function escapeCssIdentifier(value: string): string {
               });
             });
 
-            if (section.role === "root") {
-              await this.renderThoughtLinkPreviews(
-                sectionEl,
-                (context?.linksFromTask as Record<string, unknown>) ?? null,
-                section.file.path
-              );
-            }
           }
 
           if (references.length) {
@@ -906,7 +900,7 @@ function escapeCssIdentifier(value: string): string {
               if (ref.preview?.trim()) {
                 const previewEl = item.createDiv({ cls: "tree-of-thought__reference-preview" });
                 try {
-                  await MarkdownRenderer.renderMarkdown(ref.preview, previewEl, ref.file.path, this.plugin);
+                  await MarkdownRenderer.render(this.app, ref.preview, previewEl, ref.file.path, this.plugin);
                   await this.waitForNextFrame();
                 } catch (error) {
                   console.error("Failed to render reference preview", error);
@@ -933,347 +927,6 @@ function escapeCssIdentifier(value: string): string {
           console.error("Failed to render thought view", error);
           container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to render this thought." });
         }
-    }
-
-    private parseThoughtWikiLink(raw: string): { raw: string; target: string; display: string; isEmbed: boolean } | null {
-        if (typeof raw !== "string") {
-            return null;
-        }
-        const trimmed = raw.trim();
-        if (!trimmed.startsWith("[[") && !trimmed.startsWith("![[")) {
-            return null;
-        }
-
-        const isEmbed = trimmed.startsWith("![[");
-        const inner = trimmed.replace(/^!\[\[/, "[[").slice(2, -2);
-        const pipeIndex = inner.indexOf("|");
-        const target = pipeIndex >= 0 ? inner.slice(0, pipeIndex).trim() : inner.trim();
-        const alias = pipeIndex >= 0 ? inner.slice(pipeIndex + 1).trim() : "";
-        const display = alias || target || trimmed;
-
-        return {
-            raw: trimmed.startsWith("[[") ? trimmed : trimmed.slice(1),
-            target,
-            display,
-            isEmbed,
-        };
-    }
-
-    private async renderThoughtLinkPreviews(
-        sectionEl: HTMLElement,
-        linkMap: Record<string, unknown> | null,
-        sourcePath: string
-    ): Promise<void> {
-        if (!linkMap) {
-            console.debug("[TreeOfThought] no link map for preview");
-            return;
-        }
-
-        const entries = Object.entries(linkMap).filter(([raw]) => {
-            const trimmed = typeof raw === "string" ? raw.trim() : "";
-            return trimmed.startsWith("[[") || trimmed.startsWith("![[");
-        });
-
-        if (!entries.length) {
-            console.debug("[TreeOfThought] no wiki links discovered", { linkMap });
-            return;
-        }
-
-        const list = sectionEl.createDiv({ cls: "tree-of-thought__links" });
-
-        for (const [raw, payload] of entries) {
-            const parsed = this.parseThoughtWikiLink(raw);
-            if (!parsed) {
-                console.debug("[TreeOfThought] unable to parse wiki link", { raw });
-                continue;
-            }
-
-            const item = list.createDiv({ cls: "tree-of-thought__link" });
-            const title = item.createDiv({ cls: "tree-of-thought__link-header" });
-            const linkEl = title.createEl("a", {
-                cls: "internal-link",
-                text: parsed.display
-            });
-
-            if (parsed.target) {
-                linkEl.setAttr("href", parsed.target);
-                linkEl.setAttr("data-href", parsed.target);
-                linkEl.addEventListener("click", evt => {
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    this.app.workspace.openLinkText(parsed.target, sourcePath, false);
-                    this.close();
-                });
-            }
-
-            const body = item.createDiv({ cls: "tree-of-thought__link-body" });
-            const payloadValue = payload as string | null | { error?: string } | undefined;
-
-            if (payloadValue && typeof payloadValue === "object" && "error" in payloadValue && payloadValue.error) {
-                body.createSpan({ text: payloadValue.error, cls: "tree-of-thought__link-error" });
-                continue;
-            }
-
-            let previewRendered = false;
-
-            if (parsed.isEmbed) {
-                const embedTarget = await this.resolveThoughtEmbedTarget(parsed, sourcePath);
-                if (embedTarget?.type === "image") {
-                    const img = body.createEl("img", {
-                        cls: "tree-of-thought__link-image",
-                        attr: { alt: parsed.display }
-                    });
-                    img.src = embedTarget.src;
-                    previewRendered = true;
-                } else if (typeof payloadValue === "string" && payloadValue.trim()) {
-                    await this.renderThoughtLinkMarkdown(body, payloadValue, sourcePath, raw);
-                    previewRendered = true;
-                }
-            }
-
-            if (!previewRendered) {
-                const markdown = await this.resolveThoughtLinkMarkdown(parsed, payloadValue, sourcePath, raw);
-                if (markdown) {
-                    await this.renderThoughtLinkMarkdown(body, markdown, sourcePath, raw);
-                    previewRendered = true;
-                }
-            }
-
-            if (!previewRendered) {
-                body.createSpan({ text: "No preview available.", cls: "tree-of-thought__link-empty" });
-            }
-        }
-
-        if (!list.childElementCount) {
-            list.remove();
-        }
-    }
-
-    private async resolveThoughtEmbedTarget(
-        parsed: { target: string; display: string },
-        sourcePath: string
-    ): Promise<{ type: "image"; src: string } | null> {
-        const { path } = this.splitWikiLinkTarget(parsed.target ?? "");
-        const file = this.resolveWikiLinkFile(path, sourcePath);
-        if (!(file instanceof TFile)) {
-            return null;
-        }
-
-        const extension = file.extension?.toLowerCase() ?? "";
-        const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(extension);
-        if (!isImage) {
-            return null;
-        }
-
-        const resourcePath = this.app.vault.getResourcePath(file);
-        return { type: "image", src: resourcePath };
-    }
-
-    private resolveWikiLinkFile(path: string, sourcePath: string): TFile | null {
-        if (path) {
-            const direct = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
-            if (direct instanceof TFile) {
-                return direct;
-            }
-            if (!path.endsWith(".md")) {
-                const withExtension = this.app.metadataCache.getFirstLinkpathDest(`${path}.md`, sourcePath);
-                if (withExtension instanceof TFile) {
-                    return withExtension;
-                }
-            }
-        }
-
-        const current = this.app.vault.getAbstractFileByPath(sourcePath);
-        return current instanceof TFile ? current : null;
-    }
-
-    private async resolveThoughtLinkMarkdown(
-        parsed: { target: string; isEmbed: boolean },
-        payload: string | { error?: string } | null | undefined,
-        sourcePath: string,
-        raw: string
-    ): Promise<string | null> {
-        if (typeof payload === "string" && payload.trim()) {
-            return payload.trim();
-        }
-
-        if (payload && typeof payload === "object") {
-            return null;
-        }
-
-        if (parsed.isEmbed) {
-            return raw.trim().startsWith("![[") ? raw.trim() : `!${raw.trim()}`;
-        }
-
-        return await this.resolveThoughtLinkPreview(parsed, sourcePath);
-    }
-
-    private async renderThoughtLinkMarkdown(
-        container: HTMLElement,
-        markdown: string,
-        sourcePath: string,
-        raw: string
-    ): Promise<void> {
-        try {
-            await MarkdownRenderer.renderMarkdown(markdown, container, sourcePath, this.plugin);
-            await this.waitForNextFrame();
-        } catch (error) {
-            console.error("Failed to render link preview", { raw, error });
-            container.createSpan({ text: markdown });
-        }
-
-        container.querySelectorAll("a.internal-link").forEach(anchor => {
-            anchor.addEventListener("click", evt => {
-                evt.preventDefault();
-                evt.stopPropagation();
-                const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
-                if (!target) return;
-                this.app.workspace.openLinkText(target, sourcePath, false);
-                this.close();
-            });
-        });
-    }
-
-    private async resolveThoughtLinkPreview(
-        parsed: { target: string; isEmbed: boolean },
-        sourcePath: string
-    ): Promise<string | null> {
-        const { path, anchor } = this.splitWikiLinkTarget(parsed.target ?? "");
-        const file = this.resolveWikiLinkFile(path, sourcePath);
-
-        if (!(file instanceof TFile)) {
-            return null;
-        }
-
-        const contents = await this.app.vault.read(file);
-        const lines = contents.split(/\r?\n/);
-
-        if (anchor) {
-            if (anchor.startsWith("^")) {
-                const blockId = anchor.replace(/^\^/, "");
-                const index = lines.findIndex(line => line.includes(`^${blockId}`));
-                if (index >= 0) {
-                    return this.extractListPreview(lines, index);
-                }
-            }
-
-            const headingInfo = this.findHeadingInFile(file, lines, anchor);
-            if (headingInfo) {
-                return this.extractHeadingSection(lines, headingInfo.index, headingInfo.level);
-            }
-        }
-
-        return lines.slice(0, Math.min(lines.length, 40)).join("\n");
-    }
-
-    private splitWikiLinkTarget(target: string): { path: string; anchor: string | null } {
-        const trimmed = (target ?? "").trim();
-        if (!trimmed) {
-            return { path: "", anchor: null };
-        }
-
-        const hashIndex = trimmed.indexOf("#");
-        if (hashIndex < 0) {
-            return { path: trimmed, anchor: null };
-        }
-
-        const path = trimmed.slice(0, hashIndex).trim();
-        const anchor = trimmed.slice(hashIndex + 1).trim();
-        return { path, anchor: anchor || null };
-    }
-
-    private findHeadingInFile(
-        file: TFile,
-        lines: string[],
-        anchor: string
-    ): { index: number; level: number } | null {
-        const normalizedAnchor = this.slugifyHeading(anchor.replace(/^\^/, ""));
-        const cache = this.app.metadataCache.getFileCache(file);
-
-        if (cache?.headings?.length) {
-            for (const heading of cache.headings) {
-                const headingText = heading.heading?.trim();
-                if (!headingText) continue;
-                const slug = this.slugifyHeading(headingText);
-                if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
-                    const index = heading.position?.start?.line ?? heading.position?.line ?? -1;
-                    if (index >= 0) {
-                        return { index, level: heading.level ?? 1 };
-                    }
-                }
-            }
-        }
-
-        for (let i = 0; i < lines.length; i++) {
-            const match = lines[i].match(/^(#+)\s+(.*)$/);
-            if (!match) continue;
-            const headingText = match[2].trim();
-            const slug = this.slugifyHeading(headingText);
-            if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
-                return { index: i, level: match[1].length };
-            }
-        }
-
-        return null;
-    }
-
-    private extractHeadingSection(lines: string[], startIndex: number, level: number): string {
-        const snippet: string[] = [];
-        for (let i = startIndex; i < lines.length; i++) {
-            if (i > startIndex) {
-                const headingMatch = lines[i].match(/^(#+)\s+/);
-                if (headingMatch && headingMatch[1].length <= level) {
-                    break;
-                }
-            }
-            snippet.push(lines[i]);
-        }
-        return snippet.join("\n").trimEnd();
-    }
-
-    private extractListPreview(lines: string[], startIndex: number): string {
-        if (startIndex < 0 || startIndex >= lines.length) {
-            return "";
-        }
-
-        const snippet: string[] = [];
-        const rootLine = lines[startIndex];
-        snippet.push(rootLine);
-        const rootIndent = this.countLeadingSpace(rootLine);
-
-        for (let i = startIndex + 1; i < lines.length; i++) {
-            const line = lines[i];
-            if (!line.trim()) {
-                snippet.push(line);
-                continue;
-            }
-
-            const indent = this.countLeadingSpace(line);
-            if (indent < rootIndent) {
-                break;
-            }
-
-            if (indent <= rootIndent && (/^\s*[-*+]/.test(line) || /^#{1,6}\s/.test(line.trim()))) {
-                break;
-            }
-
-            snippet.push(line);
-        }
-
-        return snippet.join("\n").trimEnd();
-    }
-
-    private slugifyHeading(value: string): string {
-        return value
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9\s-]/g, "")
-            .replace(/\s+/g, "-");
-    }
-
-    private countLeadingSpace(value: string): number {
-        const match = value.match(/^\s*/);
-        return match ? match[0].length : 0;
     }
 
     /* ---------- choose behavior ---------- */
