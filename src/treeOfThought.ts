@@ -24,7 +24,7 @@ interface TaskContextSnapshot {
 }
 
 export interface ThoughtSection {
-  label: "origin" | "reference";
+  label: "root" | "branch" | "reference";
   markdown: string;
   file: TFile;
   linktext: string;
@@ -63,7 +63,7 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   const originMarkdown = await buildOriginMarkdown(app, sourceFile, task, resolvedBlockId, context);
   if (originMarkdown.trim()) {
     sections.push({
-      label: "origin",
+      label: "root",
       markdown: originMarkdown,
       file: sourceFile,
       linktext: app.metadataCache.fileToLinktext(sourceFile, "")
@@ -112,21 +112,14 @@ async function buildOriginMarkdown(
   let origin = "";
 
   if (startLine != null) {
-    const markdown = extractListSubtree(lines, startLine, { omitRoot: true });
-    origin = markdown.trim() ? markdown : extractListSubtree(lines, startLine);
+    const markdown = extractListSubtree(lines, startLine);
+    origin = prepareOutline(markdown);
   } else if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
     const fallback = buildContextFallback(task, context);
-    const cleaned = cleanSnippet(fallback, { omitRoot: true });
-    origin = cleaned.trim() ? cleaned : fallback;
+    origin = prepareOutline(fallback);
   } else if (Array.isArray(task.lines) && task.lines.length) {
     const snippet = task.lines.join("\n");
-    const cleaned = cleanSnippet(snippet, { omitRoot: true });
-    origin = cleaned.trim() ? cleaned : normalizeSnippet(snippet);
-  }
-
-  const linkPreview = buildLinkPreviewMarkdown(app, file, context?.linksFromTask ?? null);
-  if (linkPreview.trim()) {
-    origin = origin.trim() ? `${origin.trimEnd()}\n\n${linkPreview}` : linkPreview;
+    origin = prepareOutline(snippet);
   }
 
   return origin.trimEnd();
@@ -151,7 +144,8 @@ async function buildBacklinkSections(
     await collectMetadataBacklinks(app, sourceFile, blockId, grouped);
   }
 
-  const sections: ThoughtSection[] = [];
+  const branchSections: ThoughtSection[] = [];
+  const referenceSections: ThoughtSection[] = [];
 
   const groupedEntries = Array.from(grouped.entries()).sort((a, b) =>
     compareBacklinkChronology(app, a[0], b[0])
@@ -187,26 +181,43 @@ async function buildBacklinkSections(
       continue;
     }
 
-    const normalizedSnippets = Array.from(snippets)
+    const processed = Array.from(snippets)
       .map(snippet => {
-        const cleaned = cleanSnippet(snippet, { omitRoot: true });
-        return cleaned.trim() ? cleaned : cleanSnippet(snippet);
+        const markdown = prepareOutline(snippet);
+        return {
+          markdown,
+          hasChildren: snippetHasChildren(snippet)
+        };
       })
-      .filter(snippet => snippet.trim());
+      .filter(entry => entry.markdown.trim());
 
-    if (!normalizedSnippets.length) {
+    if (!processed.length) {
       continue;
     }
 
-    sections.push({
-      label: "reference",
-      markdown: normalizedSnippets.join("\n\n"),
-      file,
-      linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
-    });
+    const branches = processed.filter(entry => entry.hasChildren).map(entry => entry.markdown);
+    const references = processed.filter(entry => !entry.hasChildren).map(entry => entry.markdown);
+
+    if (branches.length) {
+      branchSections.push({
+        label: "branch",
+        markdown: branches.join("\n\n"),
+        file,
+        linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
+      });
+    }
+
+    if (references.length) {
+      referenceSections.push({
+        label: "reference",
+        markdown: references.join("\n\n"),
+        file,
+        linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
+      });
+    }
   }
 
-  return sections;
+  return [...branchSections, ...referenceSections];
 }
 
 async function collectMetadataBacklinks(
@@ -319,6 +330,11 @@ function extractListSubtree(
     }
 
     if (indent <= rootIndent && (isListItem(rawLine) || isHeading(trimmed))) {
+      break;
+    }
+
+    const paragraphLike = !isListItem(rawLine) && !isHeading(trimmed);
+    if (indent <= rootIndent && paragraphLike) {
       break;
     }
 
@@ -439,179 +455,80 @@ function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
 }
 
-function cleanSnippet(value: string, options?: { omitRoot?: boolean }): string {
-  const normalized = normalizeSnippet(value);
-  if (!options?.omitRoot) {
+function prepareOutline(snippet: string): string {
+  const normalized = normalizeSnippet(snippet);
+  if (!normalized.trim()) {
+    return "";
+  }
+
+  const lines = normalized.split(/\r?\n/);
+  if (!lines.length) {
+    return "";
+  }
+
+  lines[0] = stripListMarker(lines[0]);
+
+  while (lines.length && !lines[0].trim()) {
+    lines.shift();
+  }
+  while (lines.length && !lines[lines.length - 1].trim()) {
+    lines.pop();
+  }
+
+  const dedented = dedentLines(lines);
+  return dedented.join("\n").trimEnd();
+}
+
+function stripListMarker(line: string): string {
+  const normalized = normalizeSnippet(line);
+  const match = normalized.match(/^(\s*)[-*+]\s*(?:\[[^\]]*\]\s*)?(.*)$/);
+  if (!match) {
     return normalized.trimEnd();
   }
+  const content = match[2] ?? "";
+  return content.trimEnd();
+}
 
+function dedentLines(lines: string[]): string[] {
+  let minIndent = Number.POSITIVE_INFINITY;
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    minIndent = Math.min(minIndent, leadingSpace(line));
+  }
+
+  if (!Number.isFinite(minIndent) || minIndent <= 0) {
+    return lines.map(line => line.replace(/\s+$/, ""));
+  }
+
+  return lines.map(line => {
+    if (!line.trim()) {
+      return "";
+    }
+    const indent = leadingSpace(line);
+    const slice = Math.min(indent, minIndent);
+    return line.slice(slice).replace(/\s+$/, "");
+  });
+}
+
+function snippetHasChildren(snippet: string): boolean {
+  const normalized = normalizeSnippet(snippet);
   const lines = normalized.split(/\r?\n/);
-  const firstContent = lines.findIndex(line => line.trim());
-  if (firstContent < 0) {
-    return "";
-  }
-
-  const cleaned = extractListSubtree(lines, firstContent, { omitRoot: true });
-  return cleaned.trim() ? cleaned : normalized.trimEnd();
-}
-
-function buildLinkPreviewMarkdown(
-  app: App,
-  sourceFile: TFile,
-  linksFromTask: Record<string, ThoughtLinkPreview> | null
-): string {
-  if (!linksFromTask) {
-    return "";
-  }
-
-  const entries = Object.entries(linksFromTask).filter(([key]) => Boolean(key?.trim()));
-  if (!entries.length) {
-    return "";
-  }
-
-  const segments: string[] = [];
-
-  for (const [target, payload] of entries) {
-    const trimmedTarget = target.trim();
-    if (!trimmedTarget) {
-      continue;
-    }
-
-    if (isImageTarget(trimmedTarget)) {
-      const embed = formatImageEmbed(trimmedTarget);
-      if (embed) {
-        segments.push(embed);
-      }
-      continue;
-    }
-
-    const preview = normalizePreviewContent(payload);
-    const display = formatLinkDisplay(app, sourceFile, trimmedTarget);
-
-    if (!preview) {
-      segments.push(display);
-      continue;
-    }
-
-    const quoted = preview
-      .split(/\r?\n/)
-      .map(line => `> ${line.trimEnd()}`)
-      .join("\n");
-
-    segments.push(`${display}\n\n${quoted}`.trim());
-  }
-
-  if (!segments.length) {
-    return "";
-  }
-
-  return [`**Link previews**`, ...segments].join("\n\n");
-}
-
-function formatLinkDisplay(app: App, sourceFile: TFile, target: string): string {
-  const trimmed = target.trim();
-  if (!trimmed) {
-    return "";
-  }
-
-  if (isExternalLink(trimmed)) {
-    return `[${trimmed}](${trimmed})`;
-  }
-
-  if (trimmed.startsWith("[[") && trimmed.endsWith("]]")) {
-    return trimmed.startsWith("![[") ? trimmed.slice(1) : trimmed;
-  }
-
-  let main = trimmed;
-  let alias: string | undefined;
-
-  const aliasIndex = main.indexOf("|");
-  if (aliasIndex >= 0) {
-    alias = main.slice(aliasIndex + 1);
-    main = main.slice(0, aliasIndex);
-  }
-
-  const [pathPart, anchorPart] = main.split("#", 2);
-  const resolvedTarget = pathPart || sourceFile.path;
-  const resolvedFile = app.metadataCache.getFirstLinkpathDest(resolvedTarget, sourceFile.path);
-  const linkBase = resolvedFile instanceof TFile
-    ? app.metadataCache.fileToLinktext(resolvedFile, sourceFile.path)
-    : resolvedTarget;
-  const anchor = anchorPart ? `#${anchorPart}` : "";
-  const aliasSuffix = alias ? `|${alias}` : "";
-  return `[[${linkBase}${anchor}${aliasSuffix}]]`;
-}
-
-function normalizePreviewContent(value: ThoughtLinkPreview): string {
-  if (!value) {
-    return "";
-  }
-
-  if (typeof value === "object" && "error" in value && value.error) {
-    return `_${value.error}_`;
-  }
-
-  if (typeof value !== "string") {
-    return "";
-  }
-
-  const normalized = normalizeSnippet(value).trim();
-  if (!normalized) {
-    return "";
-  }
-
-  const lines = normalized.split(/\r?\n/);
-  const limited = lines.slice(0, 8);
-  let excerpt = limited.join("\n");
-  if (lines.length > limited.length || excerpt.length > 600) {
-    excerpt = excerpt.slice(0, 600).trimEnd() + "…";
-  }
-
-  return excerpt;
-}
-
-function isExternalLink(target: string): boolean {
-  return /^https?:\/\//i.test(target.trim());
-}
-
-function isImageTarget(target: string): boolean {
-  const trimmed = target.trim();
-  if (!trimmed) {
+  if (lines.length <= 1) {
     return false;
   }
 
-  if (trimmed.startsWith("![[") || trimmed.startsWith("[[")) {
-    const inner = trimmed.replace(/^!?\[\[/, "").replace(/]]$/, "");
-    const base = inner.split("|")[0];
-    return /\.(png|apng|jpg|jpeg|gif|svg|bmp|webp|avif)$/i.test(base);
+  const rootIndent = leadingSpace(lines[0]);
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.trim()) {
+      continue;
+    }
+    if (leadingSpace(line) > rootIndent) {
+      return true;
+    }
   }
 
-  if (isExternalLink(trimmed)) {
-    return /\.(png|apng|jpg|jpeg|gif|svg|bmp|webp|avif)(?:\?|#|$)/i.test(trimmed);
-  }
-
-  return /\.(png|apng|jpg|jpeg|gif|svg|bmp|webp|avif)$/i.test(trimmed);
-}
-
-function formatImageEmbed(target: string): string | null {
-  const trimmed = target.trim();
-  if (!trimmed) {
-    return null;
-  }
-
-  if (trimmed.startsWith("![[") && trimmed.endsWith("]]")) {
-    return trimmed;
-  }
-
-  if (trimmed.startsWith("[[") && trimmed.endsWith("]]")) {
-    return `!${trimmed}`;
-  }
-
-  if (isExternalLink(trimmed)) {
-    return `![](${trimmed})`;
-  }
-
-  return `![[${trimmed}]]`;
+  return false;
 }
 
 function compareBacklinkChronology(app: App, left: string, right: string): number {

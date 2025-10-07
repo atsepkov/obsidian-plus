@@ -822,8 +822,13 @@ function escapeCssIdentifier(value: string): string {
 
             const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
             const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
+            const labelText = section.label === "root"
+              ? "Root"
+              : section.label === "branch"
+                ? "Branch"
+                : "Reference";
             meta.createSpan({
-              text: section.label === "origin" ? "Origin" : "Reference",
+              text: labelText,
               cls: "tree-of-thought__label"
             });
 
@@ -862,6 +867,14 @@ function escapeCssIdentifier(value: string): string {
                 this.close();
               });
             });
+
+            if (section.label === "root") {
+              await this.renderThoughtLinkPreviews(
+                sectionEl,
+                (context?.linksFromTask as Record<string, unknown>) ?? null,
+                section.file.path
+              );
+            }
           }
         } catch (error) {
           if (loadingEl?.isConnected) {
@@ -869,6 +882,121 @@ function escapeCssIdentifier(value: string): string {
           }
           console.error("Failed to render thought view", error);
           container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to render this thought." });
+        }
+    }
+
+    private parseThoughtWikiLink(raw: string): { raw: string; target: string; display: string; isEmbed: boolean } | null {
+        if (typeof raw !== "string") {
+            return null;
+        }
+        const trimmed = raw.trim();
+        if (!trimmed.startsWith("[[") && !trimmed.startsWith("![[")) {
+            return null;
+        }
+
+        const isEmbed = trimmed.startsWith("![[");
+        const inner = trimmed.replace(/^!\[\[/, "[[").slice(2, -2);
+        const pipeIndex = inner.indexOf("|");
+        const target = pipeIndex >= 0 ? inner.slice(0, pipeIndex).trim() : inner.trim();
+        const alias = pipeIndex >= 0 ? inner.slice(pipeIndex + 1).trim() : "";
+        const display = alias || target || trimmed;
+
+        return {
+            raw: trimmed.startsWith("[[") ? trimmed : trimmed.slice(1),
+            target,
+            display,
+            isEmbed,
+        };
+    }
+
+    private async renderThoughtLinkPreviews(
+        sectionEl: HTMLElement,
+        linkMap: Record<string, unknown> | null,
+        sourcePath: string
+    ): Promise<void> {
+        if (!linkMap) {
+            return;
+        }
+
+        const entries = Object.entries(linkMap).filter(([raw]) => {
+            const trimmed = typeof raw === "string" ? raw.trim() : "";
+            return trimmed.startsWith("[[") || trimmed.startsWith("![[");
+        });
+
+        if (!entries.length) {
+            return;
+        }
+
+        const list = sectionEl.createDiv({ cls: "tree-of-thought__links" });
+
+        for (const [raw, payload] of entries) {
+            const parsed = this.parseThoughtWikiLink(raw);
+            if (!parsed) {
+                continue;
+            }
+
+            const item = list.createDiv({ cls: "tree-of-thought__link-preview" });
+            const linkEl = item.createEl("a", {
+                cls: "internal-link",
+                text: parsed.display
+            });
+
+            if (parsed.target) {
+                linkEl.setAttr("href", parsed.target);
+                linkEl.setAttr("data-href", parsed.target);
+                linkEl.addEventListener("click", evt => {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                    this.app.workspace.openLinkText(parsed.target, sourcePath, false);
+                    this.close();
+                });
+            }
+
+            const preview = item.createDiv({ cls: "tree-of-thought__link-preview-popover" });
+
+            let rendered = false;
+            const payloadValue = payload as string | null | { error?: string } | undefined;
+
+            if (payloadValue && typeof payloadValue === "object" && "error" in payloadValue && payloadValue.error) {
+                preview.createSpan({ text: payloadValue.error, cls: "tree-of-thought__link-preview-error" });
+                rendered = true;
+            } else {
+                let markdown = "";
+                if (typeof payloadValue === "string" && payloadValue.trim()) {
+                    markdown = payloadValue.trim();
+                } else if (parsed.isEmbed) {
+                    markdown = raw.trim().startsWith("![[") ? raw.trim() : `!${raw.trim()}`;
+                }
+
+                if (markdown) {
+                    try {
+                        await MarkdownRenderer.renderMarkdown(markdown, preview, sourcePath, this.plugin);
+                        await this.waitForNextFrame();
+                        rendered = true;
+                    } catch (error) {
+                        console.error("Failed to render link preview", { raw, error });
+                    }
+                }
+            }
+
+            if (!rendered) {
+                preview.createSpan({ text: "No preview available.", cls: "tree-of-thought__link-preview-empty" });
+            }
+
+            preview.querySelectorAll("a.internal-link").forEach(anchor => {
+                anchor.addEventListener("click", evt => {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                    const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
+                    if (!target) return;
+                    this.app.workspace.openLinkText(target, sourcePath, false);
+                    this.close();
+                });
+            });
+        }
+
+        if (!list.childElementCount) {
+            list.remove();
         }
     }
   

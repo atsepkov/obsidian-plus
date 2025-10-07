@@ -475,65 +475,78 @@ export class TaskManager {
         };
 
         const processItem = async (item: Task) => {
-            if (!item || !item.text) return;
-            const text = item.text;
+            if (!item) return;
 
-            const externalUrls = [
-                ...this.extractPlainUrls(text),
-                ...this.extractMarkdownUrls(text)
-            ];
-            const internalLinks = this.extractInternalLinks(text);
+            const targetFile = item.path
+                ? this.app.metadataCache.getFirstLinkpathDest(item.path, "")
+                : null;
+            const resolvedFile = targetFile instanceof TFile
+                ? targetFile
+                : this.app.vault.getAbstractFileByPath(item.path ?? "");
+            const fileLines = resolvedFile instanceof TFile
+                ? await ensureFileLines(resolvedFile)
+                : lines;
 
-            for (const url of externalUrls) {
-                if (!(url in attachments)) {
-                    try {
-                        attachments[url] = await this.fetchExternalLinkContent(url);
-                    } catch (e: any) {
-                        console.error(`Failed to fetch URL: ${url}`, e);
-                        attachments[url] = { error: `Error fetching ${url}: ${e.message || e}` };
-                    }
-                }
+            const textSources = new Set<string>();
+            if (typeof item.text === "string" && item.text.trim()) {
+                textSources.add(item.text);
             }
 
-            for (const link of internalLinks) {
-                const key = link.raw;
-                if (key in attachments) {
-                    continue;
-                }
+            const lineIndex = this.getTaskLineIndex(item);
+            if (lineIndex >= 0 && lineIndex < fileLines.length) {
+                textSources.add(fileLines[lineIndex]);
+            }
 
-                if (link.isEmbed) {
-                    attachments[key] = null;
-                    continue;
-                }
+            for (const sourceText of textSources) {
+                if (!sourceText) continue;
 
-                const resolvedFile = this.resolveInternalLinkFile(link, item.path);
-                if (resolvedFile instanceof TFile) {
-                    try {
-                        const fileLines = await ensureFileLines(resolvedFile);
-                        attachments[key] = await this.buildInternalLinkPreview(resolvedFile, link, fileLines);
-                    } catch (e: any) {
-                        console.error(`Failed to read internal link file: ${resolvedFile.path}`, e);
-                        attachments[key] = { error: `Error reading ${resolvedFile.path}: ${e.message || e}` };
+                const externalUrls = [
+                    ...this.extractPlainUrls(sourceText),
+                    ...this.extractMarkdownUrls(sourceText)
+                ];
+                const internalLinks = this.extractInternalLinks(sourceText);
+
+                for (const url of externalUrls) {
+                    if (!(url in attachments)) {
+                        try {
+                            attachments[url] = await this.fetchExternalLinkContent(url);
+                        } catch (e: any) {
+                            console.error(`Failed to fetch URL: ${url}`, e);
+                            attachments[url] = { error: `Error fetching ${url}: ${e.message || e}` };
+                        }
                     }
-                } else {
-                    console.warn(`Internal link does not resolve to a file: ${link.raw} in ${item.path}`);
-                    attachments[key] = null;
+                }
+
+                for (const link of internalLinks) {
+                    const key = link.raw;
+                    if (!key || key in attachments) {
+                        continue;
+                    }
+
+                    if (link.isEmbed) {
+                        attachments[key] = link.raw;
+                        continue;
+                    }
+
+                    const linkFile = this.resolveInternalLinkFile(link, item.path);
+                    if (linkFile instanceof TFile) {
+                        try {
+                            const linkLines = await ensureFileLines(linkFile);
+                            attachments[key] = await this.buildInternalLinkPreview(linkFile, link, linkLines);
+                        } catch (e: any) {
+                            console.error(`Failed to read internal link file: ${linkFile.path}`, e);
+                            attachments[key] = { error: `Error reading ${linkFile.path}: ${e.message || e}` };
+                        }
+                    } else {
+                        console.warn(`Internal link does not resolve to a file: ${link.raw} in ${item.path}`);
+                        attachments[key] = null;
+                    }
                 }
             }
 
             if (item.children) {
                 for (const child of item.children) {
-                    if (!child || !child.position) continue;
-                    const childLineNum = child.position.start.line;
-                    if (childLineNum >= lines.length) continue;
-
-                    const childLineText = lines[childLineNum];
-                    const bulletMatch = childLineText.match(/^\s*([-+*])/);
-                    const bullet = bulletMatch ? bulletMatch[1] : '-';
-
-                    if (bullet === '-') {
-                        await processItem(child as Task);
-                    }
+                    await processItem(child as Task);
                 }
             }
         }
@@ -883,6 +896,23 @@ export class TaskManager {
         }
 
         return results;
+    }
+
+    private getTaskLineIndex(task: Task | any): number {
+        if (!task) {
+            return -1;
+        }
+
+        const direct = typeof task.line === 'number' ? task.line : undefined;
+        const positionLine = task?.position?.start?.line ?? task?.position?.line;
+        const rawIndex = Number.isFinite(direct) ? direct : positionLine;
+
+        if (!Number.isFinite(rawIndex)) {
+            return -1;
+        }
+
+        const index = Math.floor(rawIndex);
+        return index >= 0 ? index : -1;
     }
 
     private extractInlineBlockId(text: string | undefined): string | null {
