@@ -15,6 +15,21 @@ interface ThoughtBacklink {
 
 type ThoughtLinkPreview = string | null | { error?: string };
 
+type ParentContextType = "heading" | "list" | "paragraph";
+
+interface ParentContext {
+  text: string;
+  line: number;
+  type: ParentContextType;
+  anchor?: string | null;
+}
+
+interface ChildContext {
+  text: string;
+  line?: number;
+  anchor?: string | null;
+}
+
 interface TaskContextSnapshot {
   parents?: TaskContextEntry[];
   children?: TaskContextEntry[];
@@ -27,9 +42,10 @@ interface BacklinkOutline {
   markdown: string;
   hasChildren: boolean;
   rootText: string;
+  rootAnchor?: string | null;
   parentText: string | null;
-  parentChain: string[];
-  contextText: string | null;
+  parentChain: ParentContext[];
+  context: ChildContext | null;
   snippet: string;
 }
 
@@ -46,7 +62,15 @@ export interface ThoughtReference {
   linktext: string;
   label: string;
   summary: string;
+  segments: ThoughtReferenceSegment[];
   tooltip?: string;
+}
+
+export interface ThoughtReferenceSegment {
+  text: string;
+  anchor?: string | null;
+  line?: number;
+  type?: ParentContextType | "child";
 }
 
 export interface TreeOfThoughtOptions {
@@ -239,6 +263,7 @@ async function buildBacklinkSections(
             linktext,
             label,
             summary: summary.summary,
+            segments: summary.segments ?? [],
             tooltip: summary.tooltip
           });
         }
@@ -601,10 +626,13 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
 
   const rootIndent = leadingSpace(rootLine);
   const rootText = stripListMarker(rootLine).trim();
+  const rootAnchor = extractBlockIdFromLine(rootLine);
 
   const children: string[] = [];
   let minChildIndent = Number.POSITIVE_INFINITY;
   let firstChildText: string | null = null;
+  let firstChildLine: number | null = null;
+  let firstChildAnchor: string | null = null;
 
   for (let i = 1; i < snippetLines.length; i++) {
     const raw = normalizeSnippet(snippetLines[i]);
@@ -622,11 +650,70 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
       const childText = stripListMarker(raw).trim() || raw.trim();
       if (childText) {
         firstChildText = childText;
+        firstChildLine = startLine + i;
+        firstChildAnchor = extractBlockIdFromLine(raw);
       }
     }
 
     minChildIndent = Math.min(minChildIndent, indent);
     children.push(raw);
+  }
+
+  if (firstChildText == null) {
+    for (let i = startLine + 1; i < lines.length; i++) {
+      const raw = normalizeSnippet(lines[i]);
+      if (!raw.trim()) {
+        continue;
+      }
+
+      const indent = leadingSpace(raw);
+      const trimmed = raw.trim();
+
+      if (indent <= rootIndent) {
+        if (isHeading(trimmed) || isListItem(raw) || !trimmed) {
+          break;
+        }
+      }
+
+      if (indent > rootIndent && isListItem(raw)) {
+        const childText = stripListMarker(raw).trim() || raw.trim();
+        if (childText) {
+          firstChildText = childText;
+          firstChildLine = i;
+          firstChildAnchor = extractBlockIdFromLine(raw);
+          break;
+        }
+      }
+    }
+  } else {
+    const snippetChildIndex = snippetLines.findIndex((line, idx) => {
+      if (idx === 0) return false;
+      const normalized = normalizeSnippet(line);
+      return leadingSpace(normalized) > rootIndent && isListItem(normalized);
+    });
+    if (snippetChildIndex > 0) {
+      firstChildLine = startLine + snippetChildIndex;
+    }
+  }
+
+  if (firstChildLine == null && firstChildText != null) {
+    for (let i = startLine + 1; i < lines.length; i++) {
+      const raw = normalizeSnippet(lines[i]);
+      if (!raw.trim()) {
+        continue;
+      }
+      const indent = leadingSpace(raw);
+      if (indent <= rootIndent && (isListItem(raw) || isHeading(raw.trim()))) {
+        break;
+      }
+      if (stripListMarker(raw).trim() === firstChildText) {
+        firstChildLine = i;
+        if (!firstChildAnchor) {
+          firstChildAnchor = extractBlockIdFromLine(raw);
+        }
+        break;
+      }
+    }
   }
 
   const hasChildren = children.some(line => line.trim());
@@ -648,58 +735,66 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
 
   const parentChain = collectParentChain(lines, startLine, rootIndent);
   const parentText = parentChain.length
-    ? parentChain[parentChain.length - 1]
+    ? parentChain[parentChain.length - 1].text
     : findParentLineText(lines, startLine, rootIndent);
 
   return {
     markdown,
     hasChildren,
     rootText,
+    rootAnchor,
     parentText,
     parentChain,
-    contextText: firstChildText,
+    context: firstChildText
+      ? {
+          text: firstChildText,
+          line: Number.isFinite(firstChildLine) ? firstChildLine! : undefined,
+          anchor: firstChildAnchor ?? null
+        }
+      : null,
     snippet: snippet.trim()
   };
 }
 
 interface ReferenceSummary {
   summary: string;
+  segments: ThoughtReferenceSegment[];
   tooltip?: string;
 }
 
 function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | null {
-  const segments: string[] = [];
+  const segments: ThoughtReferenceSegment[] = [];
 
   for (const parent of outline.parentChain) {
-    const cleaned = cleanReferenceText(parent);
+    const cleaned = cleanReferenceText(parent.text);
     if (!cleaned) {
       continue;
     }
-    if (segments[segments.length - 1] === cleaned) {
+    const last = segments[segments.length - 1];
+    if (last && last.text === cleaned) {
       continue;
     }
-    segments.push(cleaned);
+    segments.push({
+      text: cleaned,
+      anchor: parent.anchor ?? undefined,
+      line: Number.isFinite(parent.line) ? parent.line : undefined,
+      type: parent.type
+    });
   }
 
-  const contextCandidates: Array<string | null | undefined> = [
-    outline.contextText,
-    outline.rootText,
-    outline.parentText
-  ];
-
-  for (const candidate of contextCandidates) {
-    const cleaned = cleanReferenceText(candidate);
-    if (!cleaned) {
-      continue;
+  if (outline.context?.text) {
+    const cleaned = cleanReferenceText(outline.context.text);
+    if (cleaned && (!segments.length || segments[segments.length - 1].text !== cleaned)) {
+      segments.push({
+        text: cleaned,
+        anchor: outline.context.anchor ?? undefined,
+        line: Number.isFinite(outline.context.line) ? outline.context.line : undefined,
+        type: "child"
+      });
     }
-    if (segments[segments.length - 1] === cleaned) {
-      continue;
-    }
-    segments.push(cleaned);
-    break;
   }
 
-  const summary = segments.join(" > ").trim();
+  const summary = segments.map(segment => segment.text).join(" > ").trim();
   if (!summary) {
     return null;
   }
@@ -708,18 +803,20 @@ function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | nu
 
   return {
     summary,
+    segments,
     tooltip: tooltipSource || undefined
   };
 }
 
 function findParentLineText(lines: string[], startLine: number, rootIndent: number): string | null {
   const chain = collectParentChain(lines, startLine, rootIndent);
-  return chain.length ? chain[chain.length - 1] : null;
+  return chain.length ? chain[chain.length - 1].text : null;
 }
 
-function collectParentChain(lines: string[], startLine: number, rootIndent: number): string[] {
-  const chain: string[] = [];
+function collectParentChain(lines: string[], startLine: number, rootIndent: number): ParentContext[] {
+  const chain: ParentContext[] = [];
   let currentIndent = rootIndent;
+  let headingCaptured = false;
 
   for (let i = startLine - 1; i >= 0; i--) {
     const raw = normalizeSnippet(lines[i]);
@@ -731,9 +828,18 @@ function collectParentChain(lines: string[], startLine: number, rootIndent: numb
     const trimmed = raw.trim();
 
     if (isHeading(trimmed)) {
+      if (headingCaptured) {
+        break;
+      }
       const headingText = stripHeadingMarker(raw);
       if (headingText) {
-        chain.unshift(headingText);
+        chain.unshift({
+          text: headingText,
+          line: i,
+          type: "heading",
+          anchor: createHeadingAnchor(headingText)
+        });
+        headingCaptured = true;
         currentIndent = indent;
       }
       continue;
@@ -741,7 +847,12 @@ function collectParentChain(lines: string[], startLine: number, rootIndent: numb
 
     if (!isListItem(raw)) {
       if (indent < currentIndent) {
-        chain.unshift(trimmed);
+        chain.unshift({
+          text: trimmed,
+          line: i,
+          type: "paragraph",
+          anchor: null
+        });
         currentIndent = indent;
       }
       continue;
@@ -750,7 +861,12 @@ function collectParentChain(lines: string[], startLine: number, rootIndent: numb
     if (indent < currentIndent) {
       const text = stripListMarker(raw).trim();
       if (text) {
-        chain.unshift(text);
+        chain.unshift({
+          text,
+          line: i,
+          type: "list",
+          anchor: extractBlockIdFromLine(raw)
+        });
         currentIndent = indent;
       }
     }
@@ -759,9 +875,26 @@ function collectParentChain(lines: string[], startLine: number, rootIndent: numb
   return chain;
 }
 
+function createHeadingAnchor(headingText: string): string {
+  return slugifyHeading(headingText);
+}
+
+function extractBlockIdFromLine(line: string): string | null {
+  const match = line.match(/\^([A-Za-z0-9_-]+)/);
+  return match ? `^${match[1]}` : null;
+}
+
 function stripHeadingMarker(value: string): string {
   const match = value.match(/^(#+)\s*(.*)$/);
   return match ? (match[2] ?? "").trim() : value.trim();
+}
+
+function slugifyHeading(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .replace(/\s+/g, "-");
 }
 
 function cleanReferenceText(value: string | null | undefined): string {

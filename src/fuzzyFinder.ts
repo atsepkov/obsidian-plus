@@ -887,27 +887,52 @@ function escapeCssIdentifier(value: string): string {
               }
 
               const lineEl = item.createDiv({ cls: "tree-of-thought__reference-line" });
-              const markdown = ref.summary?.trim()
-                ? `${ref.summary.trim()} [[${ref.linktext}]]`
-                : `[[${ref.linktext}]]`;
 
-              try {
-                await MarkdownRenderer.render(this.app, markdown, lineEl, ref.file.path, this.plugin);
-                await this.waitForNextFrame();
-              } catch (error) {
-                console.error("Failed to render reference summary", error);
-                lineEl.createSpan({ text: markdown });
+              if (Array.isArray(ref.segments) && ref.segments.length) {
+                ref.segments.forEach((segment, index) => {
+                  const linkEl = lineEl.createEl("a", {
+                    text: segment.text,
+                    cls: "tree-of-thought__reference-link internal-link"
+                  });
+
+                  const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
+                  const href = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
+                  linkEl.setAttr("href", href);
+
+                  linkEl.addEventListener("click", evt => {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+
+                    const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+                    const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
+                    const state = typeof line === "number" ? { eState: { line } } : undefined;
+
+                    this.app.workspace.openLinkText(openTarget, ref.file.path, false, state);
+                    this.close();
+                  });
+
+                  if (index < ref.segments.length - 1) {
+                    lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
+                  }
+                });
+              } else if (ref.summary) {
+                lineEl.createSpan({ text: ref.summary, cls: "tree-of-thought__reference-text" });
               }
 
-              lineEl.querySelectorAll("a.internal-link").forEach(anchor => {
-                anchor.addEventListener("click", evt => {
-                  evt.preventDefault();
-                  evt.stopPropagation();
-                  const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
-                  if (!target) return;
-                  this.app.workspace.openLinkText(target, ref.file.path, false);
-                  this.close();
-                });
+              if (lineEl.childNodes.length) {
+                lineEl.createSpan({ text: " ", cls: "tree-of-thought__reference-gap" });
+              }
+
+              const noteLink = lineEl.createEl("a", {
+                text: `[[${ref.linktext}]]`,
+                cls: "internal-link tree-of-thought__reference-note"
+              });
+              noteLink.setAttr("href", ref.file.path);
+              noteLink.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
+                this.close();
               });
             }
           }
