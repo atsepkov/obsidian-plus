@@ -21,9 +21,10 @@ interface TaskContextSnapshot {
 }
 
 export interface ThoughtSection {
-  title: string;
+  label: "origin" | "reference";
   markdown: string;
   file: TFile;
+  linktext: string;
 }
 
 export interface TreeOfThoughtOptions {
@@ -58,11 +59,11 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
 
   const originMarkdown = await buildOriginMarkdown(app, sourceFile, task, resolvedBlockId, context);
   if (originMarkdown.trim()) {
-    const linktext = app.metadataCache.fileToLinktext(sourceFile, "");
     sections.push({
-      title: `Origin · [[${linktext}]]`,
+      label: "origin",
       markdown: originMarkdown,
-      file: sourceFile
+      file: sourceFile,
+      linktext: app.metadataCache.fileToLinktext(sourceFile, "")
     });
   }
 
@@ -107,15 +108,23 @@ async function buildOriginMarkdown(
   const startLine = findTaskLine(task, lines, blockId);
 
   if (startLine != null) {
+    const markdown = extractListSubtree(lines, startLine, { omitRoot: true });
+    if (markdown.trim()) {
+      return markdown;
+    }
     return extractListSubtree(lines, startLine);
   }
 
   if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
-    return buildContextFallback(task, context);
+    const fallback = buildContextFallback(task, context);
+    const cleaned = cleanSnippet(fallback, { omitRoot: true });
+    return cleaned.trim() ? cleaned : fallback;
   }
 
   if (Array.isArray(task.lines) && task.lines.length) {
-    return task.lines.join("\n");
+    const snippet = task.lines.join("\n");
+    const cleaned = cleanSnippet(snippet, { omitRoot: true });
+    return cleaned.trim() ? cleaned : normalizeSnippet(snippet);
   }
 
   return "";
@@ -166,12 +175,22 @@ async function buildBacklinkSections(
       continue;
     }
 
-    const markdown = Array.from(snippets).join("\n\n---\n\n");
-    const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
+    const normalizedSnippets = Array.from(snippets)
+      .map(snippet => {
+        const cleaned = cleanSnippet(snippet, { omitRoot: true });
+        return cleaned.trim() ? cleaned : cleanSnippet(snippet);
+      })
+      .filter(snippet => snippet.trim());
+
+    if (!normalizedSnippets.length) {
+      continue;
+    }
+
     sections.push({
-      title: `Reference · [[${linktext}]]`,
-      markdown,
-      file
+      label: "reference",
+      markdown: normalizedSnippets.join("\n\n"),
+      file,
+      linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
     });
   }
 
@@ -246,29 +265,89 @@ function findTaskLine(task: TaskEntry, lines: string[], blockId: string): number
   return null;
 }
 
-function extractListSubtree(lines: string[], startLine: number): string {
+function extractListSubtree(lines: string[], startLine: number): string;
+function extractListSubtree(lines: string[], startLine: number, options: { omitRoot?: boolean }): string;
+function extractListSubtree(
+  lines: string[],
+  startLine: number,
+  options: { omitRoot?: boolean } = {}
+): string {
   if (startLine < 0 || startLine >= lines.length) {
     return "";
   }
 
-  const root = lines[startLine];
-  const rootIndent = leadingSpace(root);
-  const snippet: string[] = [root];
-
-  for (let i = startLine + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) {
-      snippet.push(line);
-      continue;
-    }
-    const indent = leadingSpace(line);
-    if (indent <= rootIndent && isListItem(line)) {
-      break;
-    }
-    snippet.push(line);
+  const omitRoot = Boolean(options?.omitRoot);
+  const rawRoot = normalizeSnippet(lines[startLine]);
+  if (!rawRoot.trim()) {
+    return "";
   }
 
-  return snippet.join("\n");
+  if (omitRoot && !isListItem(rawRoot)) {
+    return "";
+  }
+
+  const rootIndent = leadingSpace(rawRoot);
+  const collected: string[] = [];
+
+  if (!omitRoot) {
+    collected.push(rawRoot);
+  }
+
+  for (let i = startLine + 1; i < lines.length; i++) {
+    const rawLine = normalizeSnippet(lines[i]);
+    const trimmed = rawLine.trim();
+    if (!trimmed) {
+      collected.push(rawLine);
+      continue;
+    }
+
+    const indent = leadingSpace(rawLine);
+    if (indent <= rootIndent && (isListItem(rawLine) || isHeading(trimmed))) {
+      break;
+    }
+
+    if (omitRoot && indent <= rootIndent) {
+      break;
+    }
+
+    collected.push(rawLine);
+  }
+
+  if (!collected.length) {
+    return "";
+  }
+
+  if (!omitRoot) {
+    return collected.join("\n").trimEnd();
+  }
+
+  while (collected.length && !collected[0].trim()) {
+    collected.shift();
+  }
+  while (collected.length && !collected[collected.length - 1].trim()) {
+    collected.pop();
+  }
+
+  if (!collected.length) {
+    return "";
+  }
+
+  const minIndent = collected.reduce((min, line) => {
+    if (!line.trim()) return min;
+    return Math.min(min, leadingSpace(line));
+  }, Number.POSITIVE_INFINITY);
+
+  const offset = Number.isFinite(minIndent) ? Math.max(0, minIndent) : 0;
+
+  return collected
+    .map(line => {
+      if (!line.trim()) return "";
+      const indent = leadingSpace(line);
+      const slice = Math.min(indent, offset);
+      return line.slice(slice);
+    })
+    .join("\n")
+    .trimEnd();
 }
 
 function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | null): string {
@@ -304,7 +383,7 @@ function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | n
     lines.push(`${spaces}${bullet} ${text}`.trimEnd());
   });
 
-  return lines.join("\n");
+  return normalizeSnippet(lines.join("\n"));
 }
 
 function deriveTaskBullet(task: TaskEntry): string {
@@ -320,7 +399,7 @@ function deriveTaskBullet(task: TaskEntry): string {
 }
 
 function normalizeTaskLine(value: string): string {
-  return value
+  return normalizeSnippet(value)
     .replace(/\^\w+\b/, "")
     .replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "")
     .trim()
@@ -334,4 +413,28 @@ function leadingSpace(value: string): number {
 
 function isListItem(value: string): boolean {
   return /^\s*[-*+]/.test(value);
+}
+
+function isHeading(value: string): boolean {
+  return /^#{1,6}\s/.test(value);
+}
+
+function normalizeSnippet(value: string): string {
+  return value.replace(/\t/g, "    ");
+}
+
+function cleanSnippet(value: string, options?: { omitRoot?: boolean }): string {
+  const normalized = normalizeSnippet(value);
+  if (!options?.omitRoot) {
+    return normalized.trimEnd();
+  }
+
+  const lines = normalized.split(/\r?\n/);
+  const firstContent = lines.findIndex(line => line.trim());
+  if (firstContent < 0) {
+    return "";
+  }
+
+  const cleaned = extractListSubtree(lines, firstContent, { omitRoot: true });
+  return cleaned.trim() ? cleaned : normalized.trimEnd();
 }

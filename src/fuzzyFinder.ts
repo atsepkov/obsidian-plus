@@ -757,7 +757,11 @@ function escapeCssIdentifier(value: string): string {
           }
         }
 
+        let loadingEl: HTMLElement | null = null;
+
         try {
+          loadingEl = container.createDiv({ cls: "tree-of-thought__empty", text: "Loading..." });
+
           const blockId = await ensureBlockId(this.app, task);
           let context: any = null;
           const contextProvider = (this.plugin as any)?.getTaskContext;
@@ -787,6 +791,11 @@ function escapeCssIdentifier(value: string): string {
             context
           });
 
+          if (loadingEl?.isConnected) {
+            loadingEl.remove();
+            loadingEl = null;
+          }
+
           const header = container.createDiv({ cls: "tree-of-thought__header" });
           header.createSpan({ text: `${this.activeTag} ${task.text}`.trim() });
           if (thought.sourceFile) {
@@ -804,9 +813,32 @@ function escapeCssIdentifier(value: string): string {
             return;
           }
 
+          let firstSection = true;
           for (const section of thought.sections) {
+            if (!firstSection) {
+              container.createEl("hr", { cls: "tree-of-thought__divider" });
+            }
+            firstSection = false;
+
             const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
-            sectionEl.createEl("h3", { text: section.title });
+            const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
+            meta.createSpan({
+              text: section.label === "origin" ? "Origin" : "Reference",
+              cls: "tree-of-thought__label"
+            });
+
+            const link = meta.createEl("a", {
+              text: `[[${section.linktext}]]`,
+              cls: "internal-link tree-of-thought__link"
+            });
+            link.setAttr("href", section.file.path);
+            link.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              this.app.workspace.openLinkText(section.file.path, section.file.path, false);
+              this.close();
+            });
+
             const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
             try {
               await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, this.plugin);
@@ -818,8 +850,22 @@ function escapeCssIdentifier(value: string): string {
             if (!body.childElementCount && !body.textContent?.trim()) {
               body.createEl("pre", { text: section.markdown });
             }
+
+            body.querySelectorAll("a.internal-link").forEach(a => {
+              a.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const target = (a as HTMLAnchorElement).getAttribute("href") ?? "";
+                if (!target) return;
+                this.app.workspace.openLinkText(target, section.file.path, false);
+                this.close();
+              });
+            });
           }
         } catch (error) {
+          if (loadingEl?.isConnected) {
+            loadingEl.remove();
+          }
           console.error("Failed to render thought view", error);
           container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to render this thought." });
         }
