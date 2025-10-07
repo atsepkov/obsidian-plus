@@ -965,6 +965,7 @@ function escapeCssIdentifier(value: string): string {
         sourcePath: string
     ): Promise<void> {
         if (!linkMap) {
+            console.debug("[TreeOfThought] no link map for preview");
             return;
         }
 
@@ -974,6 +975,7 @@ function escapeCssIdentifier(value: string): string {
         });
 
         if (!entries.length) {
+            console.debug("[TreeOfThought] no wiki links discovered", { linkMap });
             return;
         }
 
@@ -982,12 +984,13 @@ function escapeCssIdentifier(value: string): string {
         for (const [raw, payload] of entries) {
             const parsed = this.parseThoughtWikiLink(raw);
             if (!parsed) {
+                console.debug("[TreeOfThought] unable to parse wiki link", { raw });
                 continue;
             }
 
-            const item = list.createDiv({ cls: "tree-of-thought__link-preview" });
-            const header = item.createDiv({ cls: "tree-of-thought__link-preview-header" });
-            const linkEl = header.createEl("a", {
+            const item = list.createDiv({ cls: "tree-of-thought__link" });
+            const title = item.createDiv({ cls: "tree-of-thought__link-header" });
+            const linkEl = title.createEl("a", {
                 cls: "internal-link",
                 text: parsed.display
             });
@@ -1003,48 +1006,42 @@ function escapeCssIdentifier(value: string): string {
                 });
             }
 
-            const preview = item.createDiv({ cls: "tree-of-thought__link-preview-body" });
+            const body = item.createDiv({ cls: "tree-of-thought__link-body" });
             const payloadValue = payload as string | null | { error?: string } | undefined;
 
             if (payloadValue && typeof payloadValue === "object" && "error" in payloadValue && payloadValue.error) {
-                preview.createSpan({ text: payloadValue.error, cls: "tree-of-thought__link-preview-error" });
+                body.createSpan({ text: payloadValue.error, cls: "tree-of-thought__link-error" });
                 continue;
             }
 
-            let markdown = "";
-            if (typeof payloadValue === "string" && payloadValue.trim()) {
-                markdown = payloadValue.trim();
-            } else if (parsed.isEmbed) {
-                markdown = raw.trim().startsWith("![[") ? raw.trim() : `!${raw.trim()}`;
-            } else {
-                const fallback = await this.resolveThoughtLinkPreview(parsed, sourcePath);
-                if (fallback?.trim()) {
-                    markdown = fallback.trim();
+            let previewRendered = false;
+
+            if (parsed.isEmbed) {
+                const embedTarget = await this.resolveThoughtEmbedTarget(parsed, sourcePath);
+                if (embedTarget?.type === "image") {
+                    const img = body.createEl("img", {
+                        cls: "tree-of-thought__link-image",
+                        attr: { alt: parsed.display }
+                    });
+                    img.src = embedTarget.src;
+                    previewRendered = true;
+                } else if (typeof payloadValue === "string" && payloadValue.trim()) {
+                    await this.renderThoughtLinkMarkdown(body, payloadValue, sourcePath, raw);
+                    previewRendered = true;
                 }
             }
 
-            if (markdown) {
-                try {
-                    await MarkdownRenderer.renderMarkdown(markdown, preview, sourcePath, this.plugin);
-                    await this.waitForNextFrame();
-                } catch (error) {
-                    console.error("Failed to render link preview", { raw, error });
-                    preview.createSpan({ text: markdown });
+            if (!previewRendered) {
+                const markdown = await this.resolveThoughtLinkMarkdown(parsed, payloadValue, sourcePath, raw);
+                if (markdown) {
+                    await this.renderThoughtLinkMarkdown(body, markdown, sourcePath, raw);
+                    previewRendered = true;
                 }
-            } else {
-                preview.createSpan({ text: "No preview available.", cls: "tree-of-thought__link-preview-empty" });
             }
 
-            preview.querySelectorAll("a.internal-link").forEach(anchor => {
-                anchor.addEventListener("click", evt => {
-                    evt.preventDefault();
-                    evt.stopPropagation();
-                    const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
-                    if (!target) return;
-                    this.app.workspace.openLinkText(target, sourcePath, false);
-                    this.close();
-                });
-            });
+            if (!previewRendered) {
+                body.createSpan({ text: "No preview available.", cls: "tree-of-thought__link-empty" });
+            }
         }
 
         if (!list.childElementCount) {
@@ -1052,24 +1049,97 @@ function escapeCssIdentifier(value: string): string {
         }
     }
 
+    private async resolveThoughtEmbedTarget(
+        parsed: { target: string; display: string },
+        sourcePath: string
+    ): Promise<{ type: "image"; src: string } | null> {
+        const { path } = this.splitWikiLinkTarget(parsed.target ?? "");
+        const file = this.resolveWikiLinkFile(path, sourcePath);
+        if (!(file instanceof TFile)) {
+            return null;
+        }
+
+        const extension = file.extension?.toLowerCase() ?? "";
+        const isImage = ["png", "jpg", "jpeg", "gif", "webp", "bmp", "svg"].includes(extension);
+        if (!isImage) {
+            return null;
+        }
+
+        const resourcePath = this.app.vault.getResourcePath(file);
+        return { type: "image", src: resourcePath };
+    }
+
+    private resolveWikiLinkFile(path: string, sourcePath: string): TFile | null {
+        if (path) {
+            const direct = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
+            if (direct instanceof TFile) {
+                return direct;
+            }
+            if (!path.endsWith(".md")) {
+                const withExtension = this.app.metadataCache.getFirstLinkpathDest(`${path}.md`, sourcePath);
+                if (withExtension instanceof TFile) {
+                    return withExtension;
+                }
+            }
+        }
+
+        const current = this.app.vault.getAbstractFileByPath(sourcePath);
+        return current instanceof TFile ? current : null;
+    }
+
+    private async resolveThoughtLinkMarkdown(
+        parsed: { target: string; isEmbed: boolean },
+        payload: string | { error?: string } | null | undefined,
+        sourcePath: string,
+        raw: string
+    ): Promise<string | null> {
+        if (typeof payload === "string" && payload.trim()) {
+            return payload.trim();
+        }
+
+        if (payload && typeof payload === "object") {
+            return null;
+        }
+
+        if (parsed.isEmbed) {
+            return raw.trim().startsWith("![[") ? raw.trim() : `!${raw.trim()}`;
+        }
+
+        return await this.resolveThoughtLinkPreview(parsed, sourcePath);
+    }
+
+    private async renderThoughtLinkMarkdown(
+        container: HTMLElement,
+        markdown: string,
+        sourcePath: string,
+        raw: string
+    ): Promise<void> {
+        try {
+            await MarkdownRenderer.renderMarkdown(markdown, container, sourcePath, this.plugin);
+            await this.waitForNextFrame();
+        } catch (error) {
+            console.error("Failed to render link preview", { raw, error });
+            container.createSpan({ text: markdown });
+        }
+
+        container.querySelectorAll("a.internal-link").forEach(anchor => {
+            anchor.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
+                if (!target) return;
+                this.app.workspace.openLinkText(target, sourcePath, false);
+                this.close();
+            });
+        });
+    }
+
     private async resolveThoughtLinkPreview(
         parsed: { target: string; isEmbed: boolean },
         sourcePath: string
     ): Promise<string | null> {
         const { path, anchor } = this.splitWikiLinkTarget(parsed.target ?? "");
-        let file: TFile | null = null;
-
-        if (path) {
-            const direct = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
-            file = direct instanceof TFile ? direct : null;
-            if (!file && !path.endsWith(".md")) {
-                const withExtension = this.app.metadataCache.getFirstLinkpathDest(`${path}.md`, sourcePath);
-                file = withExtension instanceof TFile ? withExtension : null;
-            }
-        } else if (sourcePath) {
-            const current = this.app.vault.getAbstractFileByPath(sourcePath);
-            file = current instanceof TFile ? current : null;
-        }
+        const file = this.resolveWikiLinkFile(path, sourcePath);
 
         if (!(file instanceof TFile)) {
             return null;

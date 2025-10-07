@@ -252,43 +252,49 @@ input[data-task="-"] {
     max-width: 100%;
 }
 
-.tree-of-thought__link-preview {
+.tree-of-thought__link {
     display: flex;
     flex-direction: column;
-    gap: 0.4rem;
+    gap: 0.35rem;
     padding: 0.6rem;
     border-radius: var(--radius-s);
     background: var(--background-secondary);
     font-size: 0.85em;
 }
 
-.tree-of-thought__link-preview-header {
+.tree-of-thought__link-header {
     display: flex;
     align-items: center;
     gap: 0.45rem;
 }
 
-.tree-of-thought__link-preview-header .internal-link {
+.tree-of-thought__link-header .internal-link {
     text-decoration: none;
 }
 
-.tree-of-thought__link-preview-body {
+.tree-of-thought__link-body {
     line-height: 1.35;
     color: var(--text-muted);
 }
 
-.tree-of-thought__link-preview-body .internal-embed,
-.tree-of-thought__link-preview-body img {
+.tree-of-thought__link-body .internal-embed,
+.tree-of-thought__link-body img {
     max-width: 100%;
     border-radius: var(--radius-s);
 }
 
-.tree-of-thought__link-preview-error {
+.tree-of-thought__link-image {
+    max-width: 100%;
+    border-radius: var(--radius-s);
+    display: block;
+}
+
+.tree-of-thought__link-error {
     color: var(--text-error);
     font-style: italic;
 }
 
-.tree-of-thought__link-preview-empty {
+.tree-of-thought__link-empty {
     color: var(--text-muted);
     font-style: italic;
 }
