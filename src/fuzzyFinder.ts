@@ -798,7 +798,8 @@ function escapeCssIdentifier(value: string): string {
           }
 
           const header = container.createDiv({ cls: "tree-of-thought__header" });
-          const headerLine = header.createDiv({ cls: "tree-of-thought__header-line" });
+          const headerRow = header.createDiv({ cls: "tree-of-thought__header-row" });
+          const headerLine = headerRow.createDiv({ cls: "tree-of-thought__header-content" });
           const headerMarkdown = (thought.headerMarkdown || "").trim();
           const headerSource = thought.sourceFile?.path ?? task.path ?? task.file?.path ?? "";
           if (headerMarkdown) {
@@ -824,11 +825,10 @@ function escapeCssIdentifier(value: string): string {
           });
 
           if (thought.sourceFile) {
-            const meta = header.createDiv({ cls: "tree-of-thought__header-meta" });
             const linktext = this.app.metadataCache.fileToLinktext(thought.sourceFile, "");
-            const noteLink = meta.createEl("a", {
+            const noteLink = headerRow.createEl("a", {
               text: `[[${linktext}]]`,
-              cls: "internal-link tree-of-thought__file"
+              cls: "internal-link tree-of-thought__header-link"
             });
             noteLink.setAttr("href", thought.sourceFile.path);
             noteLink.addEventListener("click", evt => {
@@ -863,6 +863,19 @@ function escapeCssIdentifier(value: string): string {
             meta.setAttr("data-role", section.role);
 
             const labelContainer = meta.createDiv({ cls: "tree-of-thought__label" });
+            if (section.tooltip) {
+              labelContainer.setAttr("title", section.tooltip);
+            }
+
+            let firstAnchor: string | null =
+              typeof section.targetAnchor === "string" && section.targetAnchor.trim()
+                ? section.targetAnchor.replace(/^#/, "")
+                : null;
+            let firstLine: number | undefined =
+              typeof section.targetLine === "number"
+                ? Math.max(0, Math.floor(section.targetLine))
+                : undefined;
+
             if (Array.isArray(section.segments) && section.segments.length) {
               let renderedCount = 0;
               for (let index = 0; index < section.segments.length; index++) {
@@ -881,12 +894,58 @@ function escapeCssIdentifier(value: string): string {
                   console.error("Failed to render section label segment", error);
                   segmentEl.setText(segmentText);
                 }
+
+                const anchorSource = typeof segment?.anchor === "string" ? segment.anchor : "";
+                const anchor = anchorSource ? `#${anchorSource.replace(/^#/, "")}` : "";
+                const openTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
+                const line = typeof segment?.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+
+                if (!firstAnchor && anchorSource) {
+                  firstAnchor = anchorSource.replace(/^#/, "");
+                }
+                if (firstLine === undefined && typeof line === "number") {
+                  firstLine = line;
+                }
+
+                segmentEl.addClass("tree-of-thought__label-link");
+                segmentEl.addEventListener("click", evt => {
+                  evt.preventDefault();
+                  evt.stopPropagation();
+                  const state = typeof line === "number" ? { eState: { line } } : undefined;
+                  this.app.workspace.openLinkText(openTarget, section.file.path, false, state);
+                  this.close();
+                });
+
+                segmentEl.addEventListener("mouseenter", evt => {
+                  this.triggerHoverPreview(evt, openTarget, section.file.path, segmentEl);
+                });
+
                 renderedCount++;
               }
             }
 
             if (!labelContainer.hasChildNodes()) {
               labelContainer.createSpan({ text: section.label, cls: "tree-of-thought__label-text" });
+            }
+
+            if (labelContainer.hasChildNodes()) {
+              labelContainer.addClass("tree-of-thought__label--interactive");
+              labelContainer.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+
+                const anchor = firstAnchor ? `#${firstAnchor}` : "";
+                const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
+                const state = typeof firstLine === "number" ? { eState: { line: firstLine } } : undefined;
+                this.app.workspace.openLinkText(target, section.file.path, false, state);
+                this.close();
+              });
+
+              labelContainer.addEventListener("mouseenter", evt => {
+                const anchor = firstAnchor ? `#${firstAnchor}` : "";
+                const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
+                this.triggerHoverPreview(evt, target, section.file.path, labelContainer);
+              });
             }
 
             const link = meta.createEl("a", {
@@ -973,6 +1032,10 @@ function escapeCssIdentifier(value: string): string {
                     this.close();
                   });
 
+                  segmentEl.addEventListener("mouseenter", evt => {
+                    this.triggerHoverPreview(evt, openTarget, ref.file.path, segmentEl);
+                  });
+
                   if (index < ref.segments.length - 1) {
                     lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
                   }
@@ -1031,6 +1094,31 @@ function escapeCssIdentifier(value: string): string {
 
         target.appendChild(fragment);
         temp.remove();
+    }
+
+    private triggerHoverPreview(
+        event: MouseEvent,
+        linktext: string,
+        sourcePath: string,
+        targetEl: HTMLElement
+    ): void {
+        if (!linktext) {
+            return;
+        }
+
+        const workspace = this.app.workspace as any;
+        if (!workspace || typeof workspace.trigger !== "function") {
+            return;
+        }
+
+        workspace.trigger("hover-link", {
+            event,
+            source: this.plugin?.manifest?.id ?? "obsidian-plus",
+            hoverParent: targetEl,
+            targetEl,
+            linktext,
+            sourcePath
+        });
     }
 
     /* ---------- choose behavior ---------- */

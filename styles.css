@@ -139,28 +139,30 @@ input[data-task="-"] {
 
 .tree-of-thought__header {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    flex-direction: column;
+    gap: 0.35rem;
     font-weight: 600;
 }
 
-.tree-of-thought__header-line {
-    flex: 1 1 100%;
+.tree-of-thought__header-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5rem;
 }
 
-.tree-of-thought__header-line ul,
-.tree-of-thought__header-line ol {
+.tree-of-thought__header-content {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.tree-of-thought__header-content ul,
+.tree-of-thought__header-content ol {
     margin: 0;
 }
 
-.tree-of-thought__header-meta {
-    display: flex;
-    align-items: center;
-    gap: 0.5rem;
-    font-size: 0.85em;
-}
-
-.tree-of-thought__file {
+.tree-of-thought__header-link {
+    white-space: nowrap;
+    margin-left: auto;
     color: var(--text-muted);
 }
 
@@ -185,7 +187,7 @@ input[data-task="-"] {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     font-size: 0.85em;
     color: var(--text-muted);
 }
@@ -222,9 +224,18 @@ input[data-task="-"] {
     color: var(--text-faint);
 }
 
+.tree-of-thought__label--interactive {
+    cursor: pointer;
+}
+
+.tree-of-thought__label-link {
+    cursor: pointer;
+}
+
 .tree-of-thought__link {
     text-decoration: none;
     opacity: 0.9;
+    margin-left: auto;
 }
 
 .tree-of-thought__link:hover {

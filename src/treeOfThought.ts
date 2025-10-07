@@ -54,6 +54,9 @@ interface OriginSectionResult {
   headerMarkdown?: string;
   segments?: ThoughtReferenceSegment[];
   label?: string;
+  tooltip?: string;
+  targetAnchor?: string | null;
+  targetLine?: number | null;
 }
 
 export interface ThoughtSection {
@@ -63,6 +66,9 @@ export interface ThoughtSection {
   file: TFile;
   linktext: string;
   segments?: ThoughtReferenceSegment[];
+  tooltip?: string;
+  targetAnchor?: string | null;
+  targetLine?: number | null;
 }
 
 export interface ThoughtReference {
@@ -130,7 +136,13 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
       markdown: originSection.markdown,
       file: sourceFile,
       linktext: app.metadataCache.fileToLinktext(sourceFile, ""),
-      segments: originSection.segments
+      segments: originSection.segments,
+      tooltip: originSection.tooltip,
+      targetAnchor: sanitizeAnchor(originSection.targetAnchor),
+      targetLine:
+        typeof originSection.targetLine === "number"
+          ? Math.max(0, Math.floor(originSection.targetLine))
+          : undefined
     });
   }
 
@@ -197,6 +209,9 @@ async function buildOriginSection(
   let headerMarkdown: string | undefined;
   let segments: ThoughtReferenceSegment[] | undefined;
   let label: string | undefined;
+  let tooltip: string | undefined;
+  let targetAnchor: string | null = blockId ? `^${blockId.replace(/^[#^]/, "")}` : null;
+  let targetLine: number | null = null;
 
   if (startLine != null) {
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
@@ -205,10 +220,16 @@ async function buildOriginSection(
       markdown = outline.markdown ?? "";
       const summary = createReferenceSummary(outline);
       if (summary) {
-        segments = summary.segments;
-        label = summary.summary;
+        const parentSegments = filterParentSegments(summary.segments);
+        segments = parentSegments ?? summary.segments;
+        label = summarizeSegments(parentSegments) || summary.summary;
+        tooltip = summary.tooltip;
+      }
+      if (outline.rootAnchor) {
+        targetAnchor = outline.rootAnchor;
       }
     }
+    targetLine = startLine;
   } else if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
     const fallback = buildContextFallback(task, context);
     markdown = prepareOutline(fallback, { stripFirstMarker: false });
@@ -234,7 +255,10 @@ async function buildOriginSection(
     markdown: markdown.trimEnd(),
     headerMarkdown,
     segments,
-    label
+    label,
+    tooltip,
+    targetAnchor,
+    targetLine
   };
 }
 
@@ -301,11 +325,17 @@ async function buildBacklinkSections(
         const summary = createReferenceSummary(outline);
         branchSections.push({
           role: "branch",
-          label: summary?.summary || label,
+          label:
+            summarizeSegments(filterParentSegments(summary?.segments)) ||
+            summary?.summary ||
+            label,
           markdown: outline.markdown.trimEnd(),
           file,
           linktext,
-          segments: summary?.segments
+          segments: filterParentSegments(summary?.segments) ?? summary?.segments,
+          tooltip: summary?.tooltip,
+          targetAnchor: sanitizeAnchor(outline.rootAnchor),
+          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined
         });
       } else {
         const summary = createReferenceSummary(outline);
@@ -916,6 +946,38 @@ function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | nu
     segments,
     tooltip: tooltipSource || undefined
   };
+}
+
+function filterParentSegments(
+  segments?: ThoughtReferenceSegment[] | null
+): ThoughtReferenceSegment[] | undefined {
+  if (!Array.isArray(segments) || !segments.length) {
+    return undefined;
+  }
+
+  const filtered = segments.filter(segment => segment && segment.type !== "child");
+  return filtered.length ? filtered : undefined;
+}
+
+function summarizeSegments(
+  segments?: ThoughtReferenceSegment[] | null
+): string {
+  if (!Array.isArray(segments) || !segments.length) {
+    return "";
+  }
+
+  return segments
+    .map(segment => (segment?.text ?? "").trim())
+    .filter(Boolean)
+    .join(" > ")
+    .trim();
+}
+
+function sanitizeAnchor(anchor?: string | null): string | null {
+  if (!anchor) {
+    return null;
+  }
+  return anchor.replace(/^#/, "");
 }
 
 function findParentLineText(lines: string[], startLine: number, rootIndent: number): string | null {
