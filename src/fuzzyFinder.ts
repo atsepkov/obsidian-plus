@@ -889,24 +889,28 @@ function escapeCssIdentifier(value: string): string {
               const lineEl = item.createDiv({ cls: "tree-of-thought__reference-line" });
 
               if (Array.isArray(ref.segments) && ref.segments.length) {
-                ref.segments.forEach((segment, index) => {
-                  const linkEl = lineEl.createEl("a", {
-                    text: segment.text,
-                    cls: "tree-of-thought__reference-link internal-link"
+                for (let index = 0; index < ref.segments.length; index++) {
+                  const segment = ref.segments[index];
+                  const segmentEl = lineEl.createSpan({
+                    cls: "tree-of-thought__reference-link"
                   });
 
-                  const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
-                  const href = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
-                  linkEl.setAttr("href", href);
+                  try {
+                    await this.renderReferenceSegmentMarkdown(segmentEl, segment.text, ref.file.path);
+                  } catch (error) {
+                    console.error("Failed to render reference segment", error);
+                    segmentEl.setText(segment.text);
+                  }
 
-                  linkEl.addEventListener("click", evt => {
+                  const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
+                  const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
+                  const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+
+                  segmentEl.addEventListener("click", evt => {
                     evt.preventDefault();
                     evt.stopPropagation();
 
-                    const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
-                    const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
                     const state = typeof line === "number" ? { eState: { line } } : undefined;
-
                     this.app.workspace.openLinkText(openTarget, ref.file.path, false, state);
                     this.close();
                   });
@@ -914,7 +918,7 @@ function escapeCssIdentifier(value: string): string {
                   if (index < ref.segments.length - 1) {
                     lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
                   }
-                });
+                }
               } else if (ref.summary) {
                 lineEl.createSpan({ text: ref.summary, cls: "tree-of-thought__reference-text" });
               }
@@ -943,6 +947,32 @@ function escapeCssIdentifier(value: string): string {
           console.error("Failed to render thought view", error);
           container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to render this thought." });
         }
+    }
+
+    private async renderReferenceSegmentMarkdown(target: HTMLElement, markdown: string, filePath: string) {
+        const temp = document.createElement("div");
+        await MarkdownRenderer.render(this.app, markdown, temp, filePath, this.plugin);
+
+        const fragment = document.createDocumentFragment();
+        const shouldUnwrapParagraph =
+            temp.childElementCount === 1 &&
+            temp.childNodes.length <= 1 &&
+            temp.firstElementChild instanceof HTMLElement &&
+            temp.firstElementChild.tagName === "P";
+
+        if (shouldUnwrapParagraph) {
+            const paragraph = temp.firstElementChild as HTMLElement;
+            while (paragraph.firstChild) {
+                fragment.appendChild(paragraph.firstChild);
+            }
+        } else {
+            while (temp.firstChild) {
+                fragment.appendChild(temp.firstChild);
+            }
+        }
+
+        target.appendChild(fragment);
+        temp.remove();
     }
 
     /* ---------- choose behavior ---------- */
