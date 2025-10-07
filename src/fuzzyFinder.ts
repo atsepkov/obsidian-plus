@@ -2,7 +2,14 @@ import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
-import { loadTreeOfThought } from "./treeOfThought";
+import {
+  loadTreeOfThought,
+  createThoughtRootPreview,
+  type ThoughtReference,
+  type ThoughtSection,
+  type TreeOfThoughtResult,
+  type TaskContextSnapshot
+} from "./treeOfThought";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
   
 export interface TaskEntry {
@@ -13,6 +20,22 @@ export interface TaskEntry {
   path?:  string;        // returned by Dataview
   lines:  string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
+}
+
+interface ThoughtViewState {
+  key: string;
+  cacheIndex: number;
+  task: TaskEntry;
+  file: TFile | null;
+  headerMarkdown?: string;
+  initialSections: ThoughtSection[];
+  references: ThoughtReference[];
+  fullResult?: TreeOfThoughtResult;
+  blockId?: string;
+  context?: TaskContextSnapshot | null;
+  loading: boolean;
+  error?: string;
+  promise: Promise<void> | null;
 }
 
 function escapeCssIdentifier(value: string): string {
@@ -277,6 +300,9 @@ function escapeCssIdentifier(value: string): string {
     private thoughtDisplayIndex: number | null = null;
     private thoughtSearchQuery = "";
     private thoughtCacheKey: string | null = null;
+    private thoughtState: ThoughtViewState | null = null;
+    private thoughtLoadToken = 0;
+    private thoughtRerenderScheduled = false;
     private autoThoughtGuard: string | null = null;
     private lastTaskSuggestions: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
     private cachedTag   = "";          // cache key currently loaded
@@ -544,6 +570,8 @@ function escapeCssIdentifier(value: string): string {
         this.thoughtDisplayIndex = null;
         this.thoughtSearchQuery = "";
         this.thoughtCacheKey = null;
+        this.thoughtState = null;
+        this.thoughtLoadToken++;
         this.autoThoughtGuard = this.inputEl.value;
     }
 
@@ -628,6 +656,248 @@ function escapeCssIdentifier(value: string): string {
         if (!this.taskCache[key][index]) {
           this.taskCache[key][index] = task;
         }
+    }
+
+    private resolveTaskFile(task: TaskEntry): TFile | null {
+        if (task.file) {
+          return task.file;
+        }
+
+        const path = task.path ?? task.file?.path ?? "";
+        if (!path) {
+          return null;
+        }
+
+        const file = this.app.vault.getFileByPath(path);
+        if (file) {
+          task.file = file;
+          return file;
+        }
+
+        return null;
+    }
+
+    private buildThoughtLabel(file: TFile): string {
+        return this.app.metadataCache.fileToLinktext(file, "");
+    }
+
+    private prepareThoughtState(key: string, index: number, task: TaskEntry): ThoughtViewState | null {
+        if (!task) {
+          return null;
+        }
+
+        const file = this.resolveTaskFile(task);
+
+        if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
+          const preview = createThoughtRootPreview(task);
+          const sections: ThoughtSection[] = [];
+
+          if (file && preview.markdown?.trim()) {
+            sections.push({
+              role: "root",
+              label: this.buildThoughtLabel(file),
+              markdown: preview.markdown,
+              file,
+              linktext: this.app.metadataCache.fileToLinktext(file, "")
+            });
+          }
+
+          this.thoughtState = {
+            key,
+            cacheIndex: index,
+            task,
+            file,
+            headerMarkdown: preview.headerMarkdown,
+            initialSections: sections,
+            references: [],
+            loading: false,
+            error: undefined,
+            promise: null
+          };
+        } else {
+          this.thoughtState.task = task;
+          if (!this.thoughtState.file && file) {
+            this.thoughtState.file = file;
+          }
+        }
+
+        if (this.thoughtState) {
+          this.startThoughtLoad(this.thoughtState);
+        }
+
+        return this.thoughtState;
+    }
+
+    private startThoughtLoad(state: ThoughtViewState): void {
+        if (!this.thoughtMode) {
+          return;
+        }
+
+        if (state.promise || state.fullResult || state.error) {
+          return;
+        }
+
+        const token = ++this.thoughtLoadToken;
+        state.loading = true;
+
+        const run = async () => {
+          try {
+            const blockId = await ensureBlockId(this.app, state.task);
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+            state.blockId = blockId;
+
+            let context: TaskContextSnapshot | null = null;
+            const provider = (this.plugin as any)?.getTaskContext;
+            if (typeof provider === "function") {
+              try {
+                context = await provider.call(this.plugin, state.task);
+              } catch (error) {
+                console.error("Failed to load task context for thought view", error);
+              }
+            }
+
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+
+            state.context = context;
+
+            const resolvedFile = state.file ?? this.resolveTaskFile(state.task);
+            const preview = createThoughtRootPreview(state.task, context ?? undefined);
+            let changed = false;
+
+            if (preview.headerMarkdown && preview.headerMarkdown !== state.headerMarkdown) {
+              state.headerMarkdown = preview.headerMarkdown;
+              changed = true;
+            }
+
+            if (resolvedFile && preview.markdown?.trim()) {
+              const normalized = preview.markdown.trim();
+              const existing = state.initialSections[0];
+              if (!existing || existing.markdown !== normalized || existing.file.path !== resolvedFile.path) {
+                state.initialSections = [{
+                  role: "root",
+                  label: this.buildThoughtLabel(resolvedFile),
+                  markdown: normalized,
+                  file: resolvedFile,
+                  linktext: this.app.metadataCache.fileToLinktext(resolvedFile, "")
+                }];
+                changed = true;
+              }
+              if (!state.file) {
+                state.file = resolvedFile;
+              }
+            }
+
+            if (changed) {
+              this.scheduleThoughtRerender();
+            }
+
+            const thought = await loadTreeOfThought({
+              app: this.app,
+              task: state.task,
+              blockId,
+              context
+            });
+
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+
+            state.fullResult = thought;
+            state.loading = false;
+            state.promise = null;
+            state.error = thought.error;
+            if (thought.sourceFile) {
+              state.file = thought.sourceFile;
+            }
+            if (thought.headerMarkdown) {
+              state.headerMarkdown = thought.headerMarkdown;
+            }
+
+            this.scheduleThoughtRerender();
+          } catch (error) {
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+            console.error("Failed to load tree-of-thought content", error);
+            state.error = "Failed to load tree of thought.";
+            state.loading = false;
+            state.promise = null;
+            this.scheduleThoughtRerender();
+          }
+        };
+
+        state.promise = run();
+    }
+
+    private isCurrentThoughtState(state: ThoughtViewState, token: number): boolean {
+        return this.thoughtState === state && this.thoughtLoadToken === token;
+    }
+
+    private scheduleThoughtRerender(): void {
+        if (this.thoughtRerenderScheduled) {
+          return;
+        }
+        if (!this.thoughtMode) {
+          return;
+        }
+        this.thoughtRerenderScheduled = true;
+        window.requestAnimationFrame(() => {
+          this.thoughtRerenderScheduled = false;
+          if (this.thoughtMode) {
+            this.updateSuggestions();
+          }
+        });
+    }
+
+    private filterThoughtContent(
+        sections: ThoughtSection[] = [],
+        references: ThoughtReference[] = [],
+        search: string
+    ): { sections: ThoughtSection[]; references: ThoughtReference[]; message?: string } {
+        const trimmed = search.trim();
+        if (!trimmed) {
+          return { sections, references };
+        }
+
+        const needle = trimmed.toLowerCase();
+        const sectionMatches = (section: ThoughtSection): boolean => {
+          if (!section) return false;
+          if (section.markdown?.toLowerCase().includes(needle)) return true;
+          if (section.label?.toLowerCase().includes(needle)) return true;
+          if (section.linktext?.toLowerCase().includes(needle)) return true;
+          if (Array.isArray(section.segments)) {
+            return section.segments.some(segment => segment?.text?.toLowerCase().includes(needle));
+          }
+          return false;
+        };
+
+        const referenceMatches = (reference: ThoughtReference): boolean => {
+          if (!reference) return false;
+          if (reference.summary?.toLowerCase().includes(needle)) return true;
+          if (reference.label?.toLowerCase().includes(needle)) return true;
+          if (reference.linktext?.toLowerCase().includes(needle)) return true;
+          if (Array.isArray(reference.segments)) {
+            return reference.segments.some(segment => segment?.text?.toLowerCase().includes(needle));
+          }
+          return false;
+        };
+
+        const filteredSections = sections.filter(sectionMatches);
+        const filteredReferences = references.filter(referenceMatches);
+
+        if (!filteredSections.length && !filteredReferences.length) {
+          return {
+            sections: [],
+            references: [],
+            message: `No matches for “${trimmed}” in this thought.`
+          };
+        }
+
+        return { sections: filteredSections, references: filteredReferences };
     }
   
     /* ---------- data ---------- */
@@ -740,333 +1010,303 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const cacheList = this.taskCache[key];
-        if (!cacheList || cacheList.length === 0) {
+        if (!Array.isArray(cacheList) || cacheList.length === 0) {
           container.createDiv({ cls: "tree-of-thought__empty", text: "Loading tasks…" });
           return;
         }
 
-        if (this.thoughtTaskIndex == null || !cacheList[this.thoughtTaskIndex]) {
+        const index = this.thoughtTaskIndex;
+        if (index == null || !cacheList[index]) {
           container.createDiv({ cls: "tree-of-thought__empty", text: "Task not available." });
           return;
         }
 
-        const task = cacheList[this.thoughtTaskIndex];
-        if (!task.file && (task.path || task.file?.path)) {
-          const resolved = this.app.vault.getFileByPath(task.path ?? task.file?.path ?? "");
-          if (resolved) {
-            task.file = resolved;
-          }
+        const task = cacheList[index];
+        this.resolveTaskFile(task);
+
+        const state = this.prepareThoughtState(key, index, task);
+        if (!state) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to load this task." });
+          return;
         }
 
-        let loadingEl: HTMLElement | null = null;
+        const header = container.createDiv({ cls: "tree-of-thought__header" });
+        const headerRow = header.createDiv({ cls: "tree-of-thought__header-row" });
+        const headerLine = headerRow.createDiv({ cls: "tree-of-thought__header-content" });
 
-        try {
-          loadingEl = container.createDiv({ cls: "tree-of-thought__empty", text: "Loading..." });
+        const headerFile = state.fullResult?.sourceFile ?? state.file ?? this.resolveTaskFile(task);
+        const headerSource = headerFile?.path ?? task.path ?? task.file?.path ?? "";
+        const headerMarkdown = (state.fullResult?.headerMarkdown ?? state.headerMarkdown ?? "").trim();
 
-          const blockId = await ensureBlockId(this.app, task);
-          let context: any = null;
-          const contextProvider = (this.plugin as any)?.getTaskContext;
-          if (typeof contextProvider === "function") {
-            try {
-              context = await contextProvider.call(this.plugin, task);
-            } catch (contextError) {
-              console.error("Failed to load task context for thought view", contextError);
+        if (headerMarkdown) {
+          try {
+            await MarkdownRenderer.render(this.app, headerMarkdown, headerLine, headerSource, this.plugin);
+          } catch (error) {
+            console.error("Failed to render thought header", error);
+            headerLine.setText(headerMarkdown);
+          }
+        } else {
+          headerLine.setText(`${this.activeTag} ${task.text}`.trim());
+        }
+
+        headerLine.querySelectorAll("a.internal-link").forEach(link => {
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+            if (!target) {
+              return;
+            }
+            this.app.workspace.openLinkText(target, headerSource, false);
+            this.close();
+          });
+        });
+
+        if (headerFile) {
+          const linktext = this.app.metadataCache.fileToLinktext(headerFile, "");
+          const noteLink = headerRow.createEl("a", {
+            text: `[[${linktext}]]`,
+            cls: "internal-link tree-of-thought__header-link"
+          });
+          noteLink.setAttr("href", headerFile.path);
+          noteLink.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.app.workspace.openLinkText(headerFile.path, headerFile.path, false);
+            this.close();
+          });
+        }
+
+        const errorMessage = state.error ?? state.fullResult?.error;
+        if (errorMessage) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: errorMessage });
+          return;
+        }
+
+        const baseSections = state.fullResult?.sections?.length
+          ? state.fullResult.sections
+          : state.initialSections;
+        const baseReferences = state.fullResult?.references ?? [];
+        const { sections, references, message } = this.filterThoughtContent(
+          baseSections,
+          baseReferences,
+          this.thoughtSearchQuery
+        );
+
+        if ((!sections.length && !references.length) && message) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: message });
+        } else if (!sections.length && !references.length && !state.loading) {
+          const fallback = state.fullResult?.message ?? "No outline available for this task yet.";
+          container.createDiv({ cls: "tree-of-thought__empty", text: fallback });
+        }
+
+        let firstSection = true;
+        for (const section of sections) {
+          if (!firstSection) {
+            container.createEl("hr", { cls: "tree-of-thought__divider" });
+          }
+          firstSection = false;
+
+          const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
+          const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
+          meta.setAttr("data-role", section.role);
+
+          const labelContainer = meta.createDiv({ cls: "tree-of-thought__label" });
+          if (section.tooltip) {
+            labelContainer.setAttr("title", section.tooltip);
+          }
+
+          let firstAnchor: string | null =
+            typeof section.targetAnchor === "string" && section.targetAnchor.trim()
+              ? section.targetAnchor.replace(/^#/, "")
+              : null;
+          let firstLine: number | undefined =
+            typeof section.targetLine === "number"
+              ? Math.max(0, Math.floor(section.targetLine))
+              : undefined;
+
+          if (Array.isArray(section.segments) && section.segments.length) {
+            let renderedCount = 0;
+            for (const segment of section.segments) {
+              const segmentText = (segment?.text ?? "").trim();
+              if (!segmentText) {
+                continue;
+              }
+              if (renderedCount > 0) {
+                labelContainer.createSpan({ text: " > ", cls: "tree-of-thought__label-separator" });
+              }
+
+              const segmentEl = labelContainer.createSpan({ cls: "tree-of-thought__label-segment" });
+              try {
+                await this.renderReferenceSegmentMarkdown(segmentEl, segmentText, section.file.path);
+              } catch (error) {
+                console.error("Failed to render section label segment", error);
+                segmentEl.setText(segmentText);
+              }
+
+              const anchorSource = typeof segment?.anchor === "string" ? segment.anchor : "";
+              const anchor = anchorSource ? `#${anchorSource.replace(/^#/, "")}` : "";
+              const openTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
+              const line = typeof segment?.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+
+              if (!firstAnchor && anchorSource) {
+                firstAnchor = anchorSource.replace(/^#/, "");
+              }
+              if (firstLine === undefined && typeof line === "number") {
+                firstLine = line;
+              }
+
+              segmentEl.addClass("tree-of-thought__label-link");
+              segmentEl.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const stateLine = typeof line === "number" ? { eState: { line } } : undefined;
+                this.app.workspace.openLinkText(openTarget, section.file.path, false, stateLine);
+                this.close();
+              });
+
+              segmentEl.addEventListener("mouseenter", evt => {
+                this.triggerHoverPreview(evt, openTarget, section.file.path, segmentEl);
+              });
+
+              renderedCount++;
             }
           }
 
-          console.log("[TreeOfThought] context", {
-            task: {
-              path: task.path ?? task.file?.path,
-              line: task.line,
-              text: task.text
-            },
-            blockId,
-            context
-          });
-
-          const thought = await loadTreeOfThought({
-            app: this.app,
-            task,
-            blockId,
-            searchQuery: this.thoughtSearchQuery,
-            context
-          });
-
-          if (loadingEl?.isConnected) {
-            loadingEl.remove();
-            loadingEl = null;
+          if (!labelContainer.hasChildNodes()) {
+            labelContainer.createSpan({ text: section.label, cls: "tree-of-thought__label-text" });
           }
 
-          const header = container.createDiv({ cls: "tree-of-thought__header" });
-          const headerRow = header.createDiv({ cls: "tree-of-thought__header-row" });
-          const headerLine = headerRow.createDiv({ cls: "tree-of-thought__header-content" });
-          const headerMarkdown = (thought.headerMarkdown || "").trim();
-          const headerSource = thought.sourceFile?.path ?? task.path ?? task.file?.path ?? "";
-          if (headerMarkdown) {
-            try {
-              await MarkdownRenderer.render(this.app, headerMarkdown, headerLine, headerSource, this.plugin);
-            } catch (error) {
-              console.error("Failed to render thought header", error);
-              headerLine.setText(headerMarkdown);
-            }
-          } else {
-            headerLine.setText(`${this.activeTag} ${task.text}`.trim());
-          }
-
-          headerLine.querySelectorAll("a.internal-link").forEach(a => {
-            a.addEventListener("click", evt => {
+          if (labelContainer.hasChildNodes()) {
+            labelContainer.addClass("tree-of-thought__label--interactive");
+            labelContainer.addEventListener("click", evt => {
               evt.preventDefault();
               evt.stopPropagation();
-              const target = (a as HTMLAnchorElement).getAttribute("href") ?? "";
-              if (!target) return;
-              this.app.workspace.openLinkText(target, headerSource, false);
+              const anchor = firstAnchor ? `#${firstAnchor}` : "";
+              const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
+              const stateLine = typeof firstLine === "number" ? { eState: { line: firstLine } } : undefined;
+              this.app.workspace.openLinkText(target, section.file.path, false, stateLine);
+              this.close();
+            });
+
+            labelContainer.addEventListener("mouseenter", evt => {
+              const anchor = firstAnchor ? `#${firstAnchor}` : "";
+              const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
+              this.triggerHoverPreview(evt, target, section.file.path, labelContainer);
+            });
+          }
+
+          const link = meta.createEl("a", {
+            text: `[[${section.linktext}]]`,
+            cls: "internal-link tree-of-thought__link"
+          });
+          link.setAttr("href", section.file.path);
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.app.workspace.openLinkText(section.file.path, section.file.path, false);
+            this.close();
+          });
+
+          const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
+          try {
+            await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
+            await this.waitForNextFrame();
+          } catch (error) {
+            console.error("Failed to render tree-of-thought markdown", error);
+            body.createEl("pre", { text: section.markdown });
+            continue;
+          }
+
+          if (!body.childElementCount && !body.textContent?.trim()) {
+            body.createEl("pre", { text: section.markdown });
+          }
+
+          body.querySelectorAll("a.internal-link").forEach(link => {
+            link.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+              if (!target) {
+                return;
+              }
+              this.app.workspace.openLinkText(target, section.file.path, false);
               this.close();
             });
           });
+        }
 
-          if (thought.sourceFile) {
-            const linktext = this.app.metadataCache.fileToLinktext(thought.sourceFile, "");
-            const noteLink = headerRow.createEl("a", {
-              text: `[[${linktext}]]`,
-              cls: "internal-link tree-of-thought__header-link"
-            });
-            noteLink.setAttr("href", thought.sourceFile.path);
-            noteLink.addEventListener("click", evt => {
-              evt.preventDefault();
-              evt.stopPropagation();
-              this.app.workspace.openLinkText(thought.sourceFile!.path, thought.sourceFile!.path, false);
-              this.close();
-            });
+        if (references.length) {
+          if (!firstSection) {
+            container.createEl("hr", { cls: "tree-of-thought__divider" });
           }
 
-          if (thought.error) {
-            container.createDiv({ cls: "tree-of-thought__empty", text: thought.error });
-            return;
-          }
+          const refsEl = container.createDiv({ cls: "tree-of-thought__section tree-of-thought__section--references" });
+          const meta = refsEl.createDiv({ cls: "tree-of-thought__meta" });
+          meta.createSpan({ text: "References", cls: "tree-of-thought__label" });
 
-          const references = Array.isArray(thought.references) ? thought.references : [];
+          const list = refsEl.createEl("ul", { cls: "tree-of-thought__reference-list" });
 
-          if (!thought.sections.length && !references.length) {
-            container.createDiv({ cls: "tree-of-thought__empty", text: thought.message ?? "No outline available for this task yet." });
-            return;
-          }
-
-          let firstSection = true;
-          for (const section of thought.sections) {
-            if (!firstSection) {
-              container.createEl("hr", { cls: "tree-of-thought__divider" });
-            }
-            firstSection = false;
-
-            const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
-            const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
-            meta.setAttr("data-role", section.role);
-
-            const labelContainer = meta.createDiv({ cls: "tree-of-thought__label" });
-            if (section.tooltip) {
-              labelContainer.setAttr("title", section.tooltip);
+          for (const ref of references) {
+            const item = list.createEl("li", { cls: "tree-of-thought__reference-item" });
+            if (ref.tooltip) {
+              item.setAttr("title", ref.tooltip);
             }
 
-            let firstAnchor: string | null =
-              typeof section.targetAnchor === "string" && section.targetAnchor.trim()
-                ? section.targetAnchor.replace(/^#/, "")
-                : null;
-            let firstLine: number | undefined =
-              typeof section.targetLine === "number"
-                ? Math.max(0, Math.floor(section.targetLine))
-                : undefined;
+            const lineEl = item.createDiv({ cls: "tree-of-thought__reference-line" });
 
-            if (Array.isArray(section.segments) && section.segments.length) {
-              let renderedCount = 0;
-              for (let index = 0; index < section.segments.length; index++) {
-                const segment = section.segments[index];
-                const segmentText = (segment?.text ?? "").trim();
-                if (!segmentText) {
-                  continue;
-                }
-                if (renderedCount > 0) {
-                  labelContainer.createSpan({ text: " > ", cls: "tree-of-thought__label-separator" });
-                }
-                const segmentEl = labelContainer.createSpan({ cls: "tree-of-thought__label-segment" });
+            if (Array.isArray(ref.segments) && ref.segments.length) {
+              for (let index = 0; index < ref.segments.length; index++) {
+                const segment = ref.segments[index];
+                const segmentEl = lineEl.createSpan({ cls: "tree-of-thought__reference-link" });
+
                 try {
-                  await this.renderReferenceSegmentMarkdown(segmentEl, segmentText, section.file.path);
+                  await this.renderReferenceSegmentMarkdown(segmentEl, segment.text, ref.file.path);
                 } catch (error) {
-                  console.error("Failed to render section label segment", error);
-                  segmentEl.setText(segmentText);
+                  console.error("Failed to render reference segment", error);
+                  segmentEl.setText(segment.text);
                 }
 
-                const anchorSource = typeof segment?.anchor === "string" ? segment.anchor : "";
-                const anchor = anchorSource ? `#${anchorSource.replace(/^#/, "")}` : "";
-                const openTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
-                const line = typeof segment?.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+                const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
+                const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
+                const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
 
-                if (!firstAnchor && anchorSource) {
-                  firstAnchor = anchorSource.replace(/^#/, "");
-                }
-                if (firstLine === undefined && typeof line === "number") {
-                  firstLine = line;
-                }
-
-                segmentEl.addClass("tree-of-thought__label-link");
                 segmentEl.addEventListener("click", evt => {
                   evt.preventDefault();
                   evt.stopPropagation();
-                  const state = typeof line === "number" ? { eState: { line } } : undefined;
-                  this.app.workspace.openLinkText(openTarget, section.file.path, false, state);
+                  const stateLine = typeof line === "number" ? { eState: { line } } : undefined;
+                  this.app.workspace.openLinkText(openTarget, ref.file.path, false, stateLine);
                   this.close();
                 });
 
                 segmentEl.addEventListener("mouseenter", evt => {
-                  this.triggerHoverPreview(evt, openTarget, section.file.path, segmentEl);
+                  this.triggerHoverPreview(evt, openTarget, ref.file.path, segmentEl);
                 });
 
-                renderedCount++;
+                if (index < ref.segments.length - 1) {
+                  lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
+                }
               }
+            } else if (ref.summary) {
+              lineEl.createSpan({ text: ref.summary, cls: "tree-of-thought__reference-text" });
             }
 
-            if (!labelContainer.hasChildNodes()) {
-              labelContainer.createSpan({ text: section.label, cls: "tree-of-thought__label-text" });
+            if (lineEl.childNodes.length) {
+              lineEl.createSpan({ text: " ", cls: "tree-of-thought__reference-gap" });
             }
 
-            if (labelContainer.hasChildNodes()) {
-              labelContainer.addClass("tree-of-thought__label--interactive");
-              labelContainer.addEventListener("click", evt => {
-                evt.preventDefault();
-                evt.stopPropagation();
-
-                const anchor = firstAnchor ? `#${firstAnchor}` : "";
-                const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
-                const state = typeof firstLine === "number" ? { eState: { line: firstLine } } : undefined;
-                this.app.workspace.openLinkText(target, section.file.path, false, state);
-                this.close();
-              });
-
-              labelContainer.addEventListener("mouseenter", evt => {
-                const anchor = firstAnchor ? `#${firstAnchor}` : "";
-                const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
-                this.triggerHoverPreview(evt, target, section.file.path, labelContainer);
-              });
-            }
-
-            const link = meta.createEl("a", {
-              text: `[[${section.linktext}]]`,
-              cls: "internal-link tree-of-thought__link"
+            const noteLink = lineEl.createEl("a", {
+              text: `[[${ref.linktext}]]`,
+              cls: "internal-link tree-of-thought__reference-note"
             });
-            link.setAttr("href", section.file.path);
-            link.addEventListener("click", evt => {
+            noteLink.setAttr("href", ref.file.path);
+            noteLink.addEventListener("click", evt => {
               evt.preventDefault();
               evt.stopPropagation();
-              this.app.workspace.openLinkText(section.file.path, section.file.path, false);
+              this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
               this.close();
             });
-
-            const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
-            try {
-              await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
-              await this.waitForNextFrame();
-            } catch (error) {
-              console.error("Failed to render tree-of-thought markdown", error);
-              body.createEl("pre", { text: section.markdown });
-              continue;
-            }
-            if (!body.childElementCount && !body.textContent?.trim()) {
-              body.createEl("pre", { text: section.markdown });
-            }
-
-            body.querySelectorAll("a.internal-link").forEach(a => {
-              a.addEventListener("click", evt => {
-                evt.preventDefault();
-                evt.stopPropagation();
-                const target = (a as HTMLAnchorElement).getAttribute("href") ?? "";
-                if (!target) return;
-                this.app.workspace.openLinkText(target, section.file.path, false);
-                this.close();
-              });
-            });
-
           }
-
-          if (references.length) {
-            if (!firstSection) {
-              container.createEl("hr", { cls: "tree-of-thought__divider" });
-            }
-
-            const refsEl = container.createDiv({ cls: "tree-of-thought__section tree-of-thought__section--references" });
-            const meta = refsEl.createDiv({ cls: "tree-of-thought__meta" });
-            meta.createSpan({ text: "References", cls: "tree-of-thought__label" });
-
-            const list = refsEl.createEl("ul", { cls: "tree-of-thought__reference-list" });
-
-            for (const ref of references) {
-              const item = list.createEl("li", { cls: "tree-of-thought__reference-item" });
-              if (ref.tooltip) {
-                item.setAttr("title", ref.tooltip);
-              }
-
-              const lineEl = item.createDiv({ cls: "tree-of-thought__reference-line" });
-
-              if (Array.isArray(ref.segments) && ref.segments.length) {
-                for (let index = 0; index < ref.segments.length; index++) {
-                  const segment = ref.segments[index];
-                  const segmentEl = lineEl.createSpan({
-                    cls: "tree-of-thought__reference-link"
-                  });
-
-                  try {
-                    await this.renderReferenceSegmentMarkdown(segmentEl, segment.text, ref.file.path);
-                  } catch (error) {
-                    console.error("Failed to render reference segment", error);
-                    segmentEl.setText(segment.text);
-                  }
-
-                  const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
-                  const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
-                  const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
-
-                  segmentEl.addEventListener("click", evt => {
-                    evt.preventDefault();
-                    evt.stopPropagation();
-
-                    const state = typeof line === "number" ? { eState: { line } } : undefined;
-                    this.app.workspace.openLinkText(openTarget, ref.file.path, false, state);
-                    this.close();
-                  });
-
-                  segmentEl.addEventListener("mouseenter", evt => {
-                    this.triggerHoverPreview(evt, openTarget, ref.file.path, segmentEl);
-                  });
-
-                  if (index < ref.segments.length - 1) {
-                    lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
-                  }
-                }
-              } else if (ref.summary) {
-                lineEl.createSpan({ text: ref.summary, cls: "tree-of-thought__reference-text" });
-              }
-
-              if (lineEl.childNodes.length) {
-                lineEl.createSpan({ text: " ", cls: "tree-of-thought__reference-gap" });
-              }
-
-              const noteLink = lineEl.createEl("a", {
-                text: `[[${ref.linktext}]]`,
-                cls: "internal-link tree-of-thought__reference-note"
-              });
-              noteLink.setAttr("href", ref.file.path);
-              noteLink.addEventListener("click", evt => {
-                evt.preventDefault();
-                evt.stopPropagation();
-                this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
-                this.close();
-              });
-            }
-          }
-        } catch (error) {
-          if (loadingEl?.isConnected) {
-            loadingEl.remove();
-          }
-          console.error("Failed to render thought view", error);
-          container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to render this thought." });
         }
     }
 

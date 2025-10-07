@@ -30,7 +30,7 @@ interface ChildContext {
   anchor?: string | null;
 }
 
-interface TaskContextSnapshot {
+export interface TaskContextSnapshot {
   parents?: TaskContextEntry[];
   children?: TaskContextEntry[];
   linksFromTask?: Record<string, ThoughtLinkPreview> | null;
@@ -102,6 +102,46 @@ export interface TreeOfThoughtResult {
   message?: string;
   error?: string;
   headerMarkdown?: string;
+}
+
+export interface ThoughtRootPreview {
+  markdown: string;
+  headerMarkdown?: string;
+}
+
+export function createThoughtRootPreview(
+  task: TaskEntry,
+  context?: TaskContextSnapshot | null
+): ThoughtRootPreview {
+  const preview: ThoughtRootPreview = { markdown: "" };
+
+  const ensuredHeader = ensureTaskLineMarkdown(task.text, task.status).trim();
+  if (ensuredHeader) {
+    preview.headerMarkdown = ensuredHeader;
+  }
+
+  let markdown = "";
+
+  if (context) {
+    const fallback = buildContextFallback(task, context);
+    if (fallback.trim()) {
+      const outlined = prepareOutline(fallback, { stripFirstMarker: false });
+      markdown = ensureChildrenOnly(outlined).trim();
+    }
+  }
+
+  if (!markdown && Array.isArray(task.lines) && task.lines.length) {
+    const snippet = prepareOutline(task.lines.join("\n"), { stripFirstMarker: true });
+    markdown = ensureChildrenOnly(snippet).trim();
+  }
+
+  if (!markdown && task.text) {
+    const snippet = prepareOutline(task.text, { stripFirstMarker: true });
+    markdown = ensureChildrenOnly(snippet).trim();
+  }
+
+  preview.markdown = markdown;
+  return preview;
 }
 
 export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<TreeOfThoughtResult> {
@@ -230,13 +270,15 @@ async function buildOriginSection(
       }
     }
     targetLine = startLine;
-  } else if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
-    const fallback = buildContextFallback(task, context);
-    markdown = prepareOutline(fallback, { stripFirstMarker: false });
-    segments = buildSegmentsFromTaskContext(context);
-  } else if (Array.isArray(task.lines) && task.lines.length) {
-    const snippet = task.lines.join("\n");
-    markdown = prepareOutline(snippet, { stripFirstMarker: true });
+  } else {
+    const preview = createThoughtRootPreview(task, context);
+    markdown = preview.markdown;
+    if (!headerMarkdown && preview.headerMarkdown) {
+      headerMarkdown = preview.headerMarkdown;
+    }
+    if (context) {
+      segments = buildSegmentsFromTaskContext(context);
+    }
   }
 
   if (!headerMarkdown) {
