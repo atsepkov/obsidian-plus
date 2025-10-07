@@ -28,6 +28,9 @@ interface BacklinkOutline {
   hasChildren: boolean;
   rootText: string;
   parentText: string | null;
+  parentChain: string[];
+  contextText: string | null;
+  snippet: string;
 }
 
 export interface ThoughtSection {
@@ -42,7 +45,8 @@ export interface ThoughtReference {
   file: TFile;
   linktext: string;
   label: string;
-  preview: string;
+  summary: string;
+  tooltip?: string;
 }
 
 export interface TreeOfThoughtOptions {
@@ -115,7 +119,7 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
 
   const filteredReferences = filter
     ? references.filter(reference =>
-        reference.preview.toLowerCase().includes(filter) ||
+        reference.summary.toLowerCase().includes(filter) ||
         reference.linktext.toLowerCase().includes(filter)
       )
     : references;
@@ -206,7 +210,9 @@ async function buildBacklinkSections(
 
     const seenLines = new Set<number>();
     const branchMarkdowns: string[] = [];
-    const referencePreviews: string[] = [];
+    const referenceEntries: ThoughtReference[] = [];
+    const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
+    const label = formatThoughtLabel(app, file);
 
     for (const entry of orderedEntries) {
       const lineIndex = Number.isFinite(entry?.line) ? Math.max(0, Math.floor(entry!.line)) : -1;
@@ -226,9 +232,15 @@ async function buildBacklinkSections(
       if (outline.hasChildren && outline.markdown.trim()) {
         branchMarkdowns.push(outline.markdown.trimEnd());
       } else {
-        const preview = createReferencePreview(outline);
-        if (preview.trim()) {
-          referencePreviews.push(preview.trim());
+        const summary = createReferenceSummary(outline);
+        if (summary?.summary) {
+          referenceEntries.push({
+            file,
+            linktext,
+            label,
+            summary: summary.summary,
+            tooltip: summary.tooltip
+          });
         }
       }
     }
@@ -236,24 +248,15 @@ async function buildBacklinkSections(
     if (branchMarkdowns.length) {
       branchSections.push({
         role: "branch",
-        label: formatThoughtLabel(app, file),
+        label,
         markdown: branchMarkdowns.join("\n\n"),
         file,
-        linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
+        linktext
       });
     }
 
-    if (referencePreviews.length) {
-      const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
-      const label = formatThoughtLabel(app, file);
-      for (const preview of referencePreviews) {
-        referenceSections.push({
-          file,
-          linktext,
-          label,
-          preview
-        });
-      }
+    if (referenceEntries.length) {
+      referenceSections.push(...referenceEntries);
     }
   }
 
@@ -601,6 +604,7 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
 
   const children: string[] = [];
   let minChildIndent = Number.POSITIVE_INFINITY;
+  let firstChildText: string | null = null;
 
   for (let i = 1; i < snippetLines.length; i++) {
     const raw = normalizeSnippet(snippetLines[i]);
@@ -612,6 +616,13 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     const indent = leadingSpace(raw);
     if (indent <= rootIndent) {
       continue;
+    }
+
+    if (!firstChildText) {
+      const childText = stripListMarker(raw).trim() || raw.trim();
+      if (childText) {
+        firstChildText = childText;
+      }
     }
 
     minChildIndent = Math.min(minChildIndent, indent);
@@ -635,57 +646,146 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     markdown = prepareOutline(dedented.join("\n"), { stripFirstMarker: false });
   }
 
-  const parentText = findParentLineText(lines, startLine, rootIndent);
+  const parentChain = collectParentChain(lines, startLine, rootIndent);
+  const parentText = parentChain.length
+    ? parentChain[parentChain.length - 1]
+    : findParentLineText(lines, startLine, rootIndent);
 
   return {
     markdown,
     hasChildren,
     rootText,
-    parentText
+    parentText,
+    parentChain,
+    contextText: firstChildText,
+    snippet: snippet.trim()
   };
 }
 
-function createReferencePreview(outline: BacklinkOutline): string {
-  const parent = outline.parentText?.trim();
-  const root = outline.rootText.trim();
+interface ReferenceSummary {
+  summary: string;
+  tooltip?: string;
+}
 
-  if (parent && root && parent !== root) {
-    return `${parent}\n> ${root}`;
+function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | null {
+  const segments: string[] = [];
+
+  for (const parent of outline.parentChain) {
+    const cleaned = cleanReferenceText(parent);
+    if (!cleaned) {
+      continue;
+    }
+    if (segments[segments.length - 1] === cleaned) {
+      continue;
+    }
+    segments.push(cleaned);
   }
 
-  return parent || root;
+  const contextCandidates: Array<string | null | undefined> = [
+    outline.contextText,
+    outline.rootText,
+    outline.parentText
+  ];
+
+  for (const candidate of contextCandidates) {
+    const cleaned = cleanReferenceText(candidate);
+    if (!cleaned) {
+      continue;
+    }
+    if (segments[segments.length - 1] === cleaned) {
+      continue;
+    }
+    segments.push(cleaned);
+    break;
+  }
+
+  const summary = segments.join(" > ").trim();
+  if (!summary) {
+    return null;
+  }
+
+  const tooltipSource = outline.snippet?.trim();
+
+  return {
+    summary,
+    tooltip: tooltipSource || undefined
+  };
 }
 
 function findParentLineText(lines: string[], startLine: number, rootIndent: number): string | null {
+  const chain = collectParentChain(lines, startLine, rootIndent);
+  return chain.length ? chain[chain.length - 1] : null;
+}
+
+function collectParentChain(lines: string[], startLine: number, rootIndent: number): string[] {
+  const chain: string[] = [];
+  let currentIndent = rootIndent;
+
   for (let i = startLine - 1; i >= 0; i--) {
     const raw = normalizeSnippet(lines[i]);
     if (!raw.trim()) {
       continue;
     }
 
-    if (isListItem(raw)) {
-      const indent = leadingSpace(raw);
-      if (indent < rootIndent) {
-        return stripListMarker(raw).trim();
+    const indent = leadingSpace(raw);
+    const trimmed = raw.trim();
+
+    if (isHeading(trimmed)) {
+      const headingText = stripHeadingMarker(raw);
+      if (headingText) {
+        chain.unshift(headingText);
+        currentIndent = indent;
       }
       continue;
     }
 
-    if (isHeading(raw.trim())) {
-      return stripHeadingMarker(raw);
+    if (!isListItem(raw)) {
+      if (indent < currentIndent) {
+        chain.unshift(trimmed);
+        currentIndent = indent;
+      }
+      continue;
     }
 
-    if (leadingSpace(raw) < rootIndent) {
-      return raw.trim();
+    if (indent < currentIndent) {
+      const text = stripListMarker(raw).trim();
+      if (text) {
+        chain.unshift(text);
+        currentIndent = indent;
+      }
     }
   }
 
-  return null;
+  return chain;
 }
 
 function stripHeadingMarker(value: string): string {
   const match = value.match(/^(#+)\s*(.*)$/);
   return match ? (match[2] ?? "").trim() : value.trim();
+}
+
+function cleanReferenceText(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  let text = normalizeSnippet(value);
+  text = stripListMarker(text);
+
+  text = text
+    .replace(/!\[\[(.*?)\]\]/g, "$1")
+    .replace(/\[\[([^\]|]+)\|([^\]]+)\]\]/g, "$2")
+    .replace(/\[\[([^\]]+)\]\]/g, "$1")
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, "")
+    .replace(/\^[-A-Za-z0-9]+\b/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  text = text.replace(/^[-*+]>?\s*/, "");
+  text = text.replace(/^>\s*/, "");
+  text = text.replace(/[:;]\s*$/, "").trim();
+
+  return text;
 }
 
 function extractDateToken(value: string | null | undefined): string | null {

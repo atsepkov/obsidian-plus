@@ -212,37 +212,22 @@ input[data-task="-"] {
 }
 
 .tree-of-thought__reference-list {
-    list-style: none;
     margin: 0;
-    padding-left: 0;
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
+    padding-left: 1.4rem;
 }
 
 .tree-of-thought__reference-item {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-}
-
-.tree-of-thought__reference-header {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    font-size: 0.85em;
     color: var(--text-muted);
-}
-
-.tree-of-thought__reference-preview {
     font-size: 0.9em;
-    color: var(--text-muted);
     line-height: 1.35;
 }
 
-.tree-of-thought__reference-preview .internal-embed,
-.tree-of-thought__reference-preview img {
-    max-width: 100%;
+.tree-of-thought__reference-line {
+    display: inline;
+}
+
+.tree-of-thought__reference-line .internal-link {
+    margin-left: 0.35rem;
 }
 
 .tree-of-thought__empty {
