@@ -144,6 +144,22 @@ input[data-task="-"] {
     font-weight: 600;
 }
 
+.tree-of-thought__header-line {
+    flex: 1 1 100%;
+}
+
+.tree-of-thought__header-line ul,
+.tree-of-thought__header-line ol {
+    margin: 0;
+}
+
+.tree-of-thought__header-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.85em;
+}
+
 .tree-of-thought__file {
     color: var(--text-muted);
 }
@@ -169,6 +185,7 @@ input[data-task="-"] {
     align-items: center;
     justify-content: space-between;
     gap: 0.75rem;
+    flex-wrap: wrap;
     font-size: 0.85em;
     color: var(--text-muted);
 }
@@ -182,7 +199,27 @@ input[data-task="-"] {
 }
 
 .tree-of-thought__label {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.25rem;
     font-weight: 600;
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.tree-of-thought__label-text {
+    font-weight: 600;
+}
+
+.tree-of-thought__label-segment {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.tree-of-thought__label-separator {
+    color: var(--text-faint);
 }
 
 .tree-of-thought__link {

@@ -49,12 +49,20 @@ interface BacklinkOutline {
   snippet: string;
 }
 
+interface OriginSectionResult {
+  markdown: string;
+  headerMarkdown?: string;
+  segments?: ThoughtReferenceSegment[];
+  label?: string;
+}
+
 export interface ThoughtSection {
   role: "root" | "branch";
   label: string;
   markdown: string;
   file: TFile;
   linktext: string;
+  segments?: ThoughtReferenceSegment[];
 }
 
 export interface ThoughtReference {
@@ -87,6 +95,7 @@ export interface TreeOfThoughtResult {
   references: ThoughtReference[];
   message?: string;
   error?: string;
+  headerMarkdown?: string;
 }
 
 export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<TreeOfThoughtResult> {
@@ -107,14 +116,21 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
 
   const references: ThoughtReference[] = [];
 
-  const originMarkdown = await buildOriginMarkdown(app, sourceFile, task, resolvedBlockId, context);
-  if (originMarkdown.trim()) {
+  const originSection = await buildOriginSection(app, sourceFile, task, resolvedBlockId, context);
+  let headerMarkdown: string | undefined = originSection?.headerMarkdown;
+  if (!headerMarkdown) {
+    const ensured = ensureTaskLineMarkdown(task.text, task.status).trim();
+    headerMarkdown = ensured || undefined;
+  }
+
+  if (originSection?.markdown?.trim()) {
     sections.push({
       role: "root",
-      label: formatThoughtLabel(app, sourceFile),
-      markdown: originMarkdown,
+      label: originSection.label ?? formatThoughtLabel(app, sourceFile),
+      markdown: originSection.markdown,
       file: sourceFile,
-      linktext: app.metadataCache.fileToLinktext(sourceFile, "")
+      linktext: app.metadataCache.fileToLinktext(sourceFile, ""),
+      segments: originSection.segments
     });
   }
 
@@ -132,7 +148,8 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
       sourceFile,
       sections: [],
       references: [],
-      message: "No outline available for this task yet."
+      message: "No outline available for this task yet.",
+      headerMarkdown
     };
   }
 
@@ -153,44 +170,72 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
       sourceFile,
       sections: [],
       references: [],
-      message: `No matches for “${searchQuery?.trim()}” in this thought.`
+      message: `No matches for “${searchQuery?.trim()}” in this thought.`,
+      headerMarkdown
     };
   }
 
   return {
     sourceFile,
     sections: filteredSections,
-    references: filteredReferences
+    references: filteredReferences,
+    headerMarkdown
   };
 }
 
-async function buildOriginMarkdown(
+async function buildOriginSection(
   app: App,
   file: TFile,
   task: TaskEntry,
   blockId: string,
   context?: TaskContextSnapshot | null
-): Promise<string> {
+): Promise<OriginSectionResult | null> {
   const lines = await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
-  let origin = "";
+
+  let markdown = "";
+  let headerMarkdown: string | undefined;
+  let segments: ThoughtReferenceSegment[] | undefined;
+  let label: string | undefined;
 
   if (startLine != null) {
-    const markdown = extractListSubtree(lines, startLine, { omitRoot: true });
-    origin = prepareOutline(markdown, { stripFirstMarker: false });
+    headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
+    const outline = buildBacklinkOutline(lines, startLine);
+    if (outline) {
+      markdown = outline.markdown ?? "";
+      const summary = createReferenceSummary(outline);
+      if (summary) {
+        segments = summary.segments;
+        label = summary.summary;
+      }
+    }
   } else if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
     const fallback = buildContextFallback(task, context);
-    origin = prepareOutline(fallback, { stripFirstMarker: false });
+    markdown = prepareOutline(fallback, { stripFirstMarker: false });
+    segments = buildSegmentsFromTaskContext(context);
   } else if (Array.isArray(task.lines) && task.lines.length) {
     const snippet = task.lines.join("\n");
-    origin = prepareOutline(snippet, { stripFirstMarker: true });
+    markdown = prepareOutline(snippet, { stripFirstMarker: true });
   }
 
-  if (origin.trim()) {
-    origin = ensureChildrenOnly(origin);
+  if (!headerMarkdown) {
+    headerMarkdown = deriveTaskHeaderLine(task, startLine != null ? lines[startLine] : undefined);
   }
 
-  return origin.trimEnd();
+  if (markdown.trim()) {
+    markdown = ensureChildrenOnly(markdown).trimEnd();
+  }
+
+  if (!markdown.trim() && !headerMarkdown) {
+    return null;
+  }
+
+  return {
+    markdown: markdown.trimEnd(),
+    headerMarkdown,
+    segments,
+    label
+  };
 }
 
 async function buildBacklinkSections(
@@ -233,7 +278,6 @@ async function buildBacklinkSections(
     });
 
     const seenLines = new Set<number>();
-    const branchMarkdowns: string[] = [];
     const referenceEntries: ThoughtReference[] = [];
     const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
     const label = formatThoughtLabel(app, file);
@@ -254,7 +298,15 @@ async function buildBacklinkSections(
       }
 
       if (outline.hasChildren && outline.markdown.trim()) {
-        branchMarkdowns.push(outline.markdown.trimEnd());
+        const summary = createReferenceSummary(outline);
+        branchSections.push({
+          role: "branch",
+          label: summary?.summary || label,
+          markdown: outline.markdown.trimEnd(),
+          file,
+          linktext,
+          segments: summary?.segments
+        });
       } else {
         const summary = createReferenceSummary(outline);
         if (summary?.summary) {
@@ -268,16 +320,6 @@ async function buildBacklinkSections(
           });
         }
       }
-    }
-
-    if (branchMarkdowns.length) {
-      branchSections.push({
-        role: "branch",
-        label,
-        markdown: branchMarkdowns.join("\n\n"),
-        file,
-        linktext
-      });
     }
 
     if (referenceEntries.length) {
@@ -482,6 +524,74 @@ function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | n
   });
 
   return normalizeSnippet(lines.join("\n"));
+}
+
+function buildSegmentsFromTaskContext(context?: TaskContextSnapshot | null): ThoughtReferenceSegment[] | undefined {
+  if (!context) {
+    return undefined;
+  }
+
+  const segments: ThoughtReferenceSegment[] = [];
+  const parents = Array.isArray(context.parents) ? context.parents : [];
+  for (const parent of parents) {
+    if (!parent) continue;
+    const cleaned = cleanReferenceText(parent.text);
+    if (!cleaned) continue;
+    segments.push({ text: cleaned, type: "list" });
+  }
+
+  const children = Array.isArray(context.children) ? context.children : [];
+  for (const child of children) {
+    if (!child) continue;
+    const cleaned = cleanReferenceText(child.text);
+    if (!cleaned) continue;
+    segments.push({ text: cleaned, type: "child" });
+    break;
+  }
+
+  return segments.length ? segments : undefined;
+}
+
+function deriveTaskHeaderLine(task: TaskEntry, originalLine?: string): string | undefined {
+  const preferred = normalizeSnippet(originalLine ?? "").trimEnd();
+  if (preferred) {
+    return preferred;
+  }
+
+  if (Array.isArray(task.lines) && task.lines.length) {
+    const first = normalizeSnippet(task.lines[0] ?? "").trimEnd();
+    const ensured = ensureTaskLineMarkdown(first, task.status);
+    if (ensured) {
+      return ensured;
+    }
+  }
+
+  if (task.text) {
+    const ensured = ensureTaskLineMarkdown(task.text, task.status);
+    if (ensured) {
+      return ensured;
+    }
+  }
+
+  return undefined;
+}
+
+function ensureTaskLineMarkdown(line: string | undefined, status?: string): string {
+  if (!line) {
+    return "";
+  }
+
+  const normalized = normalizeSnippet(line).trimEnd();
+  if (!normalized) {
+    return "";
+  }
+
+  if (isListItem(normalized)) {
+    return normalized;
+  }
+
+  const checkbox = typeof status === "string" && status.length ? `[${status}]` : "[ ]";
+  return `- ${checkbox} ${normalized}`.trim();
 }
 
 function extractRootContent(snippet: string): string {

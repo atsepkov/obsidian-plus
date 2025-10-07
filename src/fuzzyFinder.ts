@@ -798,10 +798,45 @@ function escapeCssIdentifier(value: string): string {
           }
 
           const header = container.createDiv({ cls: "tree-of-thought__header" });
-          header.createSpan({ text: `${this.activeTag} ${task.text}`.trim() });
+          const headerLine = header.createDiv({ cls: "tree-of-thought__header-line" });
+          const headerMarkdown = (thought.headerMarkdown || "").trim();
+          const headerSource = thought.sourceFile?.path ?? task.path ?? task.file?.path ?? "";
+          if (headerMarkdown) {
+            try {
+              await MarkdownRenderer.render(this.app, headerMarkdown, headerLine, headerSource, this.plugin);
+            } catch (error) {
+              console.error("Failed to render thought header", error);
+              headerLine.setText(headerMarkdown);
+            }
+          } else {
+            headerLine.setText(`${this.activeTag} ${task.text}`.trim());
+          }
+
+          headerLine.querySelectorAll("a.internal-link").forEach(a => {
+            a.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              const target = (a as HTMLAnchorElement).getAttribute("href") ?? "";
+              if (!target) return;
+              this.app.workspace.openLinkText(target, headerSource, false);
+              this.close();
+            });
+          });
+
           if (thought.sourceFile) {
+            const meta = header.createDiv({ cls: "tree-of-thought__header-meta" });
             const linktext = this.app.metadataCache.fileToLinktext(thought.sourceFile, "");
-            header.createSpan({ text: `  [[${linktext}]]`, cls: "tree-of-thought__file" });
+            const noteLink = meta.createEl("a", {
+              text: `[[${linktext}]]`,
+              cls: "internal-link tree-of-thought__file"
+            });
+            noteLink.setAttr("href", thought.sourceFile.path);
+            noteLink.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              this.app.workspace.openLinkText(thought.sourceFile!.path, thought.sourceFile!.path, false);
+              this.close();
+            });
           }
 
           if (thought.error) {
@@ -826,10 +861,33 @@ function escapeCssIdentifier(value: string): string {
             const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
             const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
             meta.setAttr("data-role", section.role);
-            meta.createSpan({
-              text: section.label,
-              cls: "tree-of-thought__label"
-            });
+
+            const labelContainer = meta.createDiv({ cls: "tree-of-thought__label" });
+            if (Array.isArray(section.segments) && section.segments.length) {
+              let renderedCount = 0;
+              for (let index = 0; index < section.segments.length; index++) {
+                const segment = section.segments[index];
+                const segmentText = (segment?.text ?? "").trim();
+                if (!segmentText) {
+                  continue;
+                }
+                if (renderedCount > 0) {
+                  labelContainer.createSpan({ text: " > ", cls: "tree-of-thought__label-separator" });
+                }
+                const segmentEl = labelContainer.createSpan({ cls: "tree-of-thought__label-segment" });
+                try {
+                  await this.renderReferenceSegmentMarkdown(segmentEl, segmentText, section.file.path);
+                } catch (error) {
+                  console.error("Failed to render section label segment", error);
+                  segmentEl.setText(segmentText);
+                }
+                renderedCount++;
+              }
+            }
+
+            if (!labelContainer.hasChildNodes()) {
+              labelContainer.createSpan({ text: section.label, cls: "tree-of-thought__label-text" });
+            }
 
             const link = meta.createEl("a", {
               text: `[[${section.linktext}]]`,
