@@ -824,9 +824,9 @@ function escapeCssIdentifier(value: string): string {
 
             const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
             const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
-            const labelText = section.label === "root" ? "Root" : "Branch";
+            meta.setAttr("data-role", section.role);
             meta.createSpan({
-              text: labelText,
+              text: section.label,
               cls: "tree-of-thought__label"
             });
 
@@ -866,7 +866,7 @@ function escapeCssIdentifier(value: string): string {
               });
             });
 
-            if (section.label === "root") {
+            if (section.role === "root") {
               await this.renderThoughtLinkPreviews(
                 sectionEl,
                 (context?.linksFromTask as Record<string, unknown>) ?? null,
@@ -888,8 +888,10 @@ function escapeCssIdentifier(value: string): string {
 
             for (const ref of references) {
               const item = list.createEl("li", { cls: "tree-of-thought__reference-item" });
+              const header = item.createDiv({ cls: "tree-of-thought__reference-header" });
+              header.createSpan({ text: ref.label, cls: "tree-of-thought__label" });
 
-              const link = item.createEl("a", {
+              const link = header.createEl("a", {
                 text: `[[${ref.linktext}]]`,
                 cls: "internal-link tree-of-thought__link"
               });
@@ -906,20 +908,21 @@ function escapeCssIdentifier(value: string): string {
                 try {
                   await MarkdownRenderer.renderMarkdown(ref.preview, previewEl, ref.file.path, this.plugin);
                   await this.waitForNextFrame();
-                  previewEl.querySelectorAll("a.internal-link").forEach(anchor => {
-                    anchor.addEventListener("click", evt => {
-                      evt.preventDefault();
-                      evt.stopPropagation();
-                      const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
-                      if (!target) return;
-                      this.app.workspace.openLinkText(target, ref.file.path, false);
-                      this.close();
-                    });
-                  });
                 } catch (error) {
                   console.error("Failed to render reference preview", error);
                   previewEl.createSpan({ text: ref.preview });
                 }
+
+                previewEl.querySelectorAll("a.internal-link").forEach(anchor => {
+                  anchor.addEventListener("click", evt => {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                    const target = (anchor as HTMLAnchorElement).getAttribute("href") ?? "";
+                    if (!target) return;
+                    this.app.workspace.openLinkText(target, ref.file.path, false);
+                    this.close();
+                  });
+                });
               }
             }
           }
@@ -983,7 +986,8 @@ function escapeCssIdentifier(value: string): string {
             }
 
             const item = list.createDiv({ cls: "tree-of-thought__link-preview" });
-            const linkEl = item.createEl("a", {
+            const header = item.createDiv({ cls: "tree-of-thought__link-preview-header" });
+            const linkEl = header.createEl("a", {
                 cls: "internal-link",
                 text: parsed.display
             });
@@ -999,34 +1003,35 @@ function escapeCssIdentifier(value: string): string {
                 });
             }
 
-            const preview = item.createDiv({ cls: "tree-of-thought__link-preview-popover" });
-
-            let rendered = false;
+            const preview = item.createDiv({ cls: "tree-of-thought__link-preview-body" });
             const payloadValue = payload as string | null | { error?: string } | undefined;
 
             if (payloadValue && typeof payloadValue === "object" && "error" in payloadValue && payloadValue.error) {
                 preview.createSpan({ text: payloadValue.error, cls: "tree-of-thought__link-preview-error" });
-                rendered = true;
-            } else {
-                let markdown = "";
-                if (typeof payloadValue === "string" && payloadValue.trim()) {
-                    markdown = payloadValue.trim();
-                } else if (parsed.isEmbed) {
-                    markdown = raw.trim().startsWith("![[") ? raw.trim() : `!${raw.trim()}`;
-                }
+                continue;
+            }
 
-                if (markdown) {
-                    try {
-                        await MarkdownRenderer.renderMarkdown(markdown, preview, sourcePath, this.plugin);
-                        await this.waitForNextFrame();
-                        rendered = true;
-                    } catch (error) {
-                        console.error("Failed to render link preview", { raw, error });
-                    }
+            let markdown = "";
+            if (typeof payloadValue === "string" && payloadValue.trim()) {
+                markdown = payloadValue.trim();
+            } else if (parsed.isEmbed) {
+                markdown = raw.trim().startsWith("![[") ? raw.trim() : `!${raw.trim()}`;
+            } else {
+                const fallback = await this.resolveThoughtLinkPreview(parsed, sourcePath);
+                if (fallback?.trim()) {
+                    markdown = fallback.trim();
                 }
             }
 
-            if (!rendered) {
+            if (markdown) {
+                try {
+                    await MarkdownRenderer.renderMarkdown(markdown, preview, sourcePath, this.plugin);
+                    await this.waitForNextFrame();
+                } catch (error) {
+                    console.error("Failed to render link preview", { raw, error });
+                    preview.createSpan({ text: markdown });
+                }
+            } else {
                 preview.createSpan({ text: "No preview available.", cls: "tree-of-thought__link-preview-empty" });
             }
 
@@ -1046,7 +1051,161 @@ function escapeCssIdentifier(value: string): string {
             list.remove();
         }
     }
-  
+
+    private async resolveThoughtLinkPreview(
+        parsed: { target: string; isEmbed: boolean },
+        sourcePath: string
+    ): Promise<string | null> {
+        const { path, anchor } = this.splitWikiLinkTarget(parsed.target ?? "");
+        let file: TFile | null = null;
+
+        if (path) {
+            const direct = this.app.metadataCache.getFirstLinkpathDest(path, sourcePath);
+            file = direct instanceof TFile ? direct : null;
+            if (!file && !path.endsWith(".md")) {
+                const withExtension = this.app.metadataCache.getFirstLinkpathDest(`${path}.md`, sourcePath);
+                file = withExtension instanceof TFile ? withExtension : null;
+            }
+        } else if (sourcePath) {
+            const current = this.app.vault.getAbstractFileByPath(sourcePath);
+            file = current instanceof TFile ? current : null;
+        }
+
+        if (!(file instanceof TFile)) {
+            return null;
+        }
+
+        const contents = await this.app.vault.read(file);
+        const lines = contents.split(/\r?\n/);
+
+        if (anchor) {
+            if (anchor.startsWith("^")) {
+                const blockId = anchor.replace(/^\^/, "");
+                const index = lines.findIndex(line => line.includes(`^${blockId}`));
+                if (index >= 0) {
+                    return this.extractListPreview(lines, index);
+                }
+            }
+
+            const headingInfo = this.findHeadingInFile(file, lines, anchor);
+            if (headingInfo) {
+                return this.extractHeadingSection(lines, headingInfo.index, headingInfo.level);
+            }
+        }
+
+        return lines.slice(0, Math.min(lines.length, 40)).join("\n");
+    }
+
+    private splitWikiLinkTarget(target: string): { path: string; anchor: string | null } {
+        const trimmed = (target ?? "").trim();
+        if (!trimmed) {
+            return { path: "", anchor: null };
+        }
+
+        const hashIndex = trimmed.indexOf("#");
+        if (hashIndex < 0) {
+            return { path: trimmed, anchor: null };
+        }
+
+        const path = trimmed.slice(0, hashIndex).trim();
+        const anchor = trimmed.slice(hashIndex + 1).trim();
+        return { path, anchor: anchor || null };
+    }
+
+    private findHeadingInFile(
+        file: TFile,
+        lines: string[],
+        anchor: string
+    ): { index: number; level: number } | null {
+        const normalizedAnchor = this.slugifyHeading(anchor.replace(/^\^/, ""));
+        const cache = this.app.metadataCache.getFileCache(file);
+
+        if (cache?.headings?.length) {
+            for (const heading of cache.headings) {
+                const headingText = heading.heading?.trim();
+                if (!headingText) continue;
+                const slug = this.slugifyHeading(headingText);
+                if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
+                    const index = heading.position?.start?.line ?? heading.position?.line ?? -1;
+                    if (index >= 0) {
+                        return { index, level: heading.level ?? 1 };
+                    }
+                }
+            }
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/^(#+)\s+(.*)$/);
+            if (!match) continue;
+            const headingText = match[2].trim();
+            const slug = this.slugifyHeading(headingText);
+            if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
+                return { index: i, level: match[1].length };
+            }
+        }
+
+        return null;
+    }
+
+    private extractHeadingSection(lines: string[], startIndex: number, level: number): string {
+        const snippet: string[] = [];
+        for (let i = startIndex; i < lines.length; i++) {
+            if (i > startIndex) {
+                const headingMatch = lines[i].match(/^(#+)\s+/);
+                if (headingMatch && headingMatch[1].length <= level) {
+                    break;
+                }
+            }
+            snippet.push(lines[i]);
+        }
+        return snippet.join("\n").trimEnd();
+    }
+
+    private extractListPreview(lines: string[], startIndex: number): string {
+        if (startIndex < 0 || startIndex >= lines.length) {
+            return "";
+        }
+
+        const snippet: string[] = [];
+        const rootLine = lines[startIndex];
+        snippet.push(rootLine);
+        const rootIndent = this.countLeadingSpace(rootLine);
+
+        for (let i = startIndex + 1; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line.trim()) {
+                snippet.push(line);
+                continue;
+            }
+
+            const indent = this.countLeadingSpace(line);
+            if (indent < rootIndent) {
+                break;
+            }
+
+            if (indent <= rootIndent && (/^\s*[-*+]/.test(line) || /^#{1,6}\s/.test(line.trim()))) {
+                break;
+            }
+
+            snippet.push(line);
+        }
+
+        return snippet.join("\n").trimEnd();
+    }
+
+    private slugifyHeading(value: string): string {
+        return value
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9\s-]/g, "")
+            .replace(/\s+/g, "-");
+    }
+
+    private countLeadingSpace(value: string): number {
+        const match = value.match(/^\s*/);
+        return match ? match[0].length : 0;
+    }
+
     /* ---------- choose behavior ---------- */
     async onChooseItem(raw) {
         if (this.thoughtMode) {

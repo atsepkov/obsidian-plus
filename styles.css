@@ -173,9 +173,16 @@ input[data-task="-"] {
     color: var(--text-muted);
 }
 
+.tree-of-thought__meta[data-role="root"] .tree-of-thought__label {
+    color: var(--text-normal);
+}
+
+.tree-of-thought__meta[data-role="branch"] .tree-of-thought__label {
+    color: var(--text-muted);
+}
+
 .tree-of-thought__label {
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
+    font-weight: 600;
 }
 
 .tree-of-thought__link {
@@ -206,8 +213,8 @@ input[data-task="-"] {
 
 .tree-of-thought__links {
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.5rem;
+    flex-direction: column;
+    gap: 0.6rem;
     margin-top: 0.25rem;
 }
 
@@ -226,9 +233,18 @@ input[data-task="-"] {
     gap: 0.25rem;
 }
 
+.tree-of-thought__reference-header {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
 .tree-of-thought__reference-preview {
     font-size: 0.9em;
     color: var(--text-muted);
+    line-height: 1.35;
 }
 
 .tree-of-thought__reference-preview .internal-embed,
@@ -237,48 +253,34 @@ input[data-task="-"] {
 }
 
 .tree-of-thought__link-preview {
-    position: relative;
-    display: inline-flex;
-    align-items: center;
-    gap: 0.35rem;
-    padding: 0.35rem 0.6rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    padding: 0.6rem;
     border-radius: var(--radius-s);
     background: var(--background-secondary);
     font-size: 0.85em;
 }
 
-.tree-of-thought__link-preview > .internal-link {
+.tree-of-thought__link-preview-header {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+}
+
+.tree-of-thought__link-preview-header .internal-link {
     text-decoration: none;
 }
 
-.tree-of-thought__link-preview-popover {
-    position: absolute;
-    top: calc(100% + 0.35rem);
-    left: 0;
-    z-index: var(--layer-tooltip, 1000);
-    max-width: 320px;
-    max-height: 280px;
-    overflow: auto;
-    padding: 0.6rem;
-    border-radius: var(--radius-m);
-    background: var(--background-primary);
-    border: 1px solid var(--background-modifier-border);
-    box-shadow: var(--shadow-s);
-    opacity: 0;
-    pointer-events: none;
-    transform: translateY(-4px);
-    transition: opacity 120ms ease, transform 120ms ease;
+.tree-of-thought__link-preview-body {
+    line-height: 1.35;
+    color: var(--text-muted);
 }
 
-.tree-of-thought__link-preview:hover .tree-of-thought__link-preview-popover {
-    opacity: 1;
-    pointer-events: auto;
-    transform: translateY(0);
-}
-
-.tree-of-thought__link-preview-popover .internal-embed,
-.tree-of-thought__link-preview-popover img {
+.tree-of-thought__link-preview-body .internal-embed,
+.tree-of-thought__link-preview-body img {
     max-width: 100%;
+    border-radius: var(--radius-s);
 }
 
 .tree-of-thought__link-preview-error {

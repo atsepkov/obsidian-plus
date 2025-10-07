@@ -23,8 +23,16 @@ interface TaskContextSnapshot {
   blockId?: string | null;
 }
 
+interface BacklinkOutline {
+  markdown: string;
+  hasChildren: boolean;
+  rootText: string;
+  parentText: string | null;
+}
+
 export interface ThoughtSection {
-  label: "root" | "branch";
+  role: "root" | "branch";
+  label: string;
   markdown: string;
   file: TFile;
   linktext: string;
@@ -33,6 +41,7 @@ export interface ThoughtSection {
 export interface ThoughtReference {
   file: TFile;
   linktext: string;
+  label: string;
   preview: string;
 }
 
@@ -73,7 +82,8 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   const originMarkdown = await buildOriginMarkdown(app, sourceFile, task, resolvedBlockId, context);
   if (originMarkdown.trim()) {
     sections.push({
-      label: "root",
+      role: "root",
+      label: formatThoughtLabel(app, sourceFile),
       markdown: originMarkdown,
       file: sourceFile,
       linktext: app.metadataCache.fileToLinktext(sourceFile, "")
@@ -148,6 +158,10 @@ async function buildOriginMarkdown(
     origin = prepareOutline(snippet, { stripFirstMarker: true });
   }
 
+  if (origin.trim()) {
+    origin = ensureChildrenOnly(origin);
+  }
+
   return origin.trimEnd();
 }
 
@@ -184,69 +198,59 @@ async function buildBacklinkSections(
     }
 
     const lines = await readFileLines(app, file);
-    const snippets = new Set<string>();
-
     const orderedEntries = [...entries].sort((a, b) => {
       const lineA = Number.isFinite(a?.line) ? a!.line : Number.POSITIVE_INFINITY;
       const lineB = Number.isFinite(b?.line) ? b!.line : Number.POSITIVE_INFINITY;
       return lineA - lineB;
     });
 
+    const seenLines = new Set<number>();
+    const branchMarkdowns: string[] = [];
+    const referencePreviews: string[] = [];
+
     for (const entry of orderedEntries) {
-      if (entry?.snippet?.trim()) {
-        snippets.add(entry.snippet.trimEnd());
+      const lineIndex = Number.isFinite(entry?.line) ? Math.max(0, Math.floor(entry!.line)) : -1;
+      if (lineIndex < 0 || lineIndex >= lines.length) {
         continue;
       }
-      const snippet = extractListSubtree(lines, entry?.line ?? -1);
-      if (snippet.trim()) {
-        snippets.add(snippet.trimEnd());
+      if (seenLines.has(lineIndex)) {
+        continue;
+      }
+      seenLines.add(lineIndex);
+
+      const outline = buildBacklinkOutline(lines, lineIndex, entry?.snippet);
+      if (!outline) {
+        continue;
+      }
+
+      if (outline.hasChildren && outline.markdown.trim()) {
+        branchMarkdowns.push(outline.markdown.trimEnd());
+      } else {
+        const preview = createReferencePreview(outline);
+        if (preview.trim()) {
+          referencePreviews.push(preview.trim());
+        }
       }
     }
 
-    if (!snippets.size) {
-      continue;
-    }
-
-    const processed = Array.from(snippets)
-      .map(snippet => {
-        const snippetLines = snippet.split(/\r?\n/);
-        const children = extractListSubtree(snippetLines, 0, { omitRoot: true });
-        const markdown = prepareOutline(children, { stripFirstMarker: false });
-        const rootText = extractRootContent(snippet);
-        return {
-          markdown,
-          hasChildren: snippetHasChildren(snippet),
-          rootText
-        };
-      })
-      .filter(entry => entry.markdown.trim() || entry.rootText.trim());
-
-    if (!processed.length) {
-      continue;
-    }
-
-    const branches = processed
-      .filter(entry => entry.hasChildren && entry.markdown.trim())
-      .map(entry => entry.markdown);
-    const references = processed
-      .filter(entry => !entry.hasChildren && entry.rootText.trim())
-      .map(entry => entry.rootText.trim());
-
-    if (branches.length) {
+    if (branchMarkdowns.length) {
       branchSections.push({
-        label: "branch",
-        markdown: branches.join("\n\n"),
+        role: "branch",
+        label: formatThoughtLabel(app, file),
+        markdown: branchMarkdowns.join("\n\n"),
         file,
         linktext: app.metadataCache.fileToLinktext(file, sourceFile.path)
       });
     }
 
-    if (references.length) {
+    if (referencePreviews.length) {
       const linktext = app.metadataCache.fileToLinktext(file, sourceFile.path);
-      for (const preview of references) {
+      const label = formatThoughtLabel(app, file);
+      for (const preview of referencePreviews) {
         referenceSections.push({
           file,
           linktext,
+          label,
           preview
         });
       }
@@ -543,36 +547,189 @@ function dedentLines(lines: string[]): string[] {
   });
 }
 
-function snippetHasChildren(snippet: string): boolean {
-  const normalized = normalizeSnippet(snippet);
-  const lines = normalized.split(/\r?\n/);
-  if (lines.length <= 1) {
-    return false;
+function ensureChildrenOnly(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  if (!lines.length) {
+    return markdown;
   }
 
-  const rootIndent = leadingSpace(lines[0]);
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line.trim()) {
+  let firstContentIndex = lines.findIndex(line => line.trim());
+  if (firstContentIndex < 0) {
+    return "";
+  }
+
+  if (!isListItem(lines[firstContentIndex])) {
+    return markdown.trimEnd();
+  }
+
+  const remaining = lines.slice(firstContentIndex + 1);
+  if (!remaining.length) {
+    return stripListMarker(lines[firstContentIndex]).trim();
+  }
+
+  const rebuilt = prepareOutline(remaining.join("\n"), { stripFirstMarker: false });
+  const trimmed = rebuilt.trimEnd();
+  return trimmed || stripListMarker(lines[firstContentIndex]).trim();
+}
+
+function buildBacklinkOutline(lines: string[], startLine: number, snippetOverride?: string): BacklinkOutline | null {
+  if (startLine < 0 || startLine >= lines.length) {
+    return null;
+  }
+
+  const source = typeof snippetOverride === "string" && snippetOverride.trim()
+    ? snippetOverride
+    : extractListSubtree(lines, startLine);
+
+  if (!source?.trim()) {
+    return null;
+  }
+
+  const snippet = normalizeSnippet(source);
+  const snippetLines = snippet.split(/\r?\n/);
+  if (!snippetLines.length) {
+    return null;
+  }
+
+  const rootLine = normalizeSnippet(snippetLines[0]);
+  if (!rootLine.trim()) {
+    return null;
+  }
+
+  const rootIndent = leadingSpace(rootLine);
+  const rootText = stripListMarker(rootLine).trim();
+
+  const children: string[] = [];
+  let minChildIndent = Number.POSITIVE_INFINITY;
+
+  for (let i = 1; i < snippetLines.length; i++) {
+    const raw = normalizeSnippet(snippetLines[i]);
+    if (!raw.trim()) {
+      children.push("");
       continue;
     }
-    if (leadingSpace(line) > rootIndent) {
-      return true;
+
+    const indent = leadingSpace(raw);
+    if (indent <= rootIndent) {
+      continue;
+    }
+
+    minChildIndent = Math.min(minChildIndent, indent);
+    children.push(raw);
+  }
+
+  const hasChildren = children.some(line => line.trim());
+  let markdown = "";
+
+  if (hasChildren) {
+    const offset = Number.isFinite(minChildIndent) ? minChildIndent : rootIndent;
+    const dedented = children.map(line => {
+      if (!line.trim()) {
+        return "";
+      }
+      const indent = leadingSpace(line);
+      const slice = Math.max(0, Math.min(indent, offset));
+      return line.slice(slice);
+    });
+
+    markdown = prepareOutline(dedented.join("\n"), { stripFirstMarker: false });
+  }
+
+  const parentText = findParentLineText(lines, startLine, rootIndent);
+
+  return {
+    markdown,
+    hasChildren,
+    rootText,
+    parentText
+  };
+}
+
+function createReferencePreview(outline: BacklinkOutline): string {
+  const parent = outline.parentText?.trim();
+  const root = outline.rootText.trim();
+
+  if (parent && root && parent !== root) {
+    return `${parent}\n> ${root}`;
+  }
+
+  return parent || root;
+}
+
+function findParentLineText(lines: string[], startLine: number, rootIndent: number): string | null {
+  for (let i = startLine - 1; i >= 0; i--) {
+    const raw = normalizeSnippet(lines[i]);
+    if (!raw.trim()) {
+      continue;
+    }
+
+    if (isListItem(raw)) {
+      const indent = leadingSpace(raw);
+      if (indent < rootIndent) {
+        return stripListMarker(raw).trim();
+      }
+      continue;
+    }
+
+    if (isHeading(raw.trim())) {
+      return stripHeadingMarker(raw);
+    }
+
+    if (leadingSpace(raw) < rootIndent) {
+      return raw.trim();
     }
   }
 
-  return false;
+  return null;
+}
+
+function stripHeadingMarker(value: string): string {
+  const match = value.match(/^(#+)\s*(.*)$/);
+  return match ? (match[2] ?? "").trim() : value.trim();
+}
+
+function extractDateToken(value: string | null | undefined): string | null {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  return match ? match[1] : null;
+}
+
+function formatThoughtLabel(app: App, file: TFile): string {
+  const linktext = app.metadataCache.fileToLinktext(file, "");
+  const date = extractDateToken(linktext) ?? extractDateToken(file.basename);
+  return date ?? linktext ?? file.basename;
+}
+
+function getDateForSort(app: App, path: string): string | null {
+  const file = app.vault.getAbstractFileByPath(path);
+  if (file instanceof TFile) {
+    const linktext = app.metadataCache.fileToLinktext(file, "");
+    const fileDate = extractDateToken(linktext) ?? extractDateToken(file.basename);
+    if (fileDate) {
+      return fileDate;
+    }
+  }
+
+  return extractDateToken(path);
 }
 
 function compareBacklinkChronology(app: App, left: string, right: string): number {
-  const leftFile = app.vault.getAbstractFileByPath(left);
-  const rightFile = app.vault.getAbstractFileByPath(right);
+  const leftDate = getDateForSort(app, left);
+  const rightDate = getDateForSort(app, right);
 
-  const leftTime = leftFile instanceof TFile ? leftFile.stat?.mtime ?? leftFile.stat?.ctime ?? 0 : 0;
-  const rightTime = rightFile instanceof TFile ? rightFile.stat?.mtime ?? rightFile.stat?.ctime ?? 0 : 0;
+  if (leftDate && rightDate && leftDate !== rightDate) {
+    return leftDate.localeCompare(rightDate);
+  }
 
-  if (leftTime && rightTime && leftTime !== rightTime) {
-    return leftTime - rightTime;
+  if (leftDate && !rightDate) {
+    return -1;
+  }
+
+  if (!leftDate && rightDate) {
+    return 1;
   }
 
   return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
