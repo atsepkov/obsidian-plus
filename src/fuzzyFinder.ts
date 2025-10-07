@@ -842,6 +842,7 @@ function escapeCssIdentifier(value: string): string {
             const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
             try {
               await MarkdownRenderer.renderMarkdown(section.markdown, body, section.file.path, this.plugin);
+              await this.waitForNextFrame();
             } catch (error) {
               console.error("Failed to render tree-of-thought markdown", error);
               body.createEl("pre", { text: section.markdown });

@@ -46,6 +46,13 @@ interface TaskBacklinkEntry {
     snippet?: string;
 }
 
+interface InternalLinkMatch {
+    raw: string;
+    path: string;
+    anchor?: string;
+    isEmbed: boolean;
+}
+
 export class TaskManager {
     private app: App;
     private dvApi: DataviewApi;
@@ -458,6 +465,15 @@ export class TaskManager {
 
         const lines = await this.getFileLines(listItem.path);
 
+        const previewCache: Record<string, string[]> = { [listItem.path]: lines };
+
+        const ensureFileLines = async (file: TFile): Promise<string[]> => {
+            if (!previewCache[file.path]) {
+                previewCache[file.path] = await this.getFileLines(file.path);
+            }
+            return previewCache[file.path];
+        };
+
         const processItem = async (item: Task) => {
             if (!item || !item.text) return;
             const text = item.text;
@@ -480,19 +496,28 @@ export class TaskManager {
             }
 
             for (const link of internalLinks) {
-                if (!(link in attachments)) {
-                    const resolvedFile = this.app.metadataCache.getFirstLinkpathDest(link, item.path);
-                    if (resolvedFile instanceof TFile) {
-                        try {
-                            attachments[link] = await this.app.vault.read(resolvedFile);
-                        } catch (e: any) {
-                            console.error(`Failed to read internal link file: ${resolvedFile.path}`, e);
-                            attachments[link] = null;
-                        }
-                    } else {
-                        console.warn(`Internal link does not resolve to a file: [[${link}]] in ${item.path}`);
-                        attachments[link] = null;
+                const key = link.raw;
+                if (key in attachments) {
+                    continue;
+                }
+
+                if (link.isEmbed) {
+                    attachments[key] = null;
+                    continue;
+                }
+
+                const resolvedFile = this.resolveInternalLinkFile(link, item.path);
+                if (resolvedFile instanceof TFile) {
+                    try {
+                        const fileLines = await ensureFileLines(resolvedFile);
+                        attachments[key] = await this.buildInternalLinkPreview(resolvedFile, link, fileLines);
+                    } catch (e: any) {
+                        console.error(`Failed to read internal link file: ${resolvedFile.path}`, e);
+                        attachments[key] = { error: `Error reading ${resolvedFile.path}: ${e.message || e}` };
                     }
+                } else {
+                    console.warn(`Internal link does not resolve to a file: ${link.raw} in ${item.path}`);
+                    attachments[key] = null;
                 }
             }
 
@@ -693,6 +718,111 @@ export class TaskManager {
         return /^\s*[-*+]/.test(value);
     }
 
+    private resolveInternalLinkFile(link: InternalLinkMatch, sourcePath: string): TFile | null {
+        if (!link.path) {
+            const current = this.app.vault.getAbstractFileByPath(sourcePath);
+            return current instanceof TFile ? current : null;
+        }
+
+        const attempt = (target: string): TFile | null => {
+            const file = this.app.metadataCache.getFirstLinkpathDest(target, sourcePath);
+            return file instanceof TFile ? file : null;
+        };
+
+        const direct = attempt(link.path);
+        if (direct) {
+            return direct;
+        }
+
+        if (!link.path.endsWith('.md')) {
+            const withExtension = attempt(`${link.path}.md`);
+            if (withExtension) {
+                return withExtension;
+            }
+        }
+
+        return null;
+    }
+
+    private async buildInternalLinkPreview(file: TFile, link: InternalLinkMatch, cachedLines?: string[]): Promise<string | null> {
+        const lines = cachedLines ?? await this.getFileLines(file.path);
+        if (!lines.length) {
+            return null;
+        }
+
+        if (link.anchor) {
+            const anchor = link.anchor.trim();
+            if (anchor.startsWith('^')) {
+                const blockId = anchor.replace(/^\^/, '');
+                const needle = `^${blockId}`;
+                const blockIndex = lines.findIndex(line => line.includes(needle));
+                if (blockIndex >= 0) {
+                    return this.extractListSubtreeFromLines(lines, blockIndex);
+                }
+            }
+
+            const headingInfo = this.findHeadingLine(file, lines, anchor);
+            if (headingInfo) {
+                return this.extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
+            }
+        }
+
+        return lines.slice(0, 40).join('\n');
+    }
+
+    private findHeadingLine(file: TFile, lines: string[], anchor: string): { index: number; level: number } | null {
+        const normalizedAnchor = this.slugifyHeading(anchor.replace(/^\^/, ''));
+        const cache = this.app.metadataCache.getFileCache(file);
+
+        if (cache?.headings?.length) {
+            for (const heading of cache.headings) {
+                if (!heading?.heading) continue;
+                const headingText = heading.heading.trim();
+                const slug = this.slugifyHeading(headingText);
+                if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
+                    const index = heading.position?.start?.line ?? heading.position?.line ?? -1;
+                    if (index >= 0) {
+                        return { index, level: heading.level ?? 1 };
+                    }
+                }
+            }
+        }
+
+        for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/^(#+)\s+(.*)$/);
+            if (!match) continue;
+            const headingText = match[2].trim();
+            const slug = this.slugifyHeading(headingText);
+            if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
+                return { index: i, level: match[1].length };
+            }
+        }
+
+        return null;
+    }
+
+    private extractHeadingSectionFromLines(lines: string[], startLine: number, level: number): string {
+        const snippet: string[] = [];
+        for (let i = startLine; i < lines.length; i++) {
+            if (i > startLine) {
+                const headingMatch = lines[i].match(/^(#+)\s+/);
+                if (headingMatch && headingMatch[1].length <= level) {
+                    break;
+                }
+            }
+            snippet.push(lines[i]);
+        }
+        return snippet.join('\n');
+    }
+
+    private slugifyHeading(value: string): string {
+        return value
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9\s-]/g, '')
+            .replace(/\s+/g, '-');
+    }
+
     private toStructured(children: any[], parentIndent: string, defaultBullet: string): any[] {
         const indentStep = 4; // TODO: Make configurable or detect?
         return (Array.isArray(children) ? children : [children]).map(child => {
@@ -719,9 +849,40 @@ export class TaskManager {
             .map(match => match[1]);
     }
 
-    private extractInternalLinks(text: string): string[] {
-        return [...text.matchAll(/\[\[([^\]|#]+)(?:[|#][^\]]*)?\]\]/g)]
-            .map(match => match[1].trim());
+    private extractInternalLinks(text: string): InternalLinkMatch[] {
+        const matches = text.matchAll(/(!?)\[\[([^\]]+)\]\]/g);
+        const results: InternalLinkMatch[] = [];
+
+        for (const match of matches) {
+            const isEmbed = match[1] === '!';
+            const target = (match[2] || '').trim();
+            if (!target) continue;
+
+            let body = target;
+            const pipeIndex = body.indexOf('|');
+            if (pipeIndex >= 0) {
+                body = body.slice(0, pipeIndex).trim();
+            }
+
+            let path = body;
+            let anchor: string | undefined;
+            const hashIndex = body.indexOf('#');
+            if (hashIndex >= 0) {
+                anchor = body.slice(hashIndex + 1).trim();
+                path = body.slice(0, hashIndex).trim();
+            } else {
+                path = body.trim();
+            }
+
+            results.push({
+                raw: `${isEmbed ? '!' : ''}[[${target}]]`,
+                path,
+                anchor,
+                isEmbed,
+            });
+        }
+
+        return results;
     }
 
     private extractInlineBlockId(text: string | undefined): string | null {

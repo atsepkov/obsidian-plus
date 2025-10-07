@@ -187,6 +187,19 @@ input[data-task="-"] {
     line-height: 1.4;
 }
 
+.tree-of-thought__markdown .internal-embed,
+.tree-of-thought__markdown img {
+    max-width: 100%;
+    border-radius: var(--radius-s);
+}
+
+.tree-of-thought__markdown blockquote {
+    margin: 0;
+    padding-left: 1em;
+    border-left: 2px solid var(--background-modifier-border);
+    color: var(--text-muted);
+}
+
 .tree-of-thought__empty {
     color: var(--text-muted);
     font-style: italic;

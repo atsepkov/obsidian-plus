@@ -13,9 +13,12 @@ interface ThoughtBacklink {
   snippet?: string;
 }
 
+type ThoughtLinkPreview = string | null | { error?: string };
+
 interface TaskContextSnapshot {
   parents?: TaskContextEntry[];
   children?: TaskContextEntry[];
+  linksFromTask?: Record<string, ThoughtLinkPreview> | null;
   linksToTask?: ThoughtBacklink[];
   blockId?: string | null;
 }
@@ -106,28 +109,27 @@ async function buildOriginMarkdown(
 ): Promise<string> {
   const lines = await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
+  let origin = "";
 
   if (startLine != null) {
     const markdown = extractListSubtree(lines, startLine, { omitRoot: true });
-    if (markdown.trim()) {
-      return markdown;
-    }
-    return extractListSubtree(lines, startLine);
-  }
-
-  if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
+    origin = markdown.trim() ? markdown : extractListSubtree(lines, startLine);
+  } else if (Array.isArray(context?.parents) || Array.isArray(context?.children)) {
     const fallback = buildContextFallback(task, context);
     const cleaned = cleanSnippet(fallback, { omitRoot: true });
-    return cleaned.trim() ? cleaned : fallback;
-  }
-
-  if (Array.isArray(task.lines) && task.lines.length) {
+    origin = cleaned.trim() ? cleaned : fallback;
+  } else if (Array.isArray(task.lines) && task.lines.length) {
     const snippet = task.lines.join("\n");
     const cleaned = cleanSnippet(snippet, { omitRoot: true });
-    return cleaned.trim() ? cleaned : normalizeSnippet(snippet);
+    origin = cleaned.trim() ? cleaned : normalizeSnippet(snippet);
   }
 
-  return "";
+  const linkPreview = buildLinkPreviewMarkdown(app, file, context?.linksFromTask ?? null);
+  if (linkPreview.trim()) {
+    origin = origin.trim() ? `${origin.trimEnd()}\n\n${linkPreview}` : linkPreview;
+  }
+
+  return origin.trimEnd();
 }
 
 async function buildBacklinkSections(
@@ -151,7 +153,11 @@ async function buildBacklinkSections(
 
   const sections: ThoughtSection[] = [];
 
-  for (const [path, entries] of grouped.entries()) {
+  const groupedEntries = Array.from(grouped.entries()).sort((a, b) =>
+    compareBacklinkChronology(app, a[0], b[0])
+  );
+
+  for (const [path, entries] of groupedEntries) {
     const file = app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
       continue;
@@ -160,7 +166,13 @@ async function buildBacklinkSections(
     const lines = await readFileLines(app, file);
     const snippets = new Set<string>();
 
-    for (const entry of entries) {
+    const orderedEntries = [...entries].sort((a, b) => {
+      const lineA = Number.isFinite(a?.line) ? a!.line : Number.POSITIVE_INFINITY;
+      const lineB = Number.isFinite(b?.line) ? b!.line : Number.POSITIVE_INFINITY;
+      return lineA - lineB;
+    });
+
+    for (const entry of orderedEntries) {
       if (entry?.snippet?.trim()) {
         snippets.add(entry.snippet.trimEnd());
         continue;
@@ -302,6 +314,10 @@ function extractListSubtree(
     }
 
     const indent = leadingSpace(rawLine);
+    if (indent < rootIndent && trimmed) {
+      break;
+    }
+
     if (indent <= rootIndent && (isListItem(rawLine) || isHeading(trimmed))) {
       break;
     }
@@ -437,4 +453,177 @@ function cleanSnippet(value: string, options?: { omitRoot?: boolean }): string {
 
   const cleaned = extractListSubtree(lines, firstContent, { omitRoot: true });
   return cleaned.trim() ? cleaned : normalized.trimEnd();
+}
+
+function buildLinkPreviewMarkdown(
+  app: App,
+  sourceFile: TFile,
+  linksFromTask: Record<string, ThoughtLinkPreview> | null
+): string {
+  if (!linksFromTask) {
+    return "";
+  }
+
+  const entries = Object.entries(linksFromTask).filter(([key]) => Boolean(key?.trim()));
+  if (!entries.length) {
+    return "";
+  }
+
+  const segments: string[] = [];
+
+  for (const [target, payload] of entries) {
+    const trimmedTarget = target.trim();
+    if (!trimmedTarget) {
+      continue;
+    }
+
+    if (isImageTarget(trimmedTarget)) {
+      const embed = formatImageEmbed(trimmedTarget);
+      if (embed) {
+        segments.push(embed);
+      }
+      continue;
+    }
+
+    const preview = normalizePreviewContent(payload);
+    const display = formatLinkDisplay(app, sourceFile, trimmedTarget);
+
+    if (!preview) {
+      segments.push(display);
+      continue;
+    }
+
+    const quoted = preview
+      .split(/\r?\n/)
+      .map(line => `> ${line.trimEnd()}`)
+      .join("\n");
+
+    segments.push(`${display}\n\n${quoted}`.trim());
+  }
+
+  if (!segments.length) {
+    return "";
+  }
+
+  return [`**Link previews**`, ...segments].join("\n\n");
+}
+
+function formatLinkDisplay(app: App, sourceFile: TFile, target: string): string {
+  const trimmed = target.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (isExternalLink(trimmed)) {
+    return `[${trimmed}](${trimmed})`;
+  }
+
+  if (trimmed.startsWith("[[") && trimmed.endsWith("]]")) {
+    return trimmed.startsWith("![[") ? trimmed.slice(1) : trimmed;
+  }
+
+  let main = trimmed;
+  let alias: string | undefined;
+
+  const aliasIndex = main.indexOf("|");
+  if (aliasIndex >= 0) {
+    alias = main.slice(aliasIndex + 1);
+    main = main.slice(0, aliasIndex);
+  }
+
+  const [pathPart, anchorPart] = main.split("#", 2);
+  const resolvedTarget = pathPart || sourceFile.path;
+  const resolvedFile = app.metadataCache.getFirstLinkpathDest(resolvedTarget, sourceFile.path);
+  const linkBase = resolvedFile instanceof TFile
+    ? app.metadataCache.fileToLinktext(resolvedFile, sourceFile.path)
+    : resolvedTarget;
+  const anchor = anchorPart ? `#${anchorPart}` : "";
+  const aliasSuffix = alias ? `|${alias}` : "";
+  return `[[${linkBase}${anchor}${aliasSuffix}]]`;
+}
+
+function normalizePreviewContent(value: ThoughtLinkPreview): string {
+  if (!value) {
+    return "";
+  }
+
+  if (typeof value === "object" && "error" in value && value.error) {
+    return `_${value.error}_`;
+  }
+
+  if (typeof value !== "string") {
+    return "";
+  }
+
+  const normalized = normalizeSnippet(value).trim();
+  if (!normalized) {
+    return "";
+  }
+
+  const lines = normalized.split(/\r?\n/);
+  const limited = lines.slice(0, 8);
+  let excerpt = limited.join("\n");
+  if (lines.length > limited.length || excerpt.length > 600) {
+    excerpt = excerpt.slice(0, 600).trimEnd() + "…";
+  }
+
+  return excerpt;
+}
+
+function isExternalLink(target: string): boolean {
+  return /^https?:\/\//i.test(target.trim());
+}
+
+function isImageTarget(target: string): boolean {
+  const trimmed = target.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  if (trimmed.startsWith("![[") || trimmed.startsWith("[[")) {
+    const inner = trimmed.replace(/^!?\[\[/, "").replace(/]]$/, "");
+    const base = inner.split("|")[0];
+    return /\.(png|apng|jpg|jpeg|gif|svg|bmp|webp|avif)$/i.test(base);
+  }
+
+  if (isExternalLink(trimmed)) {
+    return /\.(png|apng|jpg|jpeg|gif|svg|bmp|webp|avif)(?:\?|#|$)/i.test(trimmed);
+  }
+
+  return /\.(png|apng|jpg|jpeg|gif|svg|bmp|webp|avif)$/i.test(trimmed);
+}
+
+function formatImageEmbed(target: string): string | null {
+  const trimmed = target.trim();
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith("![[") && trimmed.endsWith("]]")) {
+    return trimmed;
+  }
+
+  if (trimmed.startsWith("[[") && trimmed.endsWith("]]")) {
+    return `!${trimmed}`;
+  }
+
+  if (isExternalLink(trimmed)) {
+    return `![](${trimmed})`;
+  }
+
+  return `![[${trimmed}]]`;
+}
+
+function compareBacklinkChronology(app: App, left: string, right: string): number {
+  const leftFile = app.vault.getAbstractFileByPath(left);
+  const rightFile = app.vault.getAbstractFileByPath(right);
+
+  const leftTime = leftFile instanceof TFile ? leftFile.stat?.mtime ?? leftFile.stat?.ctime ?? 0 : 0;
+  const rightTime = rightFile instanceof TFile ? rightFile.stat?.mtime ?? rightFile.stat?.ctime ?? 0 : 0;
+
+  if (leftTime && rightTime && leftTime !== rightTime) {
+    return leftTime - rightTime;
+  }
+
+  return left.localeCompare(right, undefined, { numeric: true, sensitivity: "base" });
 }
