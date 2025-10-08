@@ -6,6 +6,7 @@ import {
   loadTreeOfThought,
   createThoughtRootPreview,
   type ThoughtReference,
+  type ThoughtRootPreview,
   type ThoughtSection,
   type TreeOfThoughtResult,
   type TaskContextSnapshot
@@ -677,15 +678,58 @@ function escapeCssIdentifier(value: string): string {
         return null;
     }
 
-    private buildThoughtLabel(file: TFile): string {
-        return this.app.metadataCache.fileToLinktext(file, "");
-    }
+  private buildThoughtLabel(file: TFile): string {
+      return this.app.metadataCache.fileToLinktext(file, "");
+  }
 
-    private buildThoughtHeaderMarkdown(task: TaskEntry, tagHint?: string | null): string {
-        const status = typeof task.status === "string" && task.status.length ? task.status : " ";
-        const activeTag = (tagHint ?? this.activeTag ?? "").trim();
+  private buildThoughtPreviewSection(
+    file: TFile | null,
+    preview: ThoughtRootPreview
+  ): ThoughtSection | null {
+      if (!file) {
+        return null;
+      }
 
-        const pickLine = () => {
+      if (!preview || typeof preview.markdown !== "string") {
+        return null;
+      }
+
+      const trimmed = preview.markdown.trim();
+      if (!trimmed) {
+        return null;
+      }
+
+      const hasChildren = typeof preview.hasChildren === "boolean"
+        ? preview.hasChildren
+        : /\n\s*[-*+]/.test(trimmed) || trimmed.includes("\n");
+
+      if (!hasChildren) {
+        return null;
+      }
+
+      const label = (preview.label ?? "").trim() || this.buildThoughtLabel(file);
+      const targetLine = typeof preview.targetLine === "number"
+        ? Math.max(0, Math.floor(preview.targetLine))
+        : undefined;
+
+      return {
+        role: "root",
+        label,
+        markdown: trimmed,
+        file,
+        linktext: this.app.metadataCache.fileToLinktext(file, ""),
+        segments: preview.segments,
+        tooltip: preview.tooltip,
+        targetAnchor: preview.targetAnchor ?? undefined,
+        targetLine
+      };
+  }
+
+  private buildThoughtHeaderMarkdown(task: TaskEntry, tagHint?: string | null): string {
+      const status = typeof task.status === "string" && task.status.length ? task.status : " ";
+      const activeTag = (tagHint ?? this.activeTag ?? "").trim();
+
+      const pickLine = () => {
           if (Array.isArray(task.lines) && task.lines.length) {
             const firstLine = (task.lines[0] ?? "").trim();
             if (firstLine) {
@@ -799,18 +843,9 @@ function escapeCssIdentifier(value: string): string {
 
         if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
           const preview = createThoughtRootPreview(task);
-          const sections: ThoughtSection[] = [];
+          const previewSection = this.buildThoughtPreviewSection(file, preview);
+          const sections: ThoughtSection[] = previewSection ? [previewSection] : [];
           const headerMarkdown = this.chooseThoughtHeader(task, preview.headerMarkdown, tagHint);
-
-          if (file && preview.markdown?.trim()) {
-            sections.push({
-              role: "root",
-              label: this.buildThoughtLabel(file),
-              markdown: preview.markdown,
-              file,
-              linktext: this.app.metadataCache.fileToLinktext(file, "")
-            });
-          }
 
           this.thoughtState = {
             key,
@@ -888,17 +923,20 @@ function escapeCssIdentifier(value: string): string {
               changed = true;
             }
 
-            if (resolvedFile && preview.markdown?.trim()) {
-              const normalized = preview.markdown.trim();
+            if (resolvedFile) {
+              const previewSection = this.buildThoughtPreviewSection(resolvedFile, preview);
               const existing = state.initialSections[0];
-              if (!existing || existing.markdown !== normalized || existing.file.path !== resolvedFile.path) {
-                state.initialSections = [{
-                  role: "root",
-                  label: this.buildThoughtLabel(resolvedFile),
-                  markdown: normalized,
-                  file: resolvedFile,
-                  linktext: this.app.metadataCache.fileToLinktext(resolvedFile, "")
-                }];
+              if (previewSection) {
+                const needsUpdate = !existing
+                  || existing.markdown !== previewSection.markdown
+                  || existing.label !== previewSection.label
+                  || existing.file.path !== previewSection.file.path;
+                if (needsUpdate) {
+                  state.initialSections = [previewSection];
+                  changed = true;
+                }
+              } else if (state.initialSections.length) {
+                state.initialSections = [];
                 changed = true;
               }
               if (!state.file) {
@@ -1926,6 +1964,16 @@ function escapeCssIdentifier(value: string): string {
         /* ③  we now have tasks → fuzzy‑filter and display */
         const scorer = prepareFuzzySearch(body);
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
+        const tokenRegexes = tokens
+          .map(tok => {
+            const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            try {
+              return new RegExp(`\\b${escaped}\\b`, "i");
+            } catch (_error) {
+              return null;
+            }
+          })
+          .filter((value): value is RegExp => value instanceof RegExp);
 
         const suggestions = this.taskCache[key]!.flatMap((t, idx) => {
             const statusChar = t.status ?? " ";
@@ -1945,9 +1993,11 @@ function escapeCssIdentifier(value: string): string {
           
               /* bonus for whole-word hits on THAT line */
               let bonus = 0;
-              tokens.forEach(tok => {
-                if (new RegExp(`\\b${tok}\\b`, "i").test(line)) bonus += 500;
-              });
+              for (const regex of tokenRegexes) {
+                if (regex.test(line)) {
+                  bonus += 500;
+                }
+              }
           
               const total = m.score + bonus;
               if (total > bestScore) {

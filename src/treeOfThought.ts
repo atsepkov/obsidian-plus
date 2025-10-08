@@ -107,6 +107,12 @@ export interface TreeOfThoughtResult {
 export interface ThoughtRootPreview {
   markdown: string;
   headerMarkdown?: string;
+  label?: string;
+  segments?: ThoughtReferenceSegment[];
+  tooltip?: string;
+  targetAnchor?: string | null;
+  targetLine?: number | null;
+  hasChildren?: boolean;
 }
 
 export function createThoughtRootPreview(
@@ -121,18 +127,29 @@ export function createThoughtRootPreview(
   }
 
   let markdown = "";
+  let segments: ThoughtReferenceSegment[] | undefined;
+  let label: string | undefined;
+  let hasChildren = false;
+  let targetAnchor: string | null | undefined = context?.blockId ?? null;
 
   if (context) {
     const fallback = buildContextFallback(task, context);
     if (fallback.trim()) {
       const outlined = prepareOutline(fallback, { stripFirstMarker: false });
       markdown = ensureChildrenOnly(outlined).trim();
+      hasChildren = Boolean(markdown);
+    }
+    segments = buildSegmentsFromTaskContext(context);
+    const summarized = summarizeSegments(filterParentSegments(segments) ?? segments);
+    if (summarized) {
+      label = summarized;
     }
   }
 
   if (!markdown && Array.isArray(task.lines) && task.lines.length) {
     const snippet = prepareOutline(task.lines.join("\n"), { stripFirstMarker: true });
     markdown = ensureChildrenOnly(snippet).trim();
+    hasChildren ||= markdown.includes("\n");
   }
 
   if (!markdown && task.text) {
@@ -140,7 +157,39 @@ export function createThoughtRootPreview(
     markdown = ensureChildrenOnly(snippet).trim();
   }
 
+  if (!hasChildren) {
+    if (Array.isArray(context?.children)) {
+      hasChildren = context!.children!.some(child => {
+        if (!child) return false;
+        const text = typeof child.text === "string" ? child.text.trim() : "";
+        return Boolean(text);
+      });
+    } else {
+      hasChildren = /\n\s*[-*+]/.test(markdown) || markdown.includes("\n");
+    }
+  }
+
   preview.markdown = markdown;
+  preview.segments = segments;
+  preview.targetAnchor = targetAnchor ? sanitizeAnchor(targetAnchor) : null;
+  preview.hasChildren = hasChildren;
+
+  if (!label) {
+    const headerSource = preview.headerMarkdown || ensureTaskLineMarkdown(task.text, task.status);
+    const extracted = extractRootContent(headerSource);
+    if (extracted) {
+      label = extracted;
+    }
+  }
+
+  if (!label && markdown) {
+    label = extractRootContent(markdown);
+  }
+
+  if (label) {
+    preview.label = label;
+  }
+
   return preview;
 }
 
@@ -672,7 +721,11 @@ function extractRootContent(snippet: string): string {
   }
   const normalized = normalizeSnippet(snippet);
   const [firstLine] = normalized.split(/\r?\n/, 1);
-  return firstLine ? stripListMarker(firstLine).trim() : "";
+  if (!firstLine) {
+    return "";
+  }
+  const content = stripListMarker(firstLine).replace(/\s*\^\w+\b/g, "").trim();
+  return content;
 }
 
 function normalizeTaskLine(value: string): string {
