@@ -443,7 +443,6 @@ function escapeCssIdentifier(value: string): string {
         const isTask = (this.plugin.settings.taskTags ?? []).includes(tag);
         const bullet = isTask ? "- [ ] " : "- ";
         const line   = `${indent}${bullet}${tag} `;
-        console.log({ tag, isTask, bullet, line });
       
         ed.replaceRange(line,
           { line: ln, ch: 0 },
@@ -1169,13 +1168,6 @@ function escapeCssIdentifier(value: string): string {
         }
 
         headerLine.querySelectorAll("a.internal-link").forEach(link => {
-          const rawTarget = link.getAttr("data-href") ?? link.getAttr("href") ?? "";
-          const normalizedTarget = this.resolveHoverLink(rawTarget, headerSource);
-          if (normalizedTarget && normalizedTarget !== rawTarget) {
-            link.setAttr("data-href", normalizedTarget);
-            link.setAttr("href", normalizedTarget);
-          }
-
           link.addEventListener("click", evt => {
             evt.preventDefault();
             evt.stopPropagation();
@@ -1186,15 +1178,6 @@ function escapeCssIdentifier(value: string): string {
             this.app.workspace.openLinkText(target, headerSource, false);
             this.close();
           });
-
-          link.addEventListener("mouseenter", (evt: MouseEvent) => {
-            const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
-            if (!target) {
-              return;
-            }
-            const hoverTarget = this.resolveHoverLink(target, headerSource);
-            this.triggerHoverPreview(evt, hoverTarget, headerSource, link as HTMLElement);
-          });
         });
 
         if (headerFile) {
@@ -1204,17 +1187,11 @@ function escapeCssIdentifier(value: string): string {
             cls: "internal-link tree-of-thought__header-link"
           });
           noteLink.setAttr("href", headerFile.path);
-          noteLink.setAttr("data-href", headerFile.path);
           noteLink.addEventListener("click", evt => {
             evt.preventDefault();
             evt.stopPropagation();
             this.app.workspace.openLinkText(headerFile.path, headerFile.path, false);
             this.close();
-          });
-
-          noteLink.addEventListener("mouseenter", (evt: MouseEvent) => {
-            const hoverTarget = this.resolveHoverLink(headerFile.path, headerFile.path);
-            this.triggerHoverPreview(evt, hoverTarget, headerFile.path, noteLink);
           });
         }
 
@@ -1285,23 +1262,6 @@ function escapeCssIdentifier(value: string): string {
                 segmentEl.setText(segmentText);
               }
 
-              segmentEl.querySelectorAll("a.internal-link").forEach(linkEl => {
-                const rawTarget = linkEl.getAttr("data-href") ?? linkEl.getAttr("href") ?? "";
-                const normalized = this.resolveHoverLink(rawTarget, section.file.path);
-                if (normalized && normalized !== rawTarget) {
-                  linkEl.setAttr("data-href", normalized);
-                  linkEl.setAttr("href", normalized);
-                }
-
-                linkEl.addEventListener("mouseenter", evt => {
-                  const target = (linkEl as HTMLAnchorElement).getAttribute("href") ?? "";
-                  if (!target) {
-                    return;
-                  }
-                  const hoverTarget = this.resolveHoverLink(target, section.file.path);
-                  this.triggerHoverPreview(evt, hoverTarget, section.file.path, linkEl as HTMLElement);
-                });
-              });
 
               const anchorSource = typeof segment?.anchor === "string" ? segment.anchor : "";
               const anchor = anchorSource ? `#${anchorSource.replace(/^#/, "")}` : "";
@@ -1324,10 +1284,6 @@ function escapeCssIdentifier(value: string): string {
                 this.close();
               });
 
-              segmentEl.addEventListener("mouseenter", evt => {
-                this.triggerHoverPreview(evt, openTarget, section.file.path, segmentEl);
-              });
-
               renderedCount++;
             }
           }
@@ -1348,11 +1304,6 @@ function escapeCssIdentifier(value: string): string {
               this.close();
             });
 
-            labelContainer.addEventListener("mouseenter", evt => {
-              const anchor = firstAnchor ? `#${firstAnchor}` : "";
-              const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
-              this.triggerHoverPreview(evt, target, section.file.path, labelContainer);
-            });
           }
 
           const link = meta.createEl("a", {
@@ -1360,17 +1311,11 @@ function escapeCssIdentifier(value: string): string {
             cls: "internal-link tree-of-thought__link"
           });
           link.setAttr("href", section.file.path);
-          link.setAttr("data-href", section.file.path);
           link.addEventListener("click", evt => {
             evt.preventDefault();
             evt.stopPropagation();
             this.app.workspace.openLinkText(section.file.path, section.file.path, false);
             this.close();
-          });
-
-          link.addEventListener("mouseenter", (evt: MouseEvent) => {
-            const hoverTarget = this.resolveHoverLink(section.file.path, section.file.path);
-            this.triggerHoverPreview(evt, hoverTarget, section.file.path, link);
           });
 
           const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
@@ -1388,13 +1333,6 @@ function escapeCssIdentifier(value: string): string {
           }
 
           body.querySelectorAll("a.internal-link").forEach(link => {
-            const rawTarget = link.getAttr("data-href") ?? link.getAttr("href") ?? "";
-            const normalized = this.resolveHoverLink(rawTarget, section.file.path);
-            if (normalized && normalized !== rawTarget) {
-              link.setAttr("data-href", normalized);
-              link.setAttr("href", normalized);
-            }
-
             link.addEventListener("click", evt => {
               evt.preventDefault();
               evt.stopPropagation();
@@ -1404,15 +1342,6 @@ function escapeCssIdentifier(value: string): string {
               }
               this.app.workspace.openLinkText(target, section.file.path, false);
               this.close();
-            });
-
-            link.addEventListener("mouseenter", (evt: MouseEvent) => {
-              const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
-              if (!target) {
-                return;
-              }
-              const hoverTarget = this.resolveHoverLink(target, section.file.path);
-              this.triggerHoverPreview(evt, hoverTarget, section.file.path, link as HTMLElement);
             });
           });
         }
@@ -1448,24 +1377,6 @@ function escapeCssIdentifier(value: string): string {
                   segmentEl.setText(segment.text);
                 }
 
-                segmentEl.querySelectorAll("a.internal-link").forEach(linkEl => {
-                  const rawTarget = linkEl.getAttr("data-href") ?? linkEl.getAttr("href") ?? "";
-                  const normalized = this.resolveHoverLink(rawTarget, ref.file.path);
-                  if (normalized && normalized !== rawTarget) {
-                    linkEl.setAttr("data-href", normalized);
-                    linkEl.setAttr("href", normalized);
-                  }
-
-                  linkEl.addEventListener("mouseenter", evt => {
-                    const target = (linkEl as HTMLAnchorElement).getAttribute("href") ?? "";
-                    if (!target) {
-                      return;
-                    }
-                    const hoverTarget = this.resolveHoverLink(target, ref.file.path);
-                    this.triggerHoverPreview(evt, hoverTarget, ref.file.path, linkEl as HTMLElement);
-                  });
-                });
-
                 const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
                 const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
                 const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
@@ -1477,11 +1388,6 @@ function escapeCssIdentifier(value: string): string {
                   this.app.workspace.openLinkText(openTarget, ref.file.path, false, stateLine);
                   this.close();
                 });
-
-                segmentEl.addEventListener("mouseenter", evt => {
-                  this.triggerHoverPreview(evt, openTarget, ref.file.path, segmentEl);
-                });
-
                 if (index < ref.segments.length - 1) {
                   lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
                 }
@@ -1499,17 +1405,11 @@ function escapeCssIdentifier(value: string): string {
               cls: "internal-link tree-of-thought__reference-note"
             });
             noteLink.setAttr("href", ref.file.path);
-            noteLink.setAttr("data-href", ref.file.path);
             noteLink.addEventListener("click", evt => {
               evt.preventDefault();
               evt.stopPropagation();
               this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
               this.close();
-            });
-
-            noteLink.addEventListener("mouseenter", (evt: MouseEvent) => {
-              const hoverTarget = this.resolveHoverLink(ref.file.path, ref.file.path);
-              this.triggerHoverPreview(evt, hoverTarget, ref.file.path, noteLink);
             });
           }
         }
@@ -1539,92 +1439,6 @@ function escapeCssIdentifier(value: string): string {
 
         target.appendChild(fragment);
         temp.remove();
-    }
-
-    private resolveHoverLink(linktext: string, sourcePath: string): string {
-        if (!linktext) {
-            return linktext;
-        }
-
-        const trimmed = linktext.trim();
-        if (!trimmed) {
-            return trimmed;
-        }
-
-        const attachAnchor = (path: string, anchorRaw: string): string => {
-            const basePath = path.trim();
-            if (!basePath) {
-                return anchorRaw.trim() || path;
-            }
-
-            const cleaned = anchorRaw.replace(/^#/, "").trim();
-            if (!cleaned) {
-                return basePath;
-            }
-
-            if (cleaned.startsWith("^")) {
-                const blockId = cleaned.replace(/^\^/, "");
-                return `${basePath}#^${blockId}`;
-            }
-
-            const normalized = this.slugifyHeading(cleaned);
-            const anchor = normalized || cleaned;
-            return `${basePath}#${anchor}`;
-        };
-
-        if (trimmed.startsWith("#")) {
-            if (!sourcePath) {
-                return trimmed;
-            }
-            return attachAnchor(sourcePath, trimmed);
-        }
-
-        const hashIndex = trimmed.indexOf("#");
-        if (hashIndex !== -1) {
-            const pathPart = trimmed.slice(0, hashIndex).trim();
-            const anchorPart = trimmed.slice(hashIndex);
-            if (!pathPart && sourcePath) {
-                return attachAnchor(sourcePath, anchorPart);
-            }
-            if (pathPart) {
-                return attachAnchor(pathPart, anchorPart);
-            }
-        }
-
-        return trimmed;
-    }
-
-    private slugifyHeading(value: string): string {
-        return value
-            .trim()
-            .toLowerCase()
-            .replace(/[^a-z0-9\s-]/g, "")
-            .replace(/\s+/g, "-");
-    }
-
-    private triggerHoverPreview(
-        event: MouseEvent,
-        linktext: string,
-        sourcePath: string,
-        targetEl: HTMLElement
-    ): void {
-        if (!linktext) {
-            return;
-        }
-
-        const workspace = this.app.workspace as any;
-        if (!workspace || typeof workspace.trigger !== "function") {
-            return;
-        }
-
-        workspace.trigger("hover-link", {
-            event,
-            source: this.plugin?.manifest?.id ?? "obsidian-plus",
-            hoverParent: targetEl,
-            targetEl,
-            linktext,
-            sourcePath
-        });
     }
 
     /* ---------- choose behavior ---------- */

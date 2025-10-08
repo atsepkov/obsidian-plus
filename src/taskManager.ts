@@ -63,7 +63,6 @@ export class TaskManager {
         this.app = app;
         this.dvApi = dvApi;
         this.obsidianPlus = obsidianPlus;
-        console.log("TaskManager Dataview API initialized.");
     }
 
     // --- File Handling ---
