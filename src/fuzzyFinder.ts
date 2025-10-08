@@ -1169,6 +1169,13 @@ function escapeCssIdentifier(value: string): string {
         }
 
         headerLine.querySelectorAll("a.internal-link").forEach(link => {
+          const rawTarget = link.getAttr("data-href") ?? link.getAttr("href") ?? "";
+          const normalizedTarget = this.resolveHoverLink(rawTarget, headerSource);
+          if (normalizedTarget && normalizedTarget !== rawTarget) {
+            link.setAttr("data-href", normalizedTarget);
+            link.setAttr("href", normalizedTarget);
+          }
+
           link.addEventListener("click", evt => {
             evt.preventDefault();
             evt.stopPropagation();
@@ -1197,6 +1204,7 @@ function escapeCssIdentifier(value: string): string {
             cls: "internal-link tree-of-thought__header-link"
           });
           noteLink.setAttr("href", headerFile.path);
+          noteLink.setAttr("data-href", headerFile.path);
           noteLink.addEventListener("click", evt => {
             evt.preventDefault();
             evt.stopPropagation();
@@ -1277,6 +1285,24 @@ function escapeCssIdentifier(value: string): string {
                 segmentEl.setText(segmentText);
               }
 
+              segmentEl.querySelectorAll("a.internal-link").forEach(linkEl => {
+                const rawTarget = linkEl.getAttr("data-href") ?? linkEl.getAttr("href") ?? "";
+                const normalized = this.resolveHoverLink(rawTarget, section.file.path);
+                if (normalized && normalized !== rawTarget) {
+                  linkEl.setAttr("data-href", normalized);
+                  linkEl.setAttr("href", normalized);
+                }
+
+                linkEl.addEventListener("mouseenter", evt => {
+                  const target = (linkEl as HTMLAnchorElement).getAttribute("href") ?? "";
+                  if (!target) {
+                    return;
+                  }
+                  const hoverTarget = this.resolveHoverLink(target, section.file.path);
+                  this.triggerHoverPreview(evt, hoverTarget, section.file.path, linkEl as HTMLElement);
+                });
+              });
+
               const anchorSource = typeof segment?.anchor === "string" ? segment.anchor : "";
               const anchor = anchorSource ? `#${anchorSource.replace(/^#/, "")}` : "";
               const openTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
@@ -1334,6 +1360,7 @@ function escapeCssIdentifier(value: string): string {
             cls: "internal-link tree-of-thought__link"
           });
           link.setAttr("href", section.file.path);
+          link.setAttr("data-href", section.file.path);
           link.addEventListener("click", evt => {
             evt.preventDefault();
             evt.stopPropagation();
@@ -1361,6 +1388,13 @@ function escapeCssIdentifier(value: string): string {
           }
 
           body.querySelectorAll("a.internal-link").forEach(link => {
+            const rawTarget = link.getAttr("data-href") ?? link.getAttr("href") ?? "";
+            const normalized = this.resolveHoverLink(rawTarget, section.file.path);
+            if (normalized && normalized !== rawTarget) {
+              link.setAttr("data-href", normalized);
+              link.setAttr("href", normalized);
+            }
+
             link.addEventListener("click", evt => {
               evt.preventDefault();
               evt.stopPropagation();
@@ -1414,6 +1448,24 @@ function escapeCssIdentifier(value: string): string {
                   segmentEl.setText(segment.text);
                 }
 
+                segmentEl.querySelectorAll("a.internal-link").forEach(linkEl => {
+                  const rawTarget = linkEl.getAttr("data-href") ?? linkEl.getAttr("href") ?? "";
+                  const normalized = this.resolveHoverLink(rawTarget, ref.file.path);
+                  if (normalized && normalized !== rawTarget) {
+                    linkEl.setAttr("data-href", normalized);
+                    linkEl.setAttr("href", normalized);
+                  }
+
+                  linkEl.addEventListener("mouseenter", evt => {
+                    const target = (linkEl as HTMLAnchorElement).getAttribute("href") ?? "";
+                    if (!target) {
+                      return;
+                    }
+                    const hoverTarget = this.resolveHoverLink(target, ref.file.path);
+                    this.triggerHoverPreview(evt, hoverTarget, ref.file.path, linkEl as HTMLElement);
+                  });
+                });
+
                 const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
                 const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
                 const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
@@ -1447,6 +1499,7 @@ function escapeCssIdentifier(value: string): string {
               cls: "internal-link tree-of-thought__reference-note"
             });
             noteLink.setAttr("href", ref.file.path);
+            noteLink.setAttr("data-href", ref.file.path);
             noteLink.addEventListener("click", evt => {
               evt.preventDefault();
               evt.stopPropagation();
