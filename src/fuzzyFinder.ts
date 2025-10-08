@@ -1179,6 +1179,14 @@ function escapeCssIdentifier(value: string): string {
             this.app.workspace.openLinkText(target, headerSource, false);
             this.close();
           });
+
+          link.addEventListener("mouseenter", (evt: MouseEvent) => {
+            const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+            if (!target) {
+              return;
+            }
+            this.triggerHoverPreview(evt, target, headerSource, link as HTMLElement);
+          });
         });
 
         if (headerFile) {
@@ -1327,6 +1335,10 @@ function escapeCssIdentifier(value: string): string {
             this.close();
           });
 
+          link.addEventListener("mouseenter", (evt: MouseEvent) => {
+            this.triggerHoverPreview(evt, section.file.path, section.file.path, link);
+          });
+
           const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
           try {
             await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
@@ -1351,6 +1363,14 @@ function escapeCssIdentifier(value: string): string {
               }
               this.app.workspace.openLinkText(target, section.file.path, false);
               this.close();
+            });
+
+            link.addEventListener("mouseenter", (evt: MouseEvent) => {
+              const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+              if (!target) {
+                return;
+              }
+              this.triggerHoverPreview(evt, target, section.file.path, link as HTMLElement);
             });
           });
         }
@@ -1424,6 +1444,10 @@ function escapeCssIdentifier(value: string): string {
               evt.stopPropagation();
               this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
               this.close();
+            });
+
+            noteLink.addEventListener("mouseenter", (evt: MouseEvent) => {
+              this.triggerHoverPreview(evt, ref.file.path, ref.file.path, noteLink);
             });
           }
         }
