@@ -1185,7 +1185,8 @@ function escapeCssIdentifier(value: string): string {
             if (!target) {
               return;
             }
-            this.triggerHoverPreview(evt, target, headerSource, link as HTMLElement);
+            const hoverTarget = this.resolveHoverLink(target, headerSource);
+            this.triggerHoverPreview(evt, hoverTarget, headerSource, link as HTMLElement);
           });
         });
 
@@ -1201,6 +1202,11 @@ function escapeCssIdentifier(value: string): string {
             evt.stopPropagation();
             this.app.workspace.openLinkText(headerFile.path, headerFile.path, false);
             this.close();
+          });
+
+          noteLink.addEventListener("mouseenter", (evt: MouseEvent) => {
+            const hoverTarget = this.resolveHoverLink(headerFile.path, headerFile.path);
+            this.triggerHoverPreview(evt, hoverTarget, headerFile.path, noteLink);
           });
         }
 
@@ -1336,7 +1342,8 @@ function escapeCssIdentifier(value: string): string {
           });
 
           link.addEventListener("mouseenter", (evt: MouseEvent) => {
-            this.triggerHoverPreview(evt, section.file.path, section.file.path, link);
+            const hoverTarget = this.resolveHoverLink(section.file.path, section.file.path);
+            this.triggerHoverPreview(evt, hoverTarget, section.file.path, link);
           });
 
           const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
@@ -1370,7 +1377,8 @@ function escapeCssIdentifier(value: string): string {
               if (!target) {
                 return;
               }
-              this.triggerHoverPreview(evt, target, section.file.path, link as HTMLElement);
+              const hoverTarget = this.resolveHoverLink(target, section.file.path);
+              this.triggerHoverPreview(evt, hoverTarget, section.file.path, link as HTMLElement);
             });
           });
         }
@@ -1447,7 +1455,8 @@ function escapeCssIdentifier(value: string): string {
             });
 
             noteLink.addEventListener("mouseenter", (evt: MouseEvent) => {
-              this.triggerHoverPreview(evt, ref.file.path, ref.file.path, noteLink);
+              const hoverTarget = this.resolveHoverLink(ref.file.path, ref.file.path);
+              this.triggerHoverPreview(evt, hoverTarget, ref.file.path, noteLink);
             });
           }
         }
@@ -1477,6 +1486,26 @@ function escapeCssIdentifier(value: string): string {
 
         target.appendChild(fragment);
         temp.remove();
+    }
+
+    private resolveHoverLink(linktext: string, sourcePath: string): string {
+        if (!linktext) {
+            return linktext;
+        }
+
+        const trimmed = linktext.trim();
+        if (!trimmed) {
+            return trimmed;
+        }
+
+        if (trimmed.startsWith("#")) {
+            const base = sourcePath ? sourcePath.trim() : "";
+            if (base) {
+                return `${base}${trimmed}`;
+            }
+        }
+
+        return trimmed;
     }
 
     private triggerHoverPreview(
