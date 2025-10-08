@@ -33,6 +33,7 @@ interface ThoughtViewState {
   fullResult?: TreeOfThoughtResult;
   blockId?: string;
   context?: TaskContextSnapshot | null;
+  tagHint?: string | null;
   loading: boolean;
   error?: string;
   promise: Promise<void> | null;
@@ -681,9 +682,9 @@ function escapeCssIdentifier(value: string): string {
         return this.app.metadataCache.fileToLinktext(file, "");
     }
 
-    private buildThoughtHeaderMarkdown(task: TaskEntry): string {
+    private buildThoughtHeaderMarkdown(task: TaskEntry, tagHint?: string | null): string {
         const status = typeof task.status === "string" && task.status.length ? task.status : " ";
-        const activeTag = (this.activeTag ?? "").trim();
+        const activeTag = (tagHint ?? this.activeTag ?? "").trim();
 
         const pickLine = () => {
           if (Array.isArray(task.lines) && task.lines.length) {
@@ -714,18 +715,93 @@ function escapeCssIdentifier(value: string): string {
         return fallback.trim();
     }
 
+    private resolveThoughtTagHint(key: string, task: TaskEntry): string | null {
+        const explicit = (this.activeTag ?? "").trim();
+        if (explicit && explicit !== "#") {
+          return explicit;
+        }
+
+        const fromKey = this.extractTagFromCacheKey(key);
+        if (fromKey) {
+          return fromKey;
+        }
+
+        const fromTask = this.extractTagFromTask(task);
+        if (fromTask) {
+          return fromTask;
+        }
+
+        return null;
+    }
+
+    private extractTagFromCacheKey(key: string): string | null {
+        if (!key) {
+          return null;
+        }
+
+        const parts = key.split("|");
+        const candidate = parts[parts.length - 1];
+        if (candidate && candidate.startsWith("#")) {
+          return candidate;
+        }
+
+        return null;
+    }
+
+    private extractTagFromTask(task: TaskEntry): string | null {
+        const sources: string[] = [];
+        if (Array.isArray(task.lines)) {
+          for (const line of task.lines) {
+            if (typeof line === "string") {
+              sources.push(line);
+            }
+          }
+        }
+        if (typeof task.text === "string") {
+          sources.push(task.text);
+        }
+
+        for (const source of sources) {
+          const match = source.match(/#[^\s#]+/);
+          if (match && match[0]) {
+            return match[0];
+          }
+        }
+
+        return null;
+    }
+
+    private chooseThoughtHeader(
+      task: TaskEntry,
+      previewHeader: string | undefined,
+      tagHint: string | null | undefined
+    ): string {
+        const fallback = this.buildThoughtHeaderMarkdown(task, tagHint);
+        const trimmedPreview = (previewHeader ?? "").trim();
+        if (!trimmedPreview) {
+          return fallback;
+        }
+
+        const tag = (tagHint ?? "").trim();
+        if (tag && !trimmedPreview.includes(tag) && fallback.includes(tag)) {
+          return fallback;
+        }
+
+        return trimmedPreview || fallback;
+    }
+
     private prepareThoughtState(key: string, index: number, task: TaskEntry): ThoughtViewState | null {
         if (!task) {
           return null;
         }
 
         const file = this.resolveTaskFile(task);
+        const tagHint = this.resolveThoughtTagHint(key, task);
 
         if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
           const preview = createThoughtRootPreview(task);
           const sections: ThoughtSection[] = [];
-          const fallbackHeader = this.buildThoughtHeaderMarkdown(task);
-          const headerMarkdown = (preview.headerMarkdown?.trim() || fallbackHeader).trim();
+          const headerMarkdown = this.chooseThoughtHeader(task, preview.headerMarkdown, tagHint);
 
           if (file && preview.markdown?.trim()) {
             sections.push({
@@ -743,6 +819,7 @@ function escapeCssIdentifier(value: string): string {
             task,
             file,
             headerMarkdown,
+            tagHint,
             initialSections: sections,
             references: [],
             loading: false,
@@ -753,6 +830,9 @@ function escapeCssIdentifier(value: string): string {
           this.thoughtState.task = task;
           if (!this.thoughtState.file && file) {
             this.thoughtState.file = file;
+          }
+          if (!this.thoughtState.tagHint) {
+            this.thoughtState.tagHint = tagHint;
           }
         }
 
@@ -801,12 +881,11 @@ function escapeCssIdentifier(value: string): string {
 
             const resolvedFile = state.file ?? this.resolveTaskFile(state.task);
             const preview = createThoughtRootPreview(state.task, context ?? undefined);
-            const fallbackHeader = this.buildThoughtHeaderMarkdown(state.task);
+            const headerChoice = this.chooseThoughtHeader(state.task, preview.headerMarkdown, state.tagHint);
             let changed = false;
 
-            const nextHeader = (preview.headerMarkdown?.trim() || fallbackHeader).trim();
-            if (nextHeader && nextHeader !== state.headerMarkdown) {
-              state.headerMarkdown = nextHeader;
+            if (headerChoice && headerChoice !== state.headerMarkdown) {
+              state.headerMarkdown = headerChoice;
               changed = true;
             }
 
@@ -851,7 +930,10 @@ function escapeCssIdentifier(value: string): string {
               state.file = thought.sourceFile;
             }
             if (thought.headerMarkdown) {
-              state.headerMarkdown = thought.headerMarkdown;
+              const ensured = this.chooseThoughtHeader(state.task, thought.headerMarkdown, state.tagHint);
+              if (ensured) {
+                state.headerMarkdown = ensured;
+              }
             }
 
             this.scheduleThoughtRerender();
