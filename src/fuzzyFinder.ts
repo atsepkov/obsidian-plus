@@ -1498,14 +1498,55 @@ function escapeCssIdentifier(value: string): string {
             return trimmed;
         }
 
+        const attachAnchor = (path: string, anchorRaw: string): string => {
+            const basePath = path.trim();
+            if (!basePath) {
+                return anchorRaw.trim() || path;
+            }
+
+            const cleaned = anchorRaw.replace(/^#/, "").trim();
+            if (!cleaned) {
+                return basePath;
+            }
+
+            if (cleaned.startsWith("^")) {
+                const blockId = cleaned.replace(/^\^/, "");
+                return `${basePath}#^${blockId}`;
+            }
+
+            const normalized = this.slugifyHeading(cleaned);
+            const anchor = normalized || cleaned;
+            return `${basePath}#${anchor}`;
+        };
+
         if (trimmed.startsWith("#")) {
-            const base = sourcePath ? sourcePath.trim() : "";
-            if (base) {
-                return `${base}${trimmed}`;
+            if (!sourcePath) {
+                return trimmed;
+            }
+            return attachAnchor(sourcePath, trimmed);
+        }
+
+        const hashIndex = trimmed.indexOf("#");
+        if (hashIndex !== -1) {
+            const pathPart = trimmed.slice(0, hashIndex).trim();
+            const anchorPart = trimmed.slice(hashIndex);
+            if (!pathPart && sourcePath) {
+                return attachAnchor(sourcePath, anchorPart);
+            }
+            if (pathPart) {
+                return attachAnchor(pathPart, anchorPart);
             }
         }
 
         return trimmed;
+    }
+
+    private slugifyHeading(value: string): string {
+        return value
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9\s-]/g, "")
+            .replace(/\s+/g, "-");
     }
 
     private triggerHoverPreview(
