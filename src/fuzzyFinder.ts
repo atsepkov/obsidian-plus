@@ -681,6 +681,39 @@ function escapeCssIdentifier(value: string): string {
         return this.app.metadataCache.fileToLinktext(file, "");
     }
 
+    private buildThoughtHeaderMarkdown(task: TaskEntry): string {
+        const status = typeof task.status === "string" && task.status.length ? task.status : " ";
+        const activeTag = (this.activeTag ?? "").trim();
+
+        const pickLine = () => {
+          if (Array.isArray(task.lines) && task.lines.length) {
+            const firstLine = (task.lines[0] ?? "").trim();
+            if (firstLine) {
+              return firstLine;
+            }
+          }
+          return (task.text ?? "").trim();
+        };
+
+        let line = pickLine();
+        if (!line && activeTag) {
+          line = activeTag;
+        }
+
+        if (line) {
+          const normalized = line.replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "").trim();
+          if (normalized) {
+            const prefixed = activeTag && !normalized.includes(activeTag)
+              ? `${activeTag} ${normalized}`.trim()
+              : normalized;
+            return `- [${status}] ${prefixed}`.trim();
+          }
+        }
+
+        const fallback = activeTag ? `- [${status}] ${activeTag}` : `- [${status}]`;
+        return fallback.trim();
+    }
+
     private prepareThoughtState(key: string, index: number, task: TaskEntry): ThoughtViewState | null {
         if (!task) {
           return null;
@@ -691,6 +724,8 @@ function escapeCssIdentifier(value: string): string {
         if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
           const preview = createThoughtRootPreview(task);
           const sections: ThoughtSection[] = [];
+          const fallbackHeader = this.buildThoughtHeaderMarkdown(task);
+          const headerMarkdown = (preview.headerMarkdown?.trim() || fallbackHeader).trim();
 
           if (file && preview.markdown?.trim()) {
             sections.push({
@@ -707,7 +742,7 @@ function escapeCssIdentifier(value: string): string {
             cacheIndex: index,
             task,
             file,
-            headerMarkdown: preview.headerMarkdown,
+            headerMarkdown,
             initialSections: sections,
             references: [],
             loading: false,
@@ -766,10 +801,12 @@ function escapeCssIdentifier(value: string): string {
 
             const resolvedFile = state.file ?? this.resolveTaskFile(state.task);
             const preview = createThoughtRootPreview(state.task, context ?? undefined);
+            const fallbackHeader = this.buildThoughtHeaderMarkdown(state.task);
             let changed = false;
 
-            if (preview.headerMarkdown && preview.headerMarkdown !== state.headerMarkdown) {
-              state.headerMarkdown = preview.headerMarkdown;
+            const nextHeader = (preview.headerMarkdown?.trim() || fallbackHeader).trim();
+            if (nextHeader && nextHeader !== state.headerMarkdown) {
+              state.headerMarkdown = nextHeader;
               changed = true;
             }
 

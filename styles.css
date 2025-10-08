@@ -208,6 +208,8 @@ input[data-task="-"] {
     font-weight: 600;
     flex: 1 1 auto;
     min-width: 0;
+    opacity: 0.4;
+    transition: opacity 0.15s ease-in-out;
 }
 
 .tree-of-thought__label-text {
@@ -226,6 +228,12 @@ input[data-task="-"] {
 
 .tree-of-thought__label--interactive {
     cursor: pointer;
+}
+
+.tree-of-thought__label:hover,
+.tree-of-thought__label:focus-within,
+.tree-of-thought__label:focus {
+    opacity: 1;
 }
 
 .tree-of-thought__label-link {
