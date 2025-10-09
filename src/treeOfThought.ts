@@ -531,7 +531,7 @@ function collectInternalLinkSections(
 
   const linkMatches: RegExpMatchArray[] = [];
   for (const text of searchTexts) {
-    const iterator = text.matchAll(/!\?\[\[[^\]]+\]\]/g);
+    const iterator = text.matchAll(/!?\[\[[^\]]+\]\]/g);
     for (const match of iterator) {
       linkMatches.push(match);
     }
