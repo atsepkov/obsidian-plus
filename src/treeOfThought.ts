@@ -764,10 +764,13 @@ function deriveInternalLinkMarkdown(outline: BacklinkOutline): string {
     while (remainder.length && !remainder[0].trim()) {
       remainder.shift();
     }
+    while (remainder.length && !remainder[remainder.length - 1].trim()) {
+      remainder.pop();
+    }
     if (!remainder.length) {
       return "";
     }
-    return prepareOutline(remainder.join("\n"), { stripFirstMarker: false }).trimEnd();
+    return remainder.join("\n");
   }
 
   if (isListItem(firstLine)) {
