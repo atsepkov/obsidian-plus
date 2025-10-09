@@ -681,32 +681,51 @@ async function buildInternalLinkSection(
     return null;
   }
 
-  const markdown = ((outline.markdown || "").trim()
-    || ensureChildrenOnly(outline.snippet ?? "").trim()).trimEnd();
+  const markdown = deriveInternalLinkMarkdown(outline).trimEnd();
 
   if (!markdown) {
     return null;
   }
 
   const summary = createReferenceSummary(outline);
-  const parentSegments = filterParentSegments(summary?.segments);
-  const segments = parentSegments ?? summary?.segments;
-  const label = (
-    summarizeSegments(parentSegments)
-      || summary?.summary
-      || parsed.display
-      || formatThoughtLabel(app, targetFile)
-  ).trim();
-
-  const targetAnchor = sanitizeAnchor(outline.rootAnchor ?? targetInfo.anchor ?? parsed.anchor);
+  const sanitizedAnchor = sanitizeAnchor(outline.rootAnchor ?? targetInfo.anchor ?? parsed.anchor);
   const targetLine = Number.isFinite(targetInfo.line)
     ? Math.max(0, Math.floor(targetInfo.line))
     : null;
 
+  const rootSegment = createRootSegmentFromOutline(
+    outline,
+    parsed,
+    sanitizedAnchor,
+    targetLine
+  );
+
+  const rawSegments = summary?.segments ? [...summary.segments] : [];
+  if (rootSegment) {
+    const duplicate = rawSegments.some(segment => (segment?.text ?? "") === rootSegment.text);
+    if (!duplicate) {
+      rawSegments.push(rootSegment);
+    }
+  }
+
+  const segmentsForDisplay = rootSegment
+    ? [rootSegment]
+    : filterParentSegments(rawSegments) ?? rawSegments;
+
+  let label = (parsed.display ?? "").trim();
+  if (!label) {
+    label = summarizeSegments(segmentsForDisplay) || summary?.summary || "";
+  }
+  if (!label) {
+    label = formatThoughtLabel(app, targetFile);
+  }
+
+  const targetAnchor = sanitizedAnchor;
+
   return {
     markdown,
-    label,
-    segments: segments?.length ? segments : undefined,
+    label: label.trim(),
+    segments: segmentsForDisplay?.length ? segmentsForDisplay : undefined,
     tooltip: summary?.tooltip,
     targetAnchor,
     targetLine,
@@ -720,6 +739,63 @@ function linkSectionFallbackMarkdown(source: string | undefined, markdown: strin
     return trimmedSource;
   }
   return markdown;
+}
+
+function deriveInternalLinkMarkdown(outline: BacklinkOutline): string {
+  const trimmed = (outline.markdown ?? "").trim();
+  if (trimmed) {
+    return trimmed;
+  }
+
+  const snippet = (outline.snippet ?? "").trimEnd();
+  if (!snippet.trim()) {
+    return "";
+  }
+
+  const normalized = normalizeSnippet(snippet);
+  const lines = normalized.split(/\r?\n/);
+  if (!lines.length) {
+    return normalized.trim();
+  }
+
+  const firstLine = lines[0] ?? "";
+  if (isHeading(firstLine.trim())) {
+    const remainder = lines.slice(1);
+    while (remainder.length && !remainder[0].trim()) {
+      remainder.shift();
+    }
+    if (!remainder.length) {
+      return "";
+    }
+    return prepareOutline(remainder.join("\n"), { stripFirstMarker: false }).trimEnd();
+  }
+
+  if (isListItem(firstLine)) {
+    return ensureChildrenOnly(normalized).trimEnd();
+  }
+
+  return normalized.trim();
+}
+
+function createRootSegmentFromOutline(
+  outline: BacklinkOutline,
+  parsed: ParsedThoughtLink,
+  anchor: string | null,
+  line: number | null
+): ThoughtReferenceSegment | null {
+  const rootText = cleanReferenceText(outline.rootText) || (parsed.display ?? "").trim();
+  if (!rootText) {
+    return null;
+  }
+
+  const numericLine = typeof line === "number" ? Math.max(0, Math.floor(line)) : undefined;
+
+  return {
+    text: rootText,
+    anchor: anchor ?? undefined,
+    line: numericLine,
+    type: "heading"
+  };
 }
 
 function locateThoughtLinkTarget(
