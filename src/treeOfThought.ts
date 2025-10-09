@@ -475,8 +475,25 @@ function injectInternalLinkSections(
 
   const previewMap = new Map<string, string>();
   for (const [raw, value] of entries) {
-    previewMap.set(raw, (value as string).trim());
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) {
+      continue;
+    }
+    previewMap.set(raw, trimmed);
   }
+
+  if (!previewMap.size) {
+    console.debug("[TreeOfThought] No usable internal link previews", {
+      entries,
+      sections: sections.map(section => section.label)
+    });
+    return sections;
+  }
+
+  console.debug("[TreeOfThought] Preparing to inject internal link sections", {
+    previewKeys: Array.from(previewMap.keys()),
+    sectionLabels: sections.map(section => section.label)
+  });
 
   const used = new Set<string>();
   let modified = false;
@@ -487,6 +504,10 @@ function injectInternalLinkSections(
 
     const extras = collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
+      console.debug("[TreeOfThought] Injecting link sections", {
+        source: section.label,
+        extras: extras.map(extra => ({ label: extra.label, target: extra.targetAnchor }))
+      });
       result.push(...extras);
       modified = true;
     }
@@ -521,26 +542,41 @@ function collectInternalLinkSections(
   for (const match of linkMatches) {
     const raw = match[0];
     if (!previewMap.has(raw) || used.has(raw)) {
+      if (!previewMap.has(raw)) {
+        console.debug("[TreeOfThought] Skipping link without preview", { raw, section: section.label });
+      }
       continue;
     }
 
     const parsed = parseThoughtWikiLink(raw);
     if (!parsed || parsed.isEmbed) {
+      console.debug("[TreeOfThought] Skipping unsupported link", {
+        raw,
+        parsed,
+        section: section.label
+      });
       continue;
     }
 
     const preview = previewMap.get(raw);
     if (!preview || !preview.trim()) {
+      console.debug("[TreeOfThought] Skipping empty preview", { raw, section: section.label });
       continue;
     }
 
     const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
     if (!targetFile) {
+      console.debug("[TreeOfThought] Unable to resolve link target", {
+        raw,
+        path: parsed.path,
+        section: section.label
+      });
       continue;
     }
 
     const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
     if (!markdown) {
+      console.debug("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
     }
 
