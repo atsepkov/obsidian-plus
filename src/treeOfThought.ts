@@ -114,6 +114,66 @@ export interface ThoughtPreviewResult {
   origin?: ThoughtOriginSection | null;
 }
 
+export function createImmediateThoughtOrigin(
+  app: App,
+  task: TaskEntry
+): ThoughtOriginSection | null {
+  const file = resolveTaskFile(app, task);
+  if (!file) {
+    return null;
+  }
+
+  const headerSource = Array.isArray(task.lines) && task.lines.length
+    ? task.lines[0]
+    : task.text;
+  const headerMarkdown = (deriveTaskHeaderLine(task, headerSource) ?? "").trim();
+
+  const candidates: string[] = [];
+  if (Array.isArray(task.lines) && task.lines.length) {
+    candidates.push(task.lines.join("\n"));
+  }
+  if (typeof task.text === "string" && task.text.trim()) {
+    candidates.push(task.text);
+  }
+
+  let markdown = "";
+  for (const candidate of candidates) {
+    if (!candidate?.trim()) {
+      continue;
+    }
+    const prepared = prepareOutline(candidate, { stripFirstMarker: false });
+    const ensured = ensureChildrenOnly(prepared).trimEnd();
+    if (ensured) {
+      markdown = ensured;
+      break;
+    }
+  }
+
+  if (!markdown.trim()) {
+    return headerMarkdown
+      ? {
+          markdown: "",
+          headerMarkdown,
+          label: formatThoughtLabel(app, file),
+          tooltip: undefined,
+          segments: undefined,
+          targetAnchor: sanitizeAnchor(task.id ? `^${task.id}` : null),
+          targetLine: Number.isFinite(task.line) ? Math.max(0, Math.floor(task.line)) : null
+        }
+      : null;
+  }
+
+  return {
+    markdown,
+    headerMarkdown,
+    label: formatThoughtLabel(app, file),
+    tooltip: undefined,
+    segments: undefined,
+    targetAnchor: sanitizeAnchor(task.id ? `^${task.id}` : null),
+    targetLine: Number.isFinite(task.line) ? Math.max(0, Math.floor(task.line)) : null
+  };
+}
+
 export async function collectThoughtPreview(
   options: TreeOfThoughtOptions
 ): Promise<ThoughtPreviewResult> {

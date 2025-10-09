@@ -5,6 +5,7 @@ import {
 import {
   loadTreeOfThought,
   collectThoughtPreview,
+  createImmediateThoughtOrigin,
   type ThoughtReference,
   type ThoughtSection,
   type TreeOfThoughtResult,
@@ -795,18 +796,35 @@ function escapeCssIdentifier(value: string): string {
 
         const file = this.resolveTaskFile(task);
         const tagHint = this.resolveThoughtTagHint(key, task);
+        const immediateOrigin = createImmediateThoughtOrigin(this.app, task);
+        const headerChoice = this.chooseThoughtHeader(task, immediateOrigin?.headerMarkdown, tagHint);
+
+        let immediateSection: ThoughtSection | null = null;
+        if (immediateOrigin?.markdown?.trim() && file) {
+          immediateSection = {
+            role: "root",
+            label: immediateOrigin.label ?? this.app.metadataCache.fileToLinktext(file, ""),
+            markdown: immediateOrigin.markdown,
+            file,
+            linktext: this.app.metadataCache.fileToLinktext(file, ""),
+            segments: immediateOrigin.segments,
+            tooltip: immediateOrigin.tooltip,
+            targetAnchor: immediateOrigin.targetAnchor ?? null,
+            targetLine: typeof immediateOrigin.targetLine === "number"
+              ? Math.max(0, Math.floor(immediateOrigin.targetLine))
+              : undefined
+          };
+        }
 
         if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
-          const headerMarkdown = this.buildThoughtHeaderMarkdown(task, tagHint);
-
           this.thoughtState = {
             key,
             cacheIndex: index,
             task,
             file,
-            headerMarkdown,
+            headerMarkdown: headerChoice || this.buildThoughtHeaderMarkdown(task, tagHint),
             tagHint,
-            initialSections: [],
+            initialSections: immediateSection ? [immediateSection] : [],
             references: [],
             loading: false,
             error: undefined,
@@ -821,6 +839,15 @@ function escapeCssIdentifier(value: string): string {
           }
           if (!this.thoughtState.tagHint) {
             this.thoughtState.tagHint = tagHint;
+          }
+          if (headerChoice && headerChoice !== this.thoughtState.headerMarkdown) {
+            this.thoughtState.headerMarkdown = headerChoice;
+          }
+          if (immediateSection && !this.thoughtState.fullResult) {
+            const existing = this.thoughtState.initialSections[0];
+            if (!existing || existing.markdown !== immediateSection.markdown) {
+              this.thoughtState.initialSections = [immediateSection];
+            }
           }
         }
 
