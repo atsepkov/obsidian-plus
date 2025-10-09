@@ -228,7 +228,7 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   references.push(...backlinkResult.references);
 
   const enrichedSections = context?.linksFromTask
-    ? injectInternalLinkSections(app, sections, context.linksFromTask)
+    ? await injectInternalLinkSections(app, sections, context.linksFromTask)
     : sections;
 
   if (!enrichedSections.length && !references.length) {
@@ -455,11 +455,11 @@ async function buildBacklinkSections(
   return { branches: branchSections, references: referenceSections };
 }
 
-function injectInternalLinkSections(
+async function injectInternalLinkSections(
   app: App,
   sections: ThoughtSection[],
   linkMap?: Record<string, ThoughtLinkPreview> | null
-): ThoughtSection[] {
+): Promise<ThoughtSection[]> {
   if (!Array.isArray(sections) || sections.length === 0) {
     return sections;
   }
@@ -483,14 +483,14 @@ function injectInternalLinkSections(
   }
 
   if (!previewMap.size) {
-    console.debug("[TreeOfThought] No usable internal link previews", {
+    console.log("[TreeOfThought] No usable internal link previews", {
       entries,
       sections: sections.map(section => section.label)
     });
     return sections;
   }
 
-  console.debug("[TreeOfThought] Preparing to inject internal link sections", {
+  console.log("[TreeOfThought] Preparing to inject internal link sections", {
     previewKeys: Array.from(previewMap.keys()),
     sectionLabels: sections.map(section => section.label)
   });
@@ -502,9 +502,9 @@ function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = collectInternalLinkSections(app, section, previewMap, used);
+    const extras = await collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
-      console.debug("[TreeOfThought] Injecting link sections", {
+      console.log("[TreeOfThought] Injecting link sections", {
         source: section.label,
         extras: extras.map(extra => ({ label: extra.label, target: extra.targetAnchor }))
       });
@@ -516,12 +516,12 @@ function injectInternalLinkSections(
   return modified ? result : sections;
 }
 
-function collectInternalLinkSections(
+async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
   used: Set<string>
-): ThoughtSection[] {
+): Promise<ThoughtSection[]> {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
     .filter((value): value is string => typeof value === "string" && value.includes("[["));
 
@@ -541,16 +541,9 @@ function collectInternalLinkSections(
 
   for (const match of linkMatches) {
     const raw = match[0];
-    if (!previewMap.has(raw) || used.has(raw)) {
-      if (!previewMap.has(raw)) {
-        console.debug("[TreeOfThought] Skipping link without preview", { raw, section: section.label });
-      }
-      continue;
-    }
-
     const parsed = parseThoughtWikiLink(raw);
     if (!parsed || parsed.isEmbed) {
-      console.debug("[TreeOfThought] Skipping unsupported link", {
+      console.log("[TreeOfThought] Skipping unsupported link", {
         raw,
         parsed,
         section: section.label
@@ -558,15 +551,14 @@ function collectInternalLinkSections(
       continue;
     }
 
-    const preview = previewMap.get(raw);
-    if (!preview || !preview.trim()) {
-      console.debug("[TreeOfThought] Skipping empty preview", { raw, section: section.label });
+    if (used.has(raw)) {
+      console.log("[TreeOfThought] Skipping already injected link", { raw, section: section.label });
       continue;
     }
 
     const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
     if (!targetFile) {
-      console.debug("[TreeOfThought] Unable to resolve link target", {
+      console.log("[TreeOfThought] Unable to resolve link target", {
         raw,
         path: parsed.path,
         section: section.label
@@ -574,9 +566,26 @@ function collectInternalLinkSections(
       continue;
     }
 
+    let preview: string | null = previewMap.get(raw) ?? null;
+    if (!preview || !preview.trim()) {
+      console.log("[TreeOfThought] Missing cached preview, attempting fallback", {
+        raw,
+        section: section.label
+      });
+      preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
+    }
+
+    if (!preview || !preview.trim()) {
+      console.log("[TreeOfThought] Unable to resolve preview for link", {
+        raw,
+        section: section.label
+      });
+      continue;
+    }
+
     const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
     if (!markdown) {
-      console.debug("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
+      console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
     }
 
@@ -588,6 +597,14 @@ function collectInternalLinkSections(
 
     const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
+
+    console.log("[TreeOfThought] Injecting wiki-link section", {
+      raw,
+      label,
+      source: section.label,
+      target: targetFile.path,
+      anchor: targetAnchor
+    });
 
     extras.push({
       role: "branch",
@@ -605,6 +622,99 @@ function collectInternalLinkSections(
   }
 
   return extras;
+}
+
+async function resolveThoughtLinkPreview(
+  app: App,
+  targetFile: TFile,
+  parsed: ParsedThoughtLink
+): Promise<string | null> {
+  const lines = await readFileLines(app, targetFile);
+  if (!lines.length) {
+    return null;
+  }
+
+  const anchor = parsed.anchor?.trim();
+  if (anchor) {
+    const blockPreview = extractBlockPreview(lines, anchor);
+    if (blockPreview) {
+      return blockPreview;
+    }
+
+    const headingPreview = extractHeadingPreview(lines, anchor);
+    if (headingPreview) {
+      return headingPreview;
+    }
+  }
+
+  return lines.slice(0, Math.min(lines.length, 40)).join("\n");
+}
+
+function extractBlockPreview(lines: string[], anchor: string): string | null {
+  const normalized = anchor.startsWith("^") ? anchor.slice(1) : anchor;
+  if (!normalized) {
+    return null;
+  }
+
+  const needle = `^${normalized}`;
+  const index = lines.findIndex(line => line.includes(needle));
+  if (index < 0) {
+    return null;
+  }
+
+  return extractListSubtree(lines, index);
+}
+
+function extractHeadingPreview(lines: string[], anchor: string): string | null {
+  const sanitized = anchor.replace(/^#/, "").trim();
+  if (!sanitized) {
+    return null;
+  }
+
+  const slug = slugifyHeading(sanitized);
+  if (!slug) {
+    return null;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#+)\s+(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const headingText = (match[2] ?? "").trim();
+    if (!headingText) {
+      continue;
+    }
+
+    if (slugifyHeading(headingText) !== slug) {
+      continue;
+    }
+
+    const level = match[1].length;
+    const snippet = extractHeadingSection(lines, i, level);
+    return snippet?.trim() ? snippet : null;
+  }
+
+  return null;
+}
+
+function extractHeadingSection(lines: string[], startLine: number, level: number): string {
+  const snippet: string[] = [];
+
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i];
+    if (i > startLine) {
+      const headingMatch = line.match(/^(#+)\s+/);
+      if (headingMatch && headingMatch[1].length <= level) {
+        break;
+      }
+    }
+
+    snippet.push(line);
+  }
+
+  return snippet.join("\n");
 }
 
 function parseThoughtWikiLink(raw: string): ParsedThoughtLink | null {
