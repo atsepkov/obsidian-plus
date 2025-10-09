@@ -307,7 +307,12 @@ async function buildOriginSection(
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
     const outline = buildBacklinkOutline(lines, startLine);
     if (outline) {
-      markdown = outline.markdown ?? "";
+      const snippet = outline.snippet ?? "";
+      if (snippet) {
+        markdown = snippet;
+      } else {
+        markdown = outline.markdown ?? "";
+      }
       if (outline.snippet) {
         sourceSnippet = outline.snippet;
       }
@@ -346,10 +351,6 @@ async function buildOriginSection(
 
   if (!headerMarkdown) {
     headerMarkdown = deriveTaskHeaderLine(task, startLine != null ? lines[startLine] : undefined);
-  }
-
-  if (markdown.trim()) {
-    markdown = ensureChildrenOnly(markdown).trimEnd();
   }
 
   if (!markdown.trim() && !headerMarkdown) {
@@ -910,16 +911,7 @@ function extractListSubtree(
     }
 
     const indent = leadingSpace(rawLine);
-    if (indent < rootIndent && trimmed) {
-      break;
-    }
-
     if (indent <= rootIndent && (isListItem(rawLine) || isHeading(trimmed))) {
-      break;
-    }
-
-    const paragraphLike = !isListItem(rawLine) && !isHeading(trimmed);
-    if (indent <= rootIndent && paragraphLike) {
       break;
     }
 
@@ -935,7 +927,7 @@ function extractListSubtree(
   }
 
   if (!omitRoot) {
-    return collected.join("\n").trimEnd();
+    return collected.join("\n");
   }
 
   while (collected.length && !collected[0].trim()) {
@@ -949,22 +941,7 @@ function extractListSubtree(
     return "";
   }
 
-  const minIndent = collected.reduce((min, line) => {
-    if (!line.trim()) return min;
-    return Math.min(min, leadingSpace(line));
-  }, Number.POSITIVE_INFINITY);
-
-  const offset = Number.isFinite(minIndent) ? Math.max(0, minIndent) : 0;
-
-  return collected
-    .map(line => {
-      if (!line.trim()) return "";
-      const indent = leadingSpace(line);
-      const slice = Math.min(indent, offset);
-      return line.slice(slice);
-    })
-    .join("\n")
-    .trimEnd();
+  return collected.join("\n");
 }
 
 function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | null): string {
@@ -1166,31 +1143,6 @@ function dedentLines(lines: string[]): string[] {
     const slice = Math.min(indent, minIndent);
     return line.slice(slice).replace(/\s+$/, "");
   });
-}
-
-function ensureChildrenOnly(markdown: string): string {
-  const lines = markdown.split(/\r?\n/);
-  if (!lines.length) {
-    return markdown;
-  }
-
-  let firstContentIndex = lines.findIndex(line => line.trim());
-  if (firstContentIndex < 0) {
-    return "";
-  }
-
-  if (!isListItem(lines[firstContentIndex])) {
-    return markdown.trimEnd();
-  }
-
-  const remaining = lines.slice(firstContentIndex + 1);
-  if (!remaining.length) {
-    return stripListMarker(lines[firstContentIndex]).trim();
-  }
-
-  const rebuilt = prepareOutline(remaining.join("\n"), { stripFirstMarker: false });
-  const trimmed = rebuilt.trimEnd();
-  return trimmed || stripListMarker(lines[firstContentIndex]).trim();
 }
 
 function buildBacklinkOutline(lines: string[], startLine: number, snippetOverride?: string): BacklinkOutline | null {
