@@ -282,6 +282,16 @@ async function buildOriginSection(
   const lines = Array.isArray(linesOverride) ? linesOverride : await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
 
+  console.log("[TreeOfThought] buildOriginSection:start", {
+    file: file.path,
+    blockId,
+    startLine,
+    lineSample:
+      startLine != null && startLine >= 0 && startLine < lines.length
+        ? lines[startLine]?.trim()
+        : null
+  });
+
   let markdown = "";
   let headerMarkdown: string | undefined;
   let segments: ThoughtReferenceSegment[] | undefined;
@@ -1184,6 +1194,12 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     return null;
   }
 
+  console.log("[TreeOfThought] buildBacklinkOutline:start", {
+    startLine,
+    snippetOverride: snippetOverride?.slice(0, 200) ?? null,
+    lineSample: lines[startLine]?.trim()
+  });
+
   const source = typeof snippetOverride === "string" && snippetOverride.trim()
     ? snippetOverride
     : extractListSubtree(lines, startLine);
@@ -1202,6 +1218,12 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   if (!rootLine.trim()) {
     return null;
   }
+
+  console.log("[TreeOfThought] buildBacklinkOutline:root", {
+    startLine,
+    rootLine: rootLine.slice(0, 200),
+    totalLines: snippetLines.length
+  });
 
   const rootIndent = leadingSpace(rootLine);
   const rootText = stripListMarker(rootLine).trim();
