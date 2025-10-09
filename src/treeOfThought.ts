@@ -57,6 +57,7 @@ export interface ThoughtOriginSection {
   tooltip?: string;
   targetAnchor?: string | null;
   targetLine?: number | null;
+  sourceSnippet?: string;
 }
 
 export interface ThoughtSection {
@@ -69,6 +70,7 @@ export interface ThoughtSection {
   tooltip?: string;
   targetAnchor?: string | null;
   targetLine?: number | null;
+  sourceMarkdown?: string;
 }
 
 export interface ThoughtReference {
@@ -158,7 +160,8 @@ export async function collectThoughtPreview(
       targetLine:
         typeof origin.targetLine === "number"
           ? Math.max(0, Math.floor(origin.targetLine))
-          : undefined
+          : undefined,
+      sourceMarkdown: origin.sourceSnippet ?? origin.markdown
     };
   }
 
@@ -210,7 +213,8 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
       targetLine:
         typeof originSection.targetLine === "number"
           ? Math.max(0, Math.floor(originSection.targetLine))
-          : undefined
+          : undefined,
+      sourceMarkdown: originSection.sourceSnippet ?? originSection.markdown
     });
   }
 
@@ -285,12 +289,16 @@ async function buildOriginSection(
   let tooltip: string | undefined;
   let targetAnchor: string | null = blockId ? `^${blockId.replace(/^[#^]/, "")}` : null;
   let targetLine: number | null = null;
+  let sourceSnippet: string | undefined;
 
   if (startLine != null) {
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
     const outline = buildBacklinkOutline(lines, startLine);
     if (outline) {
       markdown = outline.markdown ?? "";
+      if (outline.snippet) {
+        sourceSnippet = outline.snippet;
+      }
       const summary = createReferenceSummary(outline);
       if (summary) {
         const parentSegments = filterParentSegments(summary.segments);
@@ -343,7 +351,8 @@ async function buildOriginSection(
     label,
     tooltip,
     targetAnchor,
-    targetLine
+    targetLine,
+    sourceSnippet: sourceSnippet ?? (markdown ? markdown.trimEnd() : undefined)
   };
 }
 
@@ -420,7 +429,8 @@ async function buildBacklinkSections(
           segments: filterParentSegments(summary?.segments) ?? summary?.segments,
           tooltip: summary?.tooltip,
           targetAnchor: sanitizeAnchor(outline.rootAnchor),
-          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined
+          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined,
+          sourceMarkdown: outline.snippet
         });
       } else {
         const summary = createReferenceSummary(outline);
@@ -491,11 +501,21 @@ function collectInternalLinkSections(
   previewMap: Map<string, string>,
   used: Set<string>
 ): ThoughtSection[] {
-  if (!section?.markdown || !section.markdown.includes("[[")) {
+  const searchTexts = [section?.sourceMarkdown, section?.markdown]
+    .filter((value): value is string => typeof value === "string" && value.includes("[["));
+
+  if (!searchTexts.length) {
     return [];
   }
 
-  const linkMatches = section.markdown.matchAll(/!\?\[\[[^\]]+\]\]/g);
+  const linkMatches: RegExpMatchArray[] = [];
+  for (const text of searchTexts) {
+    const iterator = text.matchAll(/!\?\[\[[^\]]+\]\]/g);
+    for (const match of iterator) {
+      linkMatches.push(match);
+    }
+  }
+
   const extras: ThoughtSection[] = [];
 
   for (const match of linkMatches) {
