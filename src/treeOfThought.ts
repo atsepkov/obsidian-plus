@@ -227,9 +227,11 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   sections.push(...backlinkResult.branches);
   references.push(...backlinkResult.references);
 
-  const enrichedSections = context?.linksFromTask
-    ? await injectInternalLinkSections(app, sections, context.linksFromTask)
-    : sections;
+  const enrichedSections = await injectInternalLinkSections(
+    app,
+    sections,
+    context?.linksFromTask ?? null
+  );
 
   if (!enrichedSections.length && !references.length) {
     return {
@@ -474,36 +476,17 @@ async function injectInternalLinkSections(
     return sections;
   }
 
-  if (!linkMap) {
-    return sections;
-  }
-
-  const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
-  if (!entries.length) {
-    return sections;
-  }
-
   const previewMap = new Map<string, string>();
-  for (const [raw, value] of entries) {
-    const trimmed = typeof value === "string" ? value.trim() : "";
-    if (!trimmed) {
-      continue;
+  if (linkMap) {
+    const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
+    for (const [raw, value] of entries) {
+      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (!trimmed) {
+        continue;
+      }
+      previewMap.set(raw, trimmed);
     }
-    previewMap.set(raw, trimmed);
   }
-
-  if (!previewMap.size) {
-    console.log("[TreeOfThought] No usable internal link previews", {
-      entries,
-      sections: sections.map(section => section.label)
-    });
-    return sections;
-  }
-
-  console.log("[TreeOfThought] Preparing to inject internal link sections", {
-    previewKeys: Array.from(previewMap.keys()),
-    sectionLabels: sections.map(section => section.label)
-  });
 
   const used = new Set<string>();
   let modified = false;
@@ -583,6 +566,9 @@ async function collectInternalLinkSections(
         section: section.label
       });
       preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
+      if (preview?.trim()) {
+        previewMap.set(raw, preview);
+      }
     }
 
     if (!preview || !preview.trim()) {
