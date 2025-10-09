@@ -15,6 +15,12 @@ interface ThoughtBacklink {
 
 type ThoughtLinkPreview = string | null | { error?: string };
 
+interface ThoughtLinkTargetInfo {
+  line: number;
+  anchor?: string | null;
+  snippetOverride?: string;
+}
+
 type ParentContextType = "heading" | "list" | "paragraph";
 
 interface ParentContext {
@@ -492,10 +498,24 @@ async function injectInternalLinkSections(
   let modified = false;
   const result: ThoughtSection[] = [];
 
+  const rootSection = sections.find(section => section.role === "root");
+  const rootInfo = rootSection
+    ? {
+        path: rootSection.file?.path ?? null,
+        anchor: sanitizeAnchor(rootSection.targetAnchor)
+      }
+    : null;
+
   for (const section of sections) {
     result.push(section);
 
-    const extras = await collectInternalLinkSections(app, section, previewMap, used);
+    const extras = await collectInternalLinkSections(
+      app,
+      section,
+      previewMap,
+      used,
+      rootInfo
+    );
     if (extras.length) {
       console.log("[TreeOfThought] Injecting link sections", {
         source: section.label,
@@ -513,7 +533,8 @@ async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
-  used: Set<string>
+  used: Set<string>,
+  rootInfo: { path: string | null; anchor: string | null } | null
 ): Promise<ThoughtSection[]> {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
     .filter((value): value is string => typeof value === "string" && value.includes("[["));
@@ -559,59 +580,65 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    let preview: string | null = previewMap.get(raw) ?? null;
-    if (!preview || !preview.trim()) {
-      console.log("[TreeOfThought] Missing cached preview, attempting fallback", {
-        raw,
-        section: section.label
-      });
-      preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
-      if (preview?.trim()) {
-        previewMap.set(raw, preview);
-      }
-    }
-
-    if (!preview || !preview.trim()) {
-      console.log("[TreeOfThought] Unable to resolve preview for link", {
+    const sanitizedTargetAnchor = sanitizeAnchor(parsed.anchor);
+    if (
+      rootInfo &&
+      rootInfo.path &&
+      targetFile.path === rootInfo.path &&
+      sanitizedTargetAnchor &&
+      rootInfo.anchor &&
+      sanitizedTargetAnchor === rootInfo.anchor
+    ) {
+      console.log("[TreeOfThought] Skipping root duplication for link", {
         raw,
         section: section.label
       });
       continue;
     }
 
-    const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
-    if (!markdown) {
-      console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
+    const cachedPreview = previewMap.get(raw) ?? null;
+
+    const linkSection = await buildInternalLinkSection(
+      app,
+      targetFile,
+      parsed,
+      cachedPreview
+    );
+
+    if (!linkSection) {
+      console.log("[TreeOfThought] Unable to build link section", {
+        raw,
+        section: section.label
+      });
       continue;
     }
 
-    const linktext = app.metadataCache.fileToLinktext(targetFile, section.file.path) || targetFile.basename;
-    const label = (parsed.display || linktext || targetFile.basename).trim();
-    if (!label) {
-      continue;
+    if (cachedPreview !== linkSection.sourceMarkdown && linkSection.sourceMarkdown) {
+      previewMap.set(raw, linkSection.sourceMarkdown);
     }
 
-    const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
-    const segments = createThoughtLinkSegments(label, targetAnchor);
+    const linktext =
+      app.metadataCache.fileToLinktext(targetFile, section.file.path) || targetFile.basename;
 
     console.log("[TreeOfThought] Injecting wiki-link section", {
       raw,
-      label,
+      label: linkSection.label,
       source: section.label,
       target: targetFile.path,
-      anchor: targetAnchor
+      anchor: linkSection.targetAnchor
     });
 
     extras.push({
       role: "branch",
-      label,
-      markdown,
+      label: linkSection.label,
+      markdown: linkSection.markdown,
       file: targetFile,
       linktext,
-      segments,
-      targetAnchor,
-      tooltip: undefined,
-      targetLine: undefined
+      segments: linkSection.segments,
+      targetAnchor: linkSection.targetAnchor,
+      tooltip: linkSection.tooltip,
+      targetLine: linkSection.targetLine ?? undefined,
+      sourceMarkdown: linkSection.sourceMarkdown ?? linkSection.markdown
     });
 
     used.add(raw);
@@ -620,48 +647,145 @@ async function collectInternalLinkSections(
   return extras;
 }
 
-async function resolveThoughtLinkPreview(
+async function buildInternalLinkSection(
   app: App,
   targetFile: TFile,
-  parsed: ParsedThoughtLink
-): Promise<string | null> {
+  parsed: ParsedThoughtLink,
+  cachedPreview: string | null
+): Promise<{
+  markdown: string;
+  label: string;
+  segments?: ThoughtReferenceSegment[];
+  tooltip?: string;
+  targetAnchor?: string | null;
+  targetLine?: number | null;
+  sourceMarkdown?: string;
+} | null> {
   const lines = await readFileLines(app, targetFile);
   if (!lines.length) {
     return null;
   }
 
+  const targetInfo = locateThoughtLinkTarget(lines, parsed, cachedPreview);
+  if (!targetInfo) {
+    return null;
+  }
+
+  const outline = buildBacklinkOutline(
+    lines,
+    targetInfo.line,
+    targetInfo.snippetOverride ?? cachedPreview ?? undefined
+  );
+
+  if (!outline) {
+    return null;
+  }
+
+  const markdown = ((outline.markdown || "").trim()
+    || ensureChildrenOnly(outline.snippet ?? "").trim()).trimEnd();
+
+  if (!markdown) {
+    return null;
+  }
+
+  const summary = createReferenceSummary(outline);
+  const parentSegments = filterParentSegments(summary?.segments);
+  const segments = parentSegments ?? summary?.segments;
+  const label = (
+    summarizeSegments(parentSegments)
+      || summary?.summary
+      || parsed.display
+      || formatThoughtLabel(app, targetFile)
+  ).trim();
+
+  const targetAnchor = sanitizeAnchor(outline.rootAnchor ?? targetInfo.anchor ?? parsed.anchor);
+  const targetLine = Number.isFinite(targetInfo.line)
+    ? Math.max(0, Math.floor(targetInfo.line))
+    : null;
+
+  return {
+    markdown,
+    label,
+    segments: segments?.length ? segments : undefined,
+    tooltip: summary?.tooltip,
+    targetAnchor,
+    targetLine,
+    sourceMarkdown: outline.snippet ?? linkSectionFallbackMarkdown(outline.markdown, markdown)
+  };
+}
+
+function linkSectionFallbackMarkdown(source: string | undefined, markdown: string): string {
+  const trimmedSource = (source ?? "").trimEnd();
+  if (trimmedSource) {
+    return trimmedSource;
+  }
+  return markdown;
+}
+
+function locateThoughtLinkTarget(
+  lines: string[],
+  parsed: ParsedThoughtLink,
+  cachedPreview: string | null
+): ThoughtLinkTargetInfo | null {
   const anchor = parsed.anchor?.trim();
   if (anchor) {
-    const blockPreview = extractBlockPreview(lines, anchor);
-    if (blockPreview) {
-      return blockPreview;
+    const block = locateBlockAnchor(lines, anchor);
+    if (block) {
+      return block;
     }
 
-    const headingPreview = extractHeadingPreview(lines, anchor);
-    if (headingPreview) {
-      return headingPreview;
+    const heading = locateHeadingAnchor(lines, anchor);
+    if (heading) {
+      return heading;
     }
   }
 
-  return lines.slice(0, Math.min(lines.length, 40)).join("\n");
+  if (cachedPreview?.trim()) {
+    const snippetLines = cachedPreview.split(/\r?\n/);
+    const firstContent = snippetLines.find(line => line.trim());
+    if (firstContent) {
+      const normalizedFirst = normalizeSnippet(firstContent);
+      const strippedFirst = stripListMarker(normalizedFirst).trim() || normalizedFirst.trim();
+      if (strippedFirst) {
+        for (let i = 0; i < lines.length; i++) {
+          const normalizedLine = normalizeSnippet(lines[i]);
+          const strippedLine = stripListMarker(normalizedLine).trim() || normalizedLine.trim();
+          if (strippedLine === strippedFirst) {
+            return {
+              line: i,
+              anchor: null,
+              snippetOverride: cachedPreview
+            };
+          }
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
-function extractBlockPreview(lines: string[], anchor: string): string | null {
-  const normalized = anchor.startsWith("^") ? anchor.slice(1) : anchor;
+function locateBlockAnchor(lines: string[], anchor: string): ThoughtLinkTargetInfo | null {
+  const normalized = anchor.replace(/^[#^]/, "");
   if (!normalized) {
     return null;
   }
 
   const needle = `^${normalized}`;
-  const index = lines.findIndex(line => line.includes(needle));
-  if (index < 0) {
+  const line = lines.findIndex(current => current.includes(needle));
+  if (line < 0) {
     return null;
   }
 
-  return extractListSubtree(lines, index);
+  const snippet = extractListSubtree(lines, line);
+  return {
+    line,
+    anchor: `^${normalized}`,
+    snippetOverride: snippet
+  };
 }
 
-function extractHeadingPreview(lines: string[], anchor: string): string | null {
+function locateHeadingAnchor(lines: string[], anchor: string): ThoughtLinkTargetInfo | null {
   const sanitized = anchor.replace(/^#/, "").trim();
   if (!sanitized) {
     return null;
@@ -689,7 +813,11 @@ function extractHeadingPreview(lines: string[], anchor: string): string | null {
 
     const level = match[1].length;
     const snippet = extractHeadingSection(lines, i, level);
-    return snippet?.trim() ? snippet : null;
+    return {
+      line: i,
+      anchor: createHeadingAnchor(headingText),
+      snippetOverride: snippet
+    };
   }
 
   return null;
@@ -755,40 +883,6 @@ function resolveThoughtLinkFile(app: App, baseFile: TFile, linkPath: string): TF
 
   const dest = app.metadataCache.getFirstLinkpathDest(linkPath, baseFile.path ?? "");
   return dest instanceof TFile ? dest : null;
-}
-
-function resolveThoughtLinkAnchor(anchor?: string | null): string | null {
-  if (!anchor) {
-    return null;
-  }
-
-  const trimmed = anchor.replace(/^#/, "");
-  if (!trimmed) {
-    return null;
-  }
-
-  if (trimmed.startsWith("^")) {
-    return trimmed;
-  }
-
-  return slugifyHeading(trimmed);
-}
-
-function createThoughtLinkSegments(
-  label: string,
-  anchor: string | null
-): ThoughtReferenceSegment[] | undefined {
-  const text = (label ?? "").trim();
-  if (!text) {
-    return undefined;
-  }
-
-  return [
-    {
-      text,
-      anchor: anchor ?? undefined
-    }
-  ];
 }
 
 async function collectMetadataBacklinks(
