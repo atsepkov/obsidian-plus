@@ -87,6 +87,14 @@ export interface ThoughtReferenceSegment {
   type?: ParentContextType | "child";
 }
 
+interface ParsedThoughtLink {
+  raw: string;
+  display: string;
+  path: string;
+  anchor?: string | null;
+  isEmbed: boolean;
+}
+
 export interface TreeOfThoughtOptions {
   app: App;
   task: TaskEntry;
@@ -215,7 +223,11 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   sections.push(...backlinkResult.branches);
   references.push(...backlinkResult.references);
 
-  if (!sections.length && !references.length) {
+  const enrichedSections = context?.linksFromTask
+    ? injectInternalLinkSections(app, sections, context.linksFromTask)
+    : sections;
+
+  if (!enrichedSections.length && !references.length) {
     return {
       sourceFile,
       sections: [],
@@ -227,8 +239,8 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
 
   const filter = (searchQuery ?? "").trim().toLowerCase();
   const filteredSections = filter
-    ? sections.filter(section => section.markdown.toLowerCase().includes(filter))
-    : sections;
+    ? enrichedSections.filter(section => section.markdown.toLowerCase().includes(filter))
+    : enrichedSections;
 
   const filteredReferences = filter
     ? references.filter(reference =>
@@ -431,6 +443,190 @@ async function buildBacklinkSections(
   }
 
   return { branches: branchSections, references: referenceSections };
+}
+
+function injectInternalLinkSections(
+  app: App,
+  sections: ThoughtSection[],
+  linkMap?: Record<string, ThoughtLinkPreview> | null
+): ThoughtSection[] {
+  if (!Array.isArray(sections) || sections.length === 0) {
+    return sections;
+  }
+
+  if (!linkMap) {
+    return sections;
+  }
+
+  const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
+  if (!entries.length) {
+    return sections;
+  }
+
+  const previewMap = new Map<string, string>();
+  for (const [raw, value] of entries) {
+    previewMap.set(raw, (value as string).trim());
+  }
+
+  const used = new Set<string>();
+  let modified = false;
+  const result: ThoughtSection[] = [];
+
+  for (const section of sections) {
+    result.push(section);
+
+    const extras = collectInternalLinkSections(app, section, previewMap, used);
+    if (extras.length) {
+      result.push(...extras);
+      modified = true;
+    }
+  }
+
+  return modified ? result : sections;
+}
+
+function collectInternalLinkSections(
+  app: App,
+  section: ThoughtSection,
+  previewMap: Map<string, string>,
+  used: Set<string>
+): ThoughtSection[] {
+  if (!section?.markdown || !section.markdown.includes("[[")) {
+    return [];
+  }
+
+  const linkMatches = section.markdown.matchAll(/!\?\[\[[^\]]+\]\]/g);
+  const extras: ThoughtSection[] = [];
+
+  for (const match of linkMatches) {
+    const raw = match[0];
+    if (!previewMap.has(raw) || used.has(raw)) {
+      continue;
+    }
+
+    const parsed = parseThoughtWikiLink(raw);
+    if (!parsed || parsed.isEmbed) {
+      continue;
+    }
+
+    const preview = previewMap.get(raw);
+    if (!preview || !preview.trim()) {
+      continue;
+    }
+
+    const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
+    if (!targetFile) {
+      continue;
+    }
+
+    const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
+    if (!markdown) {
+      continue;
+    }
+
+    const linktext = app.metadataCache.fileToLinktext(targetFile, section.file.path) || targetFile.basename;
+    const label = (parsed.display || linktext || targetFile.basename).trim();
+    if (!label) {
+      continue;
+    }
+
+    const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
+    const segments = createThoughtLinkSegments(label, targetAnchor);
+
+    extras.push({
+      role: "branch",
+      label,
+      markdown,
+      file: targetFile,
+      linktext,
+      segments,
+      targetAnchor,
+      tooltip: undefined,
+      targetLine: undefined
+    });
+
+    used.add(raw);
+  }
+
+  return extras;
+}
+
+function parseThoughtWikiLink(raw: string): ParsedThoughtLink | null {
+  if (typeof raw !== "string" || !raw.includes("[[") || !raw.endsWith("]]")) {
+    return null;
+  }
+
+  const embed = raw.startsWith("![[");
+  const inner = raw.slice(embed ? 3 : 2, -2);
+  if (!inner.trim()) {
+    return null;
+  }
+
+  const pipeIndex = inner.indexOf("|");
+  const target = pipeIndex >= 0 ? inner.slice(0, pipeIndex) : inner;
+  const alias = pipeIndex >= 0 ? inner.slice(pipeIndex + 1) : "";
+
+  let path = target.trim();
+  let anchor: string | null = null;
+
+  const hashIndex = path.indexOf("#");
+  if (hashIndex >= 0) {
+    anchor = path.slice(hashIndex + 1).trim();
+    path = path.slice(0, hashIndex).trim();
+  }
+
+  const display = alias.trim() || (anchor?.trim() || path) || target;
+
+  return {
+    raw,
+    display: display.trim(),
+    path,
+    anchor: anchor && anchor.trim() ? anchor.trim() : null,
+    isEmbed: embed
+  };
+}
+
+function resolveThoughtLinkFile(app: App, baseFile: TFile, linkPath: string): TFile | null {
+  if (!linkPath) {
+    return baseFile;
+  }
+
+  const dest = app.metadataCache.getFirstLinkpathDest(linkPath, baseFile.path ?? "");
+  return dest instanceof TFile ? dest : null;
+}
+
+function resolveThoughtLinkAnchor(anchor?: string | null): string | null {
+  if (!anchor) {
+    return null;
+  }
+
+  const trimmed = anchor.replace(/^#/, "");
+  if (!trimmed) {
+    return null;
+  }
+
+  if (trimmed.startsWith("^")) {
+    return trimmed;
+  }
+
+  return slugifyHeading(trimmed);
+}
+
+function createThoughtLinkSegments(
+  label: string,
+  anchor: string | null
+): ThoughtReferenceSegment[] | undefined {
+  const text = (label ?? "").trim();
+  if (!text) {
+    return undefined;
+  }
+
+  return [
+    {
+      text,
+      anchor: anchor ?? undefined
+    }
+  ];
 }
 
 async function collectMetadataBacklinks(
