@@ -4,12 +4,12 @@ import {
   } from "obsidian";
 import {
   loadTreeOfThought,
-  createThoughtRootPreview,
+  collectThoughtPreview,
   type ThoughtReference,
-  type ThoughtRootPreview,
   type ThoughtSection,
   type TreeOfThoughtResult,
-  type TaskContextSnapshot
+  type TaskContextSnapshot,
+  type ThoughtOriginSection
 } from "./treeOfThought";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
   
@@ -35,6 +35,8 @@ interface ThoughtViewState {
   blockId?: string;
   context?: TaskContextSnapshot | null;
   tagHint?: string | null;
+  prefetchedLines?: string[] | null;
+  prefetchedOrigin?: ThoughtOriginSection | null;
   loading: boolean;
   error?: string;
   promise: Promise<void> | null;
@@ -678,53 +680,6 @@ function escapeCssIdentifier(value: string): string {
         return null;
     }
 
-  private buildThoughtLabel(file: TFile): string {
-      return this.app.metadataCache.fileToLinktext(file, "");
-  }
-
-  private buildThoughtPreviewSection(
-    file: TFile | null,
-    preview: ThoughtRootPreview
-  ): ThoughtSection | null {
-      if (!file) {
-        return null;
-      }
-
-      if (!preview || typeof preview.markdown !== "string") {
-        return null;
-      }
-
-      const trimmed = preview.markdown.trim();
-      if (!trimmed) {
-        return null;
-      }
-
-      const hasChildren = typeof preview.hasChildren === "boolean"
-        ? preview.hasChildren
-        : /\n\s*[-*+]/.test(trimmed) || trimmed.includes("\n");
-
-      if (!hasChildren) {
-        return null;
-      }
-
-      const label = (preview.label ?? "").trim() || this.buildThoughtLabel(file);
-      const targetLine = typeof preview.targetLine === "number"
-        ? Math.max(0, Math.floor(preview.targetLine))
-        : undefined;
-
-      return {
-        role: "root",
-        label,
-        markdown: trimmed,
-        file,
-        linktext: this.app.metadataCache.fileToLinktext(file, ""),
-        segments: preview.segments,
-        tooltip: preview.tooltip,
-        targetAnchor: preview.targetAnchor ?? undefined,
-        targetLine
-      };
-  }
-
   private buildThoughtHeaderMarkdown(task: TaskEntry, tagHint?: string | null): string {
       const status = typeof task.status === "string" && task.status.length ? task.status : " ";
       const activeTag = (tagHint ?? this.activeTag ?? "").trim();
@@ -842,10 +797,7 @@ function escapeCssIdentifier(value: string): string {
         const tagHint = this.resolveThoughtTagHint(key, task);
 
         if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
-          const preview = createThoughtRootPreview(task);
-          const previewSection = this.buildThoughtPreviewSection(file, preview);
-          const sections: ThoughtSection[] = previewSection ? [previewSection] : [];
-          const headerMarkdown = this.chooseThoughtHeader(task, preview.headerMarkdown, tagHint);
+          const headerMarkdown = this.buildThoughtHeaderMarkdown(task, tagHint);
 
           this.thoughtState = {
             key,
@@ -854,11 +806,13 @@ function escapeCssIdentifier(value: string): string {
             file,
             headerMarkdown,
             tagHint,
-            initialSections: sections,
+            initialSections: [],
             references: [],
             loading: false,
             error: undefined,
-            promise: null
+            promise: null,
+            prefetchedLines: null,
+            prefetchedOrigin: null
           };
         } else {
           this.thoughtState.task = task;
@@ -914,33 +868,66 @@ function escapeCssIdentifier(value: string): string {
             state.context = context;
 
             const resolvedFile = state.file ?? this.resolveTaskFile(state.task);
-            const preview = createThoughtRootPreview(state.task, context ?? undefined);
-            const headerChoice = this.chooseThoughtHeader(state.task, preview.headerMarkdown, state.tagHint);
             let changed = false;
 
-            if (headerChoice && headerChoice !== state.headerMarkdown) {
-              state.headerMarkdown = headerChoice;
-              changed = true;
-            }
-
             if (resolvedFile) {
-              const previewSection = this.buildThoughtPreviewSection(resolvedFile, preview);
-              const existing = state.initialSections[0];
-              if (previewSection) {
-                const needsUpdate = !existing
-                  || existing.markdown !== previewSection.markdown
-                  || existing.label !== previewSection.label
-                  || existing.file.path !== previewSection.file.path;
-                if (needsUpdate) {
-                  state.initialSections = [previewSection];
+              try {
+                const previewResult = await collectThoughtPreview({
+                  app: this.app,
+                  task: state.task,
+                  blockId,
+                  context: context ?? undefined,
+                  prefetchedLines: state.prefetchedLines ?? undefined,
+                  prefetchedOrigin: state.prefetchedOrigin ?? undefined
+                });
+
+                if (!this.isCurrentThoughtState(state, token)) {
+                  return;
+                }
+
+                if (previewResult.sourceFile && !state.file) {
+                  state.file = previewResult.sourceFile;
+                }
+
+                state.prefetchedLines = previewResult.lines ?? null;
+                state.prefetchedOrigin = previewResult.origin ?? null;
+
+                const headerChoice = this.chooseThoughtHeader(
+                  state.task,
+                  previewResult.headerMarkdown,
+                  state.tagHint
+                );
+
+                if (headerChoice && headerChoice !== state.headerMarkdown) {
+                  state.headerMarkdown = headerChoice;
                   changed = true;
                 }
-              } else if (state.initialSections.length) {
-                state.initialSections = [];
-                changed = true;
-              }
-              if (!state.file) {
-                state.file = resolvedFile;
+
+                const previewSection = previewResult.section || null;
+                const needsUpdate = (() => {
+                  if (!previewSection && !state.initialSections.length) {
+                    return false;
+                  }
+                  if (!previewSection) {
+                    return state.initialSections.length > 0;
+                  }
+                  const existing = state.initialSections[0];
+                  if (!existing) {
+                    return true;
+                  }
+                  return (
+                    existing.markdown !== previewSection.markdown ||
+                    existing.label !== previewSection.label ||
+                    existing.file.path !== previewSection.file.path
+                  );
+                })();
+
+                if (needsUpdate) {
+                  state.initialSections = previewSection ? [previewSection] : [];
+                  changed = true;
+                }
+              } catch (error) {
+                console.error("Failed to build thought preview", error);
               }
             }
 
@@ -952,7 +939,9 @@ function escapeCssIdentifier(value: string): string {
               app: this.app,
               task: state.task,
               blockId,
-              context
+              context,
+              prefetchedLines: state.prefetchedLines ?? undefined,
+              prefetchedOrigin: state.prefetchedOrigin ?? undefined
             });
 
             if (!this.isCurrentThoughtState(state, token)) {

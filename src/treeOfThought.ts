@@ -49,7 +49,7 @@ interface BacklinkOutline {
   snippet: string;
 }
 
-interface OriginSectionResult {
+export interface ThoughtOriginSection {
   markdown: string;
   headerMarkdown?: string;
   segments?: ThoughtReferenceSegment[];
@@ -93,6 +93,8 @@ export interface TreeOfThoughtOptions {
   blockId: string;
   searchQuery?: string;
   context?: TaskContextSnapshot | null;
+  prefetchedLines?: string[] | null;
+  prefetchedOrigin?: ThoughtOriginSection | null;
 }
 
 export interface TreeOfThoughtResult {
@@ -104,97 +106,65 @@ export interface TreeOfThoughtResult {
   headerMarkdown?: string;
 }
 
-export interface ThoughtRootPreview {
-  markdown: string;
+export interface ThoughtPreviewResult {
+  sourceFile: TFile | null;
+  section: ThoughtSection | null;
   headerMarkdown?: string;
-  label?: string;
-  segments?: ThoughtReferenceSegment[];
-  tooltip?: string;
-  targetAnchor?: string | null;
-  targetLine?: number | null;
-  hasChildren?: boolean;
+  lines?: string[];
+  origin?: ThoughtOriginSection | null;
 }
 
-export function createThoughtRootPreview(
-  task: TaskEntry,
-  context?: TaskContextSnapshot | null
-): ThoughtRootPreview {
-  const preview: ThoughtRootPreview = { markdown: "" };
+export async function collectThoughtPreview(
+  options: TreeOfThoughtOptions
+): Promise<ThoughtPreviewResult> {
+  const { app, task, blockId, context } = options;
 
-  const ensuredHeader = ensureTaskLineMarkdown(task.text, task.status).trim();
-  if (ensuredHeader) {
-    preview.headerMarkdown = ensuredHeader;
+  const sourceFile = resolveTaskFile(app, task);
+  if (!sourceFile) {
+    const ensuredHeader = ensureTaskLineMarkdown(task.text, task.status).trim();
+    return {
+      sourceFile: null,
+      section: null,
+      headerMarkdown: ensuredHeader || undefined,
+      lines: undefined,
+      origin: null
+    };
   }
 
-  let markdown = "";
-  let segments: ThoughtReferenceSegment[] | undefined;
-  let label: string | undefined;
-  let hasChildren = false;
-  let targetAnchor: string | null | undefined = context?.blockId ?? null;
+  const lines = await readFileLines(app, sourceFile);
+  const origin = await buildOriginSection(app, sourceFile, task, blockId, context, lines);
 
-  if (context) {
-    const fallback = buildContextFallback(task, context);
-    if (fallback.trim()) {
-      const outlined = prepareOutline(fallback, { stripFirstMarker: false });
-      markdown = ensureChildrenOnly(outlined).trim();
-      hasChildren = Boolean(markdown);
-    }
-    segments = buildSegmentsFromTaskContext(context);
-    const summarized = summarizeSegments(filterParentSegments(segments) ?? segments);
-    if (summarized) {
-      label = summarized;
-    }
+  const headerMarkdown = (origin?.headerMarkdown?.trim() || ensureTaskLineMarkdown(task.text, task.status).trim()) || undefined;
+
+  let section: ThoughtSection | null = null;
+  if (origin?.markdown?.trim()) {
+    section = {
+      role: "root",
+      label: origin.label ?? formatThoughtLabel(app, sourceFile),
+      markdown: origin.markdown.trimEnd(),
+      file: sourceFile,
+      linktext: app.metadataCache.fileToLinktext(sourceFile, ""),
+      segments: origin.segments,
+      tooltip: origin.tooltip,
+      targetAnchor: sanitizeAnchor(origin.targetAnchor),
+      targetLine:
+        typeof origin.targetLine === "number"
+          ? Math.max(0, Math.floor(origin.targetLine))
+          : undefined
+    };
   }
 
-  if (!markdown && Array.isArray(task.lines) && task.lines.length) {
-    const snippet = prepareOutline(task.lines.join("\n"), { stripFirstMarker: true });
-    markdown = ensureChildrenOnly(snippet).trim();
-    hasChildren ||= markdown.includes("\n");
-  }
-
-  if (!markdown && task.text) {
-    const snippet = prepareOutline(task.text, { stripFirstMarker: true });
-    markdown = ensureChildrenOnly(snippet).trim();
-  }
-
-  if (!hasChildren) {
-    if (Array.isArray(context?.children)) {
-      hasChildren = context!.children!.some(child => {
-        if (!child) return false;
-        const text = typeof child.text === "string" ? child.text.trim() : "";
-        return Boolean(text);
-      });
-    } else {
-      hasChildren = /\n\s*[-*+]/.test(markdown) || markdown.includes("\n");
-    }
-  }
-
-  preview.markdown = markdown;
-  preview.segments = segments;
-  preview.targetAnchor = targetAnchor ? sanitizeAnchor(targetAnchor) : null;
-  preview.hasChildren = hasChildren;
-
-  if (!label) {
-    const headerSource = preview.headerMarkdown || ensureTaskLineMarkdown(task.text, task.status);
-    const extracted = extractRootContent(headerSource);
-    if (extracted) {
-      label = extracted;
-    }
-  }
-
-  if (!label && markdown) {
-    label = extractRootContent(markdown);
-  }
-
-  if (label) {
-    preview.label = label;
-  }
-
-  return preview;
+  return {
+    sourceFile,
+    section,
+    headerMarkdown,
+    lines,
+    origin
+  };
 }
 
 export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<TreeOfThoughtResult> {
-  const { app, task, blockId, searchQuery, context } = options;
+  const { app, task, blockId, searchQuery, context, prefetchedLines, prefetchedOrigin } = options;
 
   const sourceFile = resolveTaskFile(app, task);
   if (!sourceFile) {
@@ -211,7 +181,8 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
 
   const references: ThoughtReference[] = [];
 
-  const originSection = await buildOriginSection(app, sourceFile, task, resolvedBlockId, context);
+  const originSection = prefetchedOrigin
+    ?? (await buildOriginSection(app, sourceFile, task, resolvedBlockId, context, prefetchedLines ?? undefined));
   let headerMarkdown: string | undefined = originSection?.headerMarkdown;
   if (!headerMarkdown) {
     const ensured = ensureTaskLineMarkdown(task.text, task.status).trim();
@@ -289,9 +260,10 @@ async function buildOriginSection(
   file: TFile,
   task: TaskEntry,
   blockId: string,
-  context?: TaskContextSnapshot | null
-): Promise<OriginSectionResult | null> {
-  const lines = await readFileLines(app, file);
+  context?: TaskContextSnapshot | null,
+  linesOverride?: string[] | null
+): Promise<ThoughtOriginSection | null> {
+  const lines = Array.isArray(linesOverride) ? linesOverride : await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
 
   let markdown = "";
@@ -320,13 +292,23 @@ async function buildOriginSection(
     }
     targetLine = startLine;
   } else {
-    const preview = createThoughtRootPreview(task, context);
-    markdown = preview.markdown;
-    if (!headerMarkdown && preview.headerMarkdown) {
-      headerMarkdown = preview.headerMarkdown;
-    }
     if (context) {
+      const fallback = buildContextFallback(task, context);
+      if (fallback.trim()) {
+        const outlined = prepareOutline(fallback, { stripFirstMarker: false });
+        markdown = outlined.trim();
+      }
       segments = buildSegmentsFromTaskContext(context);
+    }
+
+    if (!markdown && Array.isArray(task.lines) && task.lines.length) {
+      const snippet = prepareOutline(task.lines.join("\n"), { stripFirstMarker: true });
+      markdown = snippet.trim();
+    }
+
+    if (!markdown && task.text) {
+      const snippet = prepareOutline(task.text, { stripFirstMarker: true });
+      markdown = snippet.trim();
     }
   }
 
