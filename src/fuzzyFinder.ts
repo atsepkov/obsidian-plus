@@ -5,7 +5,6 @@ import {
 import {
   loadTreeOfThought,
   collectThoughtPreview,
-  createImmediateThoughtOrigin,
   type ThoughtReference,
   type ThoughtSection,
   type TreeOfThoughtResult,
@@ -796,27 +795,14 @@ function escapeCssIdentifier(value: string): string {
 
         const file = this.resolveTaskFile(task);
         const tagHint = this.resolveThoughtTagHint(key, task);
-        const immediateOrigin = createImmediateThoughtOrigin(this.app, task);
-        const headerChoice = this.chooseThoughtHeader(task, immediateOrigin?.headerMarkdown, tagHint);
+        const previousState = this.thoughtState;
+        const reusePreviewHeader =
+          previousState && previousState.key === key && previousState.cacheIndex === index
+            ? previousState.prefetchedOrigin?.headerMarkdown
+            : undefined;
+        const headerChoice = this.chooseThoughtHeader(task, reusePreviewHeader, tagHint);
 
-        let immediateSection: ThoughtSection | null = null;
-        if (immediateOrigin?.markdown?.trim() && file) {
-          immediateSection = {
-            role: "root",
-            label: immediateOrigin.label ?? this.app.metadataCache.fileToLinktext(file, ""),
-            markdown: immediateOrigin.markdown,
-            file,
-            linktext: this.app.metadataCache.fileToLinktext(file, ""),
-            segments: immediateOrigin.segments,
-            tooltip: immediateOrigin.tooltip,
-            targetAnchor: immediateOrigin.targetAnchor ?? null,
-            targetLine: typeof immediateOrigin.targetLine === "number"
-              ? Math.max(0, Math.floor(immediateOrigin.targetLine))
-              : undefined
-          };
-        }
-
-        if (!this.thoughtState || this.thoughtState.key !== key || this.thoughtState.cacheIndex !== index) {
+        if (!previousState || previousState.key !== key || previousState.cacheIndex !== index) {
           this.thoughtState = {
             key,
             cacheIndex: index,
@@ -824,7 +810,7 @@ function escapeCssIdentifier(value: string): string {
             file,
             headerMarkdown: headerChoice || this.buildThoughtHeaderMarkdown(task, tagHint),
             tagHint,
-            initialSections: immediateSection ? [immediateSection] : [],
+            initialSections: [],
             references: [],
             loading: false,
             error: undefined,
@@ -833,6 +819,7 @@ function escapeCssIdentifier(value: string): string {
             prefetchedOrigin: null
           };
         } else {
+          this.thoughtState = previousState;
           this.thoughtState.task = task;
           if (!this.thoughtState.file && file) {
             this.thoughtState.file = file;
@@ -842,12 +829,6 @@ function escapeCssIdentifier(value: string): string {
           }
           if (headerChoice && headerChoice !== this.thoughtState.headerMarkdown) {
             this.thoughtState.headerMarkdown = headerChoice;
-          }
-          if (immediateSection && !this.thoughtState.fullResult) {
-            const existing = this.thoughtState.initialSections[0];
-            if (!existing || existing.markdown !== immediateSection.markdown) {
-              this.thoughtState.initialSections = [immediateSection];
-            }
           }
         }
 
@@ -872,15 +853,25 @@ function escapeCssIdentifier(value: string): string {
 
         const run = async () => {
           try {
+            let previewBlockId = state.blockId ?? state.task.id ?? "";
+
+            const previewChanged = await this.applyThoughtPreview(state, token, previewBlockId, state.context ?? undefined);
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+            if (previewChanged) {
+              this.scheduleThoughtRerender();
+            }
+
             const blockId = await ensureBlockId(this.app, state.task);
             if (!this.isCurrentThoughtState(state, token)) {
               return;
             }
             state.blockId = blockId;
 
-            let context: TaskContextSnapshot | null = null;
+            let context = state.context ?? null;
             const provider = (this.plugin as any)?.getTaskContext;
-            if (typeof provider === "function") {
+            if (!context && typeof provider === "function") {
               try {
                 context = await provider.call(this.plugin, state.task);
               } catch (error) {
@@ -894,72 +885,23 @@ function escapeCssIdentifier(value: string): string {
 
             state.context = context;
 
-            const resolvedFile = state.file ?? this.resolveTaskFile(state.task);
-            let changed = false;
-
-            if (resolvedFile) {
-              try {
-                const previewResult = await collectThoughtPreview({
-                  app: this.app,
-                  task: state.task,
-                  blockId,
-                  context: context ?? undefined,
-                  prefetchedLines: state.prefetchedLines ?? undefined,
-                  prefetchedOrigin: state.prefetchedOrigin ?? undefined
-                });
-
-                if (!this.isCurrentThoughtState(state, token)) {
-                  return;
-                }
-
-                if (previewResult.sourceFile && !state.file) {
-                  state.file = previewResult.sourceFile;
-                }
-
-                state.prefetchedLines = previewResult.lines ?? null;
-                state.prefetchedOrigin = previewResult.origin ?? null;
-
-                const headerChoice = this.chooseThoughtHeader(
-                  state.task,
-                  previewResult.headerMarkdown,
-                  state.tagHint
-                );
-
-                if (headerChoice && headerChoice !== state.headerMarkdown) {
-                  state.headerMarkdown = headerChoice;
-                  changed = true;
-                }
-
-                const previewSection = previewResult.section || null;
-                const needsUpdate = (() => {
-                  if (!previewSection && !state.initialSections.length) {
-                    return false;
-                  }
-                  if (!previewSection) {
-                    return state.initialSections.length > 0;
-                  }
-                  const existing = state.initialSections[0];
-                  if (!existing) {
-                    return true;
-                  }
-                  return (
-                    existing.markdown !== previewSection.markdown ||
-                    existing.label !== previewSection.label ||
-                    existing.file.path !== previewSection.file.path
-                  );
-                })();
-
-                if (needsUpdate) {
-                  state.initialSections = previewSection ? [previewSection] : [];
-                  changed = true;
-                }
-              } catch (error) {
-                console.error("Failed to build thought preview", error);
-              }
+            if (blockId && blockId !== previewBlockId) {
+              previewBlockId = blockId;
             }
 
-            if (changed) {
-              this.scheduleThoughtRerender();
+            const needsRefresh =
+              !state.prefetchedOrigin ||
+              !state.initialSections.length ||
+              (blockId && blockId !== state.prefetchedOrigin?.targetAnchor?.replace(/^\^/, ""));
+
+            if (needsRefresh) {
+              const refreshed = await this.applyThoughtPreview(state, token, previewBlockId, context ?? undefined);
+              if (!this.isCurrentThoughtState(state, token)) {
+                return;
+              }
+              if (refreshed) {
+                this.scheduleThoughtRerender();
+              }
             }
 
             const thought = await loadTreeOfThought({
@@ -1003,6 +945,77 @@ function escapeCssIdentifier(value: string): string {
         };
 
         state.promise = run();
+    }
+
+    private async applyThoughtPreview(
+      state: ThoughtViewState,
+      token: number,
+      blockId: string,
+      context?: TaskContextSnapshot | null
+    ): Promise<boolean> {
+        try {
+          const previewResult = await collectThoughtPreview({
+            app: this.app,
+            task: state.task,
+            blockId,
+            context: context ?? undefined,
+            prefetchedLines: state.prefetchedLines ?? undefined,
+            prefetchedOrigin: state.prefetchedOrigin ?? undefined
+          });
+
+          if (!this.isCurrentThoughtState(state, token)) {
+            return false;
+          }
+
+          if (previewResult.sourceFile && !state.file) {
+            state.file = previewResult.sourceFile;
+          }
+
+          state.prefetchedLines = previewResult.lines ?? null;
+          state.prefetchedOrigin = previewResult.origin ?? null;
+
+          let changed = false;
+
+          const headerChoice = this.chooseThoughtHeader(
+            state.task,
+            previewResult.headerMarkdown,
+            state.tagHint
+          );
+
+          if (headerChoice && headerChoice !== state.headerMarkdown) {
+            state.headerMarkdown = headerChoice;
+            changed = true;
+          }
+
+          const previewSection = previewResult.section || null;
+          const needsUpdate = (() => {
+            if (!previewSection && !state.initialSections.length) {
+              return false;
+            }
+            if (!previewSection) {
+              return state.initialSections.length > 0;
+            }
+            const existing = state.initialSections[0];
+            if (!existing) {
+              return true;
+            }
+            return (
+              existing.markdown !== previewSection.markdown ||
+              existing.label !== previewSection.label ||
+              existing.file.path !== previewSection.file.path
+            );
+          })();
+
+          if (needsUpdate) {
+            state.initialSections = previewSection ? [previewSection] : [];
+            changed = true;
+          }
+
+          return changed;
+        } catch (error) {
+          console.error("Failed to build thought preview", error);
+          return false;
+        }
     }
 
     private isCurrentThoughtState(state: ThoughtViewState, token: number): boolean {
