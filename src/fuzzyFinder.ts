@@ -1373,7 +1373,27 @@ function escapeCssIdentifier(value: string): string {
 
           }
 
-          const link = meta.createEl("a", {
+          const actions = meta.createDiv({ cls: "tree-of-thought__actions" });
+
+          if (firstAnchor || typeof firstLine === "number") {
+            const anchor = firstAnchor ? `#${firstAnchor}` : "";
+            const scrollTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
+            const scrollLink = actions.createEl("a", {
+              text: "↧",
+              cls: "tree-of-thought__scroll-link"
+            });
+            scrollLink.setAttr("href", scrollTarget);
+            scrollLink.setAttr("title", "Scroll to section");
+            scrollLink.setAttr("aria-label", "Scroll to section");
+            scrollLink.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              const stateLine = typeof firstLine === "number" ? { eState: { line: firstLine } } : undefined;
+              this.app.workspace.openLinkText(scrollTarget, section.file.path, false, stateLine);
+            });
+          }
+
+          const link = actions.createEl("a", {
             text: `[[${section.linktext}]]`,
             cls: "internal-link tree-of-thought__link"
           });

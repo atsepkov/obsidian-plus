@@ -240,10 +240,25 @@ input[data-task="-"] {
     cursor: pointer;
 }
 
+.tree-of-thought__actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    margin-left: auto;
+}
+
+.tree-of-thought__scroll-link {
+    text-decoration: none;
+    opacity: 0.6;
+}
+
+.tree-of-thought__scroll-link:hover {
+    opacity: 1;
+}
+
 .tree-of-thought__link {
     text-decoration: none;
     opacity: 0.9;
-    margin-left: auto;
 }
 
 .tree-of-thought__link:hover {

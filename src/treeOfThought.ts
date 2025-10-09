@@ -681,7 +681,7 @@ async function buildInternalLinkSection(
     return null;
   }
 
-  const markdown = deriveInternalLinkMarkdown(outline).trimEnd();
+  const markdown = deriveInternalLinkMarkdown(outline, parsed, targetInfo).trimEnd();
 
   if (!markdown) {
     return null;
@@ -716,7 +716,10 @@ async function buildInternalLinkSection(
   if (!label) {
     label = summarizeSegments(segmentsForDisplay) || summary?.summary || "";
   }
-  if (!label) {
+  const headingLabel = deriveHeadingLabel(outline, parsed);
+  if (headingLabel) {
+    label = headingLabel;
+  } else if (!label) {
     label = formatThoughtLabel(app, targetFile);
   }
 
@@ -741,13 +744,17 @@ function linkSectionFallbackMarkdown(source: string | undefined, markdown: strin
   return markdown;
 }
 
-function deriveInternalLinkMarkdown(outline: BacklinkOutline): string {
+function deriveInternalLinkMarkdown(
+  outline: BacklinkOutline,
+  parsed: ParsedThoughtLink,
+  targetInfo: ThoughtLinkTargetInfo
+): string {
   const trimmed = (outline.markdown ?? "").trim();
-  if (trimmed) {
+  if (trimmed && !isHeadingLink(parsed)) {
     return trimmed;
   }
 
-  const snippet = (outline.snippet ?? "").trimEnd();
+  const snippet = (outline.snippet ?? targetInfo.snippetOverride ?? "").trimEnd();
   if (!snippet.trim()) {
     return "";
   }
@@ -759,17 +766,9 @@ function deriveInternalLinkMarkdown(outline: BacklinkOutline): string {
   }
 
   const firstLine = lines[0] ?? "";
-  if (isHeading(firstLine.trim())) {
+
+  if (isHeadingLink(parsed) && isHeading(firstLine.trim())) {
     const remainder = lines.slice(1);
-    while (remainder.length && !remainder[0].trim()) {
-      remainder.shift();
-    }
-    while (remainder.length && !remainder[remainder.length - 1].trim()) {
-      remainder.pop();
-    }
-    if (!remainder.length) {
-      return "";
-    }
     return remainder.join("\n");
   }
 
@@ -778,6 +777,29 @@ function deriveInternalLinkMarkdown(outline: BacklinkOutline): string {
   }
 
   return normalized.trim();
+}
+
+function deriveHeadingLabel(outline: BacklinkOutline, parsed: ParsedThoughtLink): string | null {
+  if (!isHeadingLink(parsed)) {
+    return null;
+  }
+
+  if (parsed.display?.trim()) {
+    return parsed.display.trim();
+  }
+
+  const snippet = outline.snippet ?? "";
+  const normalized = normalizeSnippet(snippet);
+  const firstLine = normalized.split(/\r?\n/)[0] ?? "";
+  if (isHeading(firstLine.trim())) {
+    return stripHeadingMarker(firstLine).trim();
+  }
+
+  return null;
+}
+
+function isHeadingLink(parsed: ParsedThoughtLink): boolean {
+  return typeof parsed.anchor === "string" && /^#/.test(parsed.anchor.trim());
 }
 
 function createRootSegmentFromOutline(
