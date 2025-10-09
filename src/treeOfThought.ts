@@ -549,6 +549,15 @@ async function collectInternalLinkSections(
       continue;
     }
 
+    const display = (parsed.display ?? "").trim();
+    if (display === "⇠") {
+      console.log("[TreeOfThought] Skipping backlink-to-root link", {
+        raw,
+        section: section.label
+      });
+      continue;
+    }
+
     const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
     if (!targetFile) {
       console.log("[TreeOfThought] Unable to resolve link target", {
@@ -579,8 +588,13 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
-    if (!markdown) {
+    if (!preview.trim()) {
+      console.log("[TreeOfThought] Preview resolved to empty content", { raw, section: section.label });
+      continue;
+    }
+
+    const markdown = normalizePreviewMarkdown(preview);
+    if (!markdown.trim()) {
       console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
     }
@@ -1091,6 +1105,10 @@ function isHeading(value: string): boolean {
 
 function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
+}
+
+function normalizePreviewMarkdown(snippet: string): string {
+  return snippet.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 }
 
 function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean } = {}): string {
