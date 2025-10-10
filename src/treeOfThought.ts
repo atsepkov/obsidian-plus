@@ -652,7 +652,8 @@ async function collectInternalLinkSections(
       label,
       source: section.label,
       target: targetFile.path,
-      anchor: targetAnchor
+      anchor: targetAnchor,
+      markdown
     });
 
     extras.push({
