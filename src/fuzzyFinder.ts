@@ -1386,6 +1386,13 @@ function escapeCssIdentifier(value: string): string {
           });
 
           const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
+          console.log("[FuzzyFinder] Rendering tree-of-thought section", {
+            label: section.label,
+            role: section.role,
+            file: section.file.path,
+            markdown: section.markdown
+          });
+
           try {
             await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
             await this.waitForNextFrame();

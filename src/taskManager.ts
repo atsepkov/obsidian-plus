@@ -545,22 +545,6 @@ export class TaskManager {
                             const linkLines = await ensureFileLines(linkFile);
                             const preview = await this.buildInternalLinkPreview(linkFile, link, linkLines);
                             attachments[key] = preview;
-
-                            if (typeof preview === 'string') {
-                                console.log('[TreeOfThought][prefetch] Captured preview', {
-                                    link: key,
-                                    file: linkFile.path,
-                                    length: preview.length,
-                                    leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
-                                    trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
-                                    content: preview,
-                                });
-                            } else if (preview === null) {
-                                console.log('[TreeOfThought][prefetch] Preview resolved to null', {
-                                    link: key,
-                                    file: linkFile.path,
-                                });
-                            }
                         } catch (e: any) {
                             console.error(`Failed to read internal link file: ${linkFile.path}`, e);
                             attachments[key] = { error: `Error reading ${linkFile.path}: ${e.message || e}` };
@@ -796,44 +780,21 @@ export class TaskManager {
             if (anchor.startsWith('^')) {
                 const blockId = anchor.replace(/^\^/, '');
                 const needle = `^${blockId}`;
-                const blockIndex = lines.findIndex(line => line.includes(needle));
-                if (blockIndex >= 0) {
-                    const snippet = this.extractListSubtreeFromLines(lines, blockIndex);
-                    console.log('[TreeOfThought][resolvePreview] Extracted block preview', {
-                        file: file.path,
-                        anchor,
-                        length: snippet.length,
-                        leadingWhitespace: snippet.match(/^\s*/)?.[0]?.length ?? 0,
-                        trailingWhitespace: snippet.match(/\s*$/)?.[0]?.length ?? 0,
-                        content: snippet,
-                    });
-                    return snippet;
-                }
+                    const blockIndex = lines.findIndex(line => line.includes(needle));
+                    if (blockIndex >= 0) {
+                        const snippet = this.extractListSubtreeFromLines(lines, blockIndex);
+                        return snippet;
+                    }
             }
 
             const headingInfo = this.findHeadingLine(file, lines, anchor);
             if (headingInfo) {
                 const snippet = this.extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
-                console.log('[TreeOfThought][resolvePreview] Extracted heading preview', {
-                    file: file.path,
-                    anchor,
-                    length: snippet.length,
-                    leadingWhitespace: snippet.match(/^\s*/)?.[0]?.length ?? 0,
-                    trailingWhitespace: snippet.match(/\s*$/)?.[0]?.length ?? 0,
-                    content: snippet,
-                });
                 return snippet;
             }
         }
 
         const fallback = lines.slice(0, 40).join('\n');
-        console.log('[TreeOfThought][resolvePreview] Using fallback preview', {
-            file: file.path,
-            length: fallback.length,
-            leadingWhitespace: fallback.match(/^\s*/)?.[0]?.length ?? 0,
-            trailingWhitespace: fallback.match(/\s*$/)?.[0]?.length ?? 0,
-            content: fallback,
-        });
         return fallback;
     }
 

@@ -284,16 +284,6 @@ async function buildOriginSection(
   const lines = Array.isArray(linesOverride) ? linesOverride : await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
 
-  console.log("[TreeOfThought] buildOriginSection:start", {
-    file: file.path,
-    blockId,
-    startLine,
-    lineSample:
-      startLine != null && startLine >= 0 && startLine < lines.length
-        ? lines[startLine]?.trim()
-        : null
-  });
-
   let markdown = "";
   let headerMarkdown: string | undefined;
   let segments: ThoughtReferenceSegment[] | undefined;
@@ -488,13 +478,6 @@ async function injectInternalLinkSections(
         continue;
       }
       previewMap.set(raw, value);
-      console.log("[TreeOfThought][cache] Stored preview entry", {
-        raw,
-        originalLength: value.length,
-        leadingWhitespace: value.match(/^\s*/)?.[0]?.length ?? 0,
-        trailingWhitespace: value.match(/\s*$/)?.[0]?.length ?? 0,
-        storedContent: value,
-      });
     }
   }
 
@@ -507,10 +490,6 @@ async function injectInternalLinkSections(
 
     const extras = await collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
-      console.log("[TreeOfThought] Injecting link sections", {
-        source: section.label,
-        extras: extras.map(extra => ({ label: extra.label, target: extra.targetAnchor }))
-      });
       result.push(...extras);
       modified = true;
     }
@@ -546,95 +525,37 @@ async function collectInternalLinkSections(
     const raw = match[0];
     const parsed = parseThoughtWikiLink(raw);
     if (!parsed || parsed.isEmbed) {
-      console.log("[TreeOfThought] Skipping unsupported link", {
-        raw,
-        parsed,
-        section: section.label
-      });
       continue;
     }
 
     if (used.has(raw)) {
-      console.log("[TreeOfThought] Skipping already injected link", { raw, section: section.label });
       continue;
     }
 
     const display = (parsed.display ?? "").trim();
     if (display === "⇠") {
-      console.log("[TreeOfThought] Skipping backlink-to-root link", {
-        raw,
-        section: section.label
-      });
       continue;
     }
 
     const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
     if (!targetFile) {
-      console.log("[TreeOfThought] Unable to resolve link target", {
-        raw,
-        path: parsed.path,
-        section: section.label
-      });
       continue;
     }
 
     let preview: string | null = previewMap.get(raw) ?? null;
-    if (typeof preview === "string") {
-      console.log("[TreeOfThought][lookup] Retrieved cached preview", {
-        raw,
-        section: section.label,
-        length: preview.length,
-        leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
-        trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
-        content: preview
-      });
-    }
     if (!preview || !hasVisibleMarkdown(preview)) {
-      console.log("[TreeOfThought] Missing cached preview, attempting fallback", {
-        raw,
-        section: section.label
-      });
       preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
       if (hasVisibleMarkdown(preview)) {
-        console.log("[TreeOfThought][lookup] Resolved fallback preview", {
-          raw,
-          section: section.label,
-          length: preview.length,
-          leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
-          trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
-          content: preview
-        });
         previewMap.set(raw, preview);
       }
     }
 
     if (!preview || !hasVisibleMarkdown(preview)) {
-      console.log("[TreeOfThought] Unable to resolve preview for link", {
-        raw,
-        section: section.label
-      });
       continue;
     }
 
     const markdown = normalizePreviewMarkdown(preview);
-    if (markdown !== preview) {
-      console.log("[TreeOfThought][normalize] Adjusted preview line endings", {
-        raw,
-        section: section.label,
-        beforeLength: preview.length,
-        afterLength: markdown.length
-      });
-    }
-    console.log("[TreeOfThought][normalize] Final preview state", {
-      raw,
-      section: section.label,
-      length: markdown.length,
-      leadingWhitespace: markdown.match(/^\s*/)?.[0]?.length ?? 0,
-      trailingWhitespace: markdown.match(/\s*$/)?.[0]?.length ?? 0,
-      content: markdown
-    });
     if (!hasVisibleMarkdown(markdown)) {
-      console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
     }
 
@@ -1193,12 +1114,6 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     return null;
   }
 
-  console.log("[TreeOfThought] buildBacklinkOutline:start", {
-    startLine,
-    snippetOverride: snippetOverride?.slice(0, 200) ?? null,
-    lineSample: lines[startLine]?.trim()
-  });
-
   const source = typeof snippetOverride === "string" && snippetOverride.trim()
     ? snippetOverride
     : extractListSubtree(lines, startLine);
@@ -1217,12 +1132,6 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   if (!rootLine.trim()) {
     return null;
   }
-
-  console.log("[TreeOfThought] buildBacklinkOutline:root", {
-    startLine,
-    rootLine: rootLine.slice(0, 200),
-    totalLines: snippetLines.length
-  });
 
   const rootIndent = leadingSpace(rootLine);
   const rootText = stripListMarker(rootLine).trim();
