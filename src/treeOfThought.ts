@@ -481,24 +481,25 @@ async function injectInternalLinkSections(
   if (linkMap) {
     const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
     for (const [raw, value] of entries) {
-      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (typeof value !== "string") {
+        continue;
+      }
+      const trimmed = value.trim();
       if (!trimmed) {
         continue;
       }
-      if (typeof value === "string") {
-        console.log("[TreeOfThought][cache] Preparing preview entry", {
-          raw,
-          originalLength: value.length,
-          trimmedLength: trimmed.length,
-          leadingWhitespace: value.match(/^\s*/)?.[0]?.length ?? 0,
-          trailingWhitespace: value.match(/\s*$/)?.[0]?.length ?? 0,
-          trimmedLeadingWhitespace: trimmed.match(/^\s*/)?.[0]?.length ?? 0,
-          trimmedTrailingWhitespace: trimmed.match(/\s*$/)?.[0]?.length ?? 0,
-          originalContent: value,
-          trimmedContent: trimmed
-        });
-      }
-      previewMap.set(raw, trimmed);
+      previewMap.set(raw, value);
+      console.log("[TreeOfThought][cache] Stored preview entry", {
+        raw,
+        originalLength: value.length,
+        leadingWhitespace: value.match(/^\s*/)?.[0]?.length ?? 0,
+        trailingWhitespace: value.match(/\s*$/)?.[0]?.length ?? 0,
+        trimmedLength: trimmed.length,
+        trimmedLeadingWhitespace: trimmed.match(/^\s*/)?.[0]?.length ?? 0,
+        trimmedTrailingWhitespace: trimmed.match(/\s*$/)?.[0]?.length ?? 0,
+        storedContent: value,
+        trimmedContent: trimmed
+      });
     }
   }
 
