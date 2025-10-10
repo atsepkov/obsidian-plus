@@ -553,7 +553,7 @@ export class TaskManager {
                                     length: preview.length,
                                     leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
                                     trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
-                                    sample: preview.split(/\r?\n/).slice(0, 3).join('\n'),
+                                    content: preview,
                                 });
                             } else if (preview === null) {
                                 console.log('[TreeOfThought][prefetch] Preview resolved to null', {
@@ -805,7 +805,7 @@ export class TaskManager {
                         length: snippet.length,
                         leadingWhitespace: snippet.match(/^\s*/)?.[0]?.length ?? 0,
                         trailingWhitespace: snippet.match(/\s*$/)?.[0]?.length ?? 0,
-                        sample: snippet.split(/\r?\n/).slice(0, 3).join('\n'),
+                        content: snippet,
                     });
                     return snippet;
                 }
@@ -820,7 +820,7 @@ export class TaskManager {
                     length: snippet.length,
                     leadingWhitespace: snippet.match(/^\s*/)?.[0]?.length ?? 0,
                     trailingWhitespace: snippet.match(/\s*$/)?.[0]?.length ?? 0,
-                    sample: snippet.split(/\r?\n/).slice(0, 3).join('\n'),
+                    content: snippet,
                 });
                 return snippet;
             }
@@ -832,7 +832,7 @@ export class TaskManager {
             length: fallback.length,
             leadingWhitespace: fallback.match(/^\s*/)?.[0]?.length ?? 0,
             trailingWhitespace: fallback.match(/\s*$/)?.[0]?.length ?? 0,
-            sample: fallback.split(/\r?\n/).slice(0, 3).join('\n'),
+            content: fallback,
         });
         return fallback;
     }

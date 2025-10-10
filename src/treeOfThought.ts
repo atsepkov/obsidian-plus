@@ -494,7 +494,8 @@ async function injectInternalLinkSections(
           trailingWhitespace: value.match(/\s*$/)?.[0]?.length ?? 0,
           trimmedLeadingWhitespace: trimmed.match(/^\s*/)?.[0]?.length ?? 0,
           trimmedTrailingWhitespace: trimmed.match(/\s*$/)?.[0]?.length ?? 0,
-          sample: value.split(/\r?\n/).slice(0, 3).join("\n")
+          originalContent: value,
+          trimmedContent: trimmed
         });
       }
       previewMap.set(raw, trimmed);
@@ -589,7 +590,7 @@ async function collectInternalLinkSections(
         length: preview.length,
         leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
         trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
-        sample: preview.split(/\r?\n/).slice(0, 3).join("\n")
+        content: preview
       });
     }
     if (!preview || !preview.trim()) {
@@ -605,7 +606,7 @@ async function collectInternalLinkSections(
           length: preview.length,
           leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
           trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
-          sample: preview.split(/\r?\n/).slice(0, 3).join("\n")
+          content: preview
         });
         previewMap.set(raw, preview);
       }
@@ -639,7 +640,7 @@ async function collectInternalLinkSections(
       length: markdown.length,
       leadingWhitespace: markdown.match(/^\s*/)?.[0]?.length ?? 0,
       trailingWhitespace: markdown.match(/\s*$/)?.[0]?.length ?? 0,
-      sample: markdown.split(/\r?\n/).slice(0, 3).join("\n")
+      content: markdown
     });
     if (!markdown.trim()) {
       console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
