@@ -543,7 +543,24 @@ export class TaskManager {
                     if (linkFile instanceof TFile) {
                         try {
                             const linkLines = await ensureFileLines(linkFile);
-                            attachments[key] = await this.buildInternalLinkPreview(linkFile, link, linkLines);
+                            const preview = await this.buildInternalLinkPreview(linkFile, link, linkLines);
+                            attachments[key] = preview;
+
+                            if (typeof preview === 'string') {
+                                console.log('[TreeOfThought][prefetch] Captured preview', {
+                                    link: key,
+                                    file: linkFile.path,
+                                    length: preview.length,
+                                    leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
+                                    trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
+                                    sample: preview.split(/\r?\n/).slice(0, 3).join('\n'),
+                                });
+                            } else if (preview === null) {
+                                console.log('[TreeOfThought][prefetch] Preview resolved to null', {
+                                    link: key,
+                                    file: linkFile.path,
+                                });
+                            }
                         } catch (e: any) {
                             console.error(`Failed to read internal link file: ${linkFile.path}`, e);
                             attachments[key] = { error: `Error reading ${linkFile.path}: ${e.message || e}` };
@@ -781,17 +798,43 @@ export class TaskManager {
                 const needle = `^${blockId}`;
                 const blockIndex = lines.findIndex(line => line.includes(needle));
                 if (blockIndex >= 0) {
-                    return this.extractListSubtreeFromLines(lines, blockIndex);
+                    const snippet = this.extractListSubtreeFromLines(lines, blockIndex);
+                    console.log('[TreeOfThought][resolvePreview] Extracted block preview', {
+                        file: file.path,
+                        anchor,
+                        length: snippet.length,
+                        leadingWhitespace: snippet.match(/^\s*/)?.[0]?.length ?? 0,
+                        trailingWhitespace: snippet.match(/\s*$/)?.[0]?.length ?? 0,
+                        sample: snippet.split(/\r?\n/).slice(0, 3).join('\n'),
+                    });
+                    return snippet;
                 }
             }
 
             const headingInfo = this.findHeadingLine(file, lines, anchor);
             if (headingInfo) {
-                return this.extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
+                const snippet = this.extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
+                console.log('[TreeOfThought][resolvePreview] Extracted heading preview', {
+                    file: file.path,
+                    anchor,
+                    length: snippet.length,
+                    leadingWhitespace: snippet.match(/^\s*/)?.[0]?.length ?? 0,
+                    trailingWhitespace: snippet.match(/\s*$/)?.[0]?.length ?? 0,
+                    sample: snippet.split(/\r?\n/).slice(0, 3).join('\n'),
+                });
+                return snippet;
             }
         }
 
-        return lines.slice(0, 40).join('\n');
+        const fallback = lines.slice(0, 40).join('\n');
+        console.log('[TreeOfThought][resolvePreview] Using fallback preview', {
+            file: file.path,
+            length: fallback.length,
+            leadingWhitespace: fallback.match(/^\s*/)?.[0]?.length ?? 0,
+            trailingWhitespace: fallback.match(/\s*$/)?.[0]?.length ?? 0,
+            sample: fallback.split(/\r?\n/).slice(0, 3).join('\n'),
+        });
+        return fallback;
     }
 
     private findHeadingLine(file: TFile, lines: string[], anchor: string): { index: number; level: number } | null {

@@ -485,6 +485,18 @@ async function injectInternalLinkSections(
       if (!trimmed) {
         continue;
       }
+      if (typeof value === "string") {
+        console.log("[TreeOfThought][cache] Preparing preview entry", {
+          raw,
+          originalLength: value.length,
+          trimmedLength: trimmed.length,
+          leadingWhitespace: value.match(/^\s*/)?.[0]?.length ?? 0,
+          trailingWhitespace: value.match(/\s*$/)?.[0]?.length ?? 0,
+          trimmedLeadingWhitespace: trimmed.match(/^\s*/)?.[0]?.length ?? 0,
+          trimmedTrailingWhitespace: trimmed.match(/\s*$/)?.[0]?.length ?? 0,
+          sample: value.split(/\r?\n/).slice(0, 3).join("\n")
+        });
+      }
       previewMap.set(raw, trimmed);
     }
   }
@@ -570,6 +582,16 @@ async function collectInternalLinkSections(
     }
 
     let preview: string | null = previewMap.get(raw) ?? null;
+    if (typeof preview === "string") {
+      console.log("[TreeOfThought][lookup] Retrieved cached preview", {
+        raw,
+        section: section.label,
+        length: preview.length,
+        leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
+        trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
+        sample: preview.split(/\r?\n/).slice(0, 3).join("\n")
+      });
+    }
     if (!preview || !preview.trim()) {
       console.log("[TreeOfThought] Missing cached preview, attempting fallback", {
         raw,
@@ -577,6 +599,14 @@ async function collectInternalLinkSections(
       });
       preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
       if (preview?.trim()) {
+        console.log("[TreeOfThought][lookup] Resolved fallback preview", {
+          raw,
+          section: section.label,
+          length: preview.length,
+          leadingWhitespace: preview.match(/^\s*/)?.[0]?.length ?? 0,
+          trailingWhitespace: preview.match(/\s*$/)?.[0]?.length ?? 0,
+          sample: preview.split(/\r?\n/).slice(0, 3).join("\n")
+        });
         previewMap.set(raw, preview);
       }
     }
@@ -595,6 +625,22 @@ async function collectInternalLinkSections(
     }
 
     const markdown = normalizePreviewMarkdown(preview);
+    if (markdown !== preview) {
+      console.log("[TreeOfThought][normalize] Adjusted preview line endings", {
+        raw,
+        section: section.label,
+        beforeLength: preview.length,
+        afterLength: markdown.length
+      });
+    }
+    console.log("[TreeOfThought][normalize] Final preview state", {
+      raw,
+      section: section.label,
+      length: markdown.length,
+      leadingWhitespace: markdown.match(/^\s*/)?.[0]?.length ?? 0,
+      trailingWhitespace: markdown.match(/\s*$/)?.[0]?.length ?? 0,
+      sample: markdown.split(/\r?\n/).slice(0, 3).join("\n")
+    });
     if (!markdown.trim()) {
       console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
