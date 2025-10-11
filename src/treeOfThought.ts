@@ -284,16 +284,6 @@ async function buildOriginSection(
   const lines = Array.isArray(linesOverride) ? linesOverride : await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
 
-  console.log("[TreeOfThought] buildOriginSection:start", {
-    file: file.path,
-    blockId,
-    startLine,
-    lineSample:
-      startLine != null && startLine >= 0 && startLine < lines.length
-        ? lines[startLine]?.trim()
-        : null
-  });
-
   let markdown = "";
   let headerMarkdown: string | undefined;
   let segments: ThoughtReferenceSegment[] | undefined;
@@ -497,10 +487,6 @@ async function injectInternalLinkSections(
 
     const extras = await collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
-      console.log("[TreeOfThought] Injecting link sections", {
-        source: section.label,
-        extras: extras.map(extra => ({ label: extra.label, target: extra.targetAnchor }))
-      });
       result.push(...extras);
       modified = true;
     }
@@ -536,35 +522,25 @@ async function collectInternalLinkSections(
     const raw = match[0];
     const parsed = parseThoughtWikiLink(raw);
     if (!parsed || parsed.isEmbed) {
-      console.log("[TreeOfThought] Skipping unsupported link", {
-        raw,
-        parsed,
-        section: section.label
-      });
       continue;
     }
 
     if (used.has(raw)) {
-      console.log("[TreeOfThought] Skipping already injected link", { raw, section: section.label });
+      continue;
+    }
+
+    const display = (parsed.display ?? "").trim();
+    if (display === "⇠") {
       continue;
     }
 
     const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
     if (!targetFile) {
-      console.log("[TreeOfThought] Unable to resolve link target", {
-        raw,
-        path: parsed.path,
-        section: section.label
-      });
       continue;
     }
 
     let preview: string | null = previewMap.get(raw) ?? null;
     if (!preview || !preview.trim()) {
-      console.log("[TreeOfThought] Missing cached preview, attempting fallback", {
-        raw,
-        section: section.label
-      });
       preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
       if (preview?.trim()) {
         previewMap.set(raw, preview);
@@ -572,16 +548,11 @@ async function collectInternalLinkSections(
     }
 
     if (!preview || !preview.trim()) {
-      console.log("[TreeOfThought] Unable to resolve preview for link", {
-        raw,
-        section: section.label
-      });
       continue;
     }
 
     const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
     if (!markdown) {
-      console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
     }
 
@@ -593,14 +564,6 @@ async function collectInternalLinkSections(
 
     const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
-
-    console.log("[TreeOfThought] Injecting wiki-link section", {
-      raw,
-      label,
-      source: section.label,
-      target: targetFile.path,
-      anchor: targetAnchor
-    });
 
     extras.push({
       role: "branch",
