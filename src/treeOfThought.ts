@@ -227,11 +227,9 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   sections.push(...backlinkResult.branches);
   references.push(...backlinkResult.references);
 
-  const enrichedSections = await injectInternalLinkSections(
-    app,
-    sections,
-    context?.linksFromTask ?? null
-  );
+  const enrichedSections = context?.linksFromTask
+    ? injectInternalLinkSections(app, sections, context.linksFromTask)
+    : sections;
 
   if (!enrichedSections.length && !references.length) {
     return {
@@ -297,12 +295,7 @@ async function buildOriginSection(
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
     const outline = buildBacklinkOutline(lines, startLine);
     if (outline) {
-      const snippet = outline.snippet ?? "";
-      if (snippet) {
-        markdown = snippet;
-      } else {
-        markdown = outline.markdown ?? "";
-      }
+      markdown = outline.markdown ?? "";
       if (outline.snippet) {
         sourceSnippet = outline.snippet;
       }
@@ -341,6 +334,10 @@ async function buildOriginSection(
 
   if (!headerMarkdown) {
     headerMarkdown = deriveTaskHeaderLine(task, startLine != null ? lines[startLine] : undefined);
+  }
+
+  if (markdown.trim()) {
+    markdown = ensureChildrenOnly(markdown).trimEnd();
   }
 
   if (!markdown.trim() && !headerMarkdown) {
@@ -458,27 +455,27 @@ async function buildBacklinkSections(
   return { branches: branchSections, references: referenceSections };
 }
 
-async function injectInternalLinkSections(
+function injectInternalLinkSections(
   app: App,
   sections: ThoughtSection[],
   linkMap?: Record<string, ThoughtLinkPreview> | null
-): Promise<ThoughtSection[]> {
+): ThoughtSection[] {
   if (!Array.isArray(sections) || sections.length === 0) {
     return sections;
   }
 
+  if (!linkMap) {
+    return sections;
+  }
+
+  const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
+  if (!entries.length) {
+    return sections;
+  }
+
   const previewMap = new Map<string, string>();
-  if (linkMap) {
-    const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && hasVisibleMarkdown(value));
-    for (const [raw, value] of entries) {
-      if (typeof value !== "string") {
-        continue;
-      }
-      if (!hasVisibleMarkdown(value)) {
-        continue;
-      }
-      previewMap.set(raw, value);
-    }
+  for (const [raw, value] of entries) {
+    previewMap.set(raw, (value as string).trim());
   }
 
   const used = new Set<string>();
@@ -488,7 +485,7 @@ async function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = await collectInternalLinkSections(app, section, previewMap, used);
+    const extras = collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
       result.push(...extras);
       modified = true;
@@ -498,12 +495,12 @@ async function injectInternalLinkSections(
   return modified ? result : sections;
 }
 
-async function collectInternalLinkSections(
+function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
   used: Set<string>
-): Promise<ThoughtSection[]> {
+): ThoughtSection[] {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
     .filter((value): value is string => typeof value === "string" && value.includes("[["));
 
@@ -513,7 +510,7 @@ async function collectInternalLinkSections(
 
   const linkMatches: RegExpMatchArray[] = [];
   for (const text of searchTexts) {
-    const iterator = text.matchAll(/!?\[\[[^\]]+\]\]/g);
+    const iterator = text.matchAll(/!\?\[\[[^\]]+\]\]/g);
     for (const match of iterator) {
       linkMatches.push(match);
     }
@@ -523,17 +520,17 @@ async function collectInternalLinkSections(
 
   for (const match of linkMatches) {
     const raw = match[0];
+    if (!previewMap.has(raw) || used.has(raw)) {
+      continue;
+    }
+
     const parsed = parseThoughtWikiLink(raw);
     if (!parsed || parsed.isEmbed) {
       continue;
     }
 
-    if (used.has(raw)) {
-      continue;
-    }
-
-    const display = (parsed.display ?? "").trim();
-    if (display === "⇠") {
+    const preview = previewMap.get(raw);
+    if (!preview || !preview.trim()) {
       continue;
     }
 
@@ -542,20 +539,9 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    let preview: string | null = previewMap.get(raw) ?? null;
-    if (!preview || !hasVisibleMarkdown(preview)) {
-      preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
-      if (hasVisibleMarkdown(preview)) {
-        previewMap.set(raw, preview);
-      }
-    }
-
-    if (!preview || !hasVisibleMarkdown(preview)) {
-      continue;
-    }
-
-    const markdown = normalizePreviewMarkdown(preview);
-    if (!hasVisibleMarkdown(markdown)) {
+    const outline = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
+    const markdown = stripLeadingHeading(outline);
+    if (!markdown) {
       continue;
     }
 
@@ -567,15 +553,6 @@ async function collectInternalLinkSections(
 
     const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
-
-    console.log("[TreeOfThought] Injecting wiki-link section", {
-      raw,
-      label,
-      source: section.label,
-      target: targetFile.path,
-      anchor: targetAnchor,
-      markdown
-    });
 
     extras.push({
       role: "branch",
@@ -593,99 +570,6 @@ async function collectInternalLinkSections(
   }
 
   return extras;
-}
-
-async function resolveThoughtLinkPreview(
-  app: App,
-  targetFile: TFile,
-  parsed: ParsedThoughtLink
-): Promise<string | null> {
-  const lines = await readFileLines(app, targetFile);
-  if (!lines.length) {
-    return null;
-  }
-
-  const anchor = parsed.anchor?.trim();
-  if (anchor) {
-    const blockPreview = extractBlockPreview(lines, anchor);
-    if (blockPreview) {
-      return blockPreview;
-    }
-
-    const headingPreview = extractHeadingPreview(lines, anchor);
-    if (headingPreview) {
-      return headingPreview;
-    }
-  }
-
-  return lines.slice(0, Math.min(lines.length, 40)).join("\n");
-}
-
-function extractBlockPreview(lines: string[], anchor: string): string | null {
-  const normalized = anchor.startsWith("^") ? anchor.slice(1) : anchor;
-  if (!normalized) {
-    return null;
-  }
-
-  const needle = `^${normalized}`;
-  const index = lines.findIndex(line => line.includes(needle));
-  if (index < 0) {
-    return null;
-  }
-
-  return extractListSubtree(lines, index);
-}
-
-function extractHeadingPreview(lines: string[], anchor: string): string | null {
-  const sanitized = anchor.replace(/^#/, "").trim();
-  if (!sanitized) {
-    return null;
-  }
-
-  const slug = slugifyHeading(sanitized);
-  if (!slug) {
-    return null;
-  }
-
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^(#+)\s+(.*)$/);
-    if (!match) {
-      continue;
-    }
-
-    const headingText = (match[2] ?? "").trim();
-    if (!headingText) {
-      continue;
-    }
-
-    if (slugifyHeading(headingText) !== slug) {
-      continue;
-    }
-
-    const level = match[1].length;
-    const snippet = extractHeadingSection(lines, i, level);
-    return snippet?.trim() ? snippet : null;
-  }
-
-  return null;
-}
-
-function extractHeadingSection(lines: string[], startLine: number, level: number): string {
-  const snippet: string[] = [];
-
-  for (let i = startLine; i < lines.length; i++) {
-    const line = lines[i];
-    if (i > startLine) {
-      const headingMatch = line.match(/^(#+)\s+/);
-      if (headingMatch && headingMatch[1].length <= level) {
-        break;
-      }
-    }
-
-    snippet.push(line);
-  }
-
-  return snippet.join("\n");
 }
 
 function parseThoughtWikiLink(raw: string): ParsedThoughtLink | null {
@@ -871,7 +755,16 @@ function extractListSubtree(
     }
 
     const indent = leadingSpace(rawLine);
+    if (indent < rootIndent && trimmed) {
+      break;
+    }
+
     if (indent <= rootIndent && (isListItem(rawLine) || isHeading(trimmed))) {
+      break;
+    }
+
+    const paragraphLike = !isListItem(rawLine) && !isHeading(trimmed);
+    if (indent <= rootIndent && paragraphLike) {
       break;
     }
 
@@ -887,7 +780,7 @@ function extractListSubtree(
   }
 
   if (!omitRoot) {
-    return collected.join("\n");
+    return collected.join("\n").trimEnd();
   }
 
   while (collected.length && !collected[0].trim()) {
@@ -901,7 +794,22 @@ function extractListSubtree(
     return "";
   }
 
-  return collected.join("\n");
+  const minIndent = collected.reduce((min, line) => {
+    if (!line.trim()) return min;
+    return Math.min(min, leadingSpace(line));
+  }, Number.POSITIVE_INFINITY);
+
+  const offset = Number.isFinite(minIndent) ? Math.max(0, minIndent) : 0;
+
+  return collected
+    .map(line => {
+      if (!line.trim()) return "";
+      const indent = leadingSpace(line);
+      const slice = Math.min(indent, offset);
+      return line.slice(slice);
+    })
+    .join("\n")
+    .trimEnd();
 }
 
 function buildContextFallback(task: TaskEntry, context?: TaskContextSnapshot | null): string {
@@ -1044,14 +952,6 @@ function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
 }
 
-function normalizePreviewMarkdown(snippet: string): string {
-  return snippet.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-}
-
-function hasVisibleMarkdown(value: unknown): value is string {
-  return typeof value === "string" && /\S/.test(value);
-}
-
 function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean } = {}): string {
   const normalized = normalizeSnippet(snippet);
   if (!normalized.trim()) {
@@ -1076,6 +976,45 @@ function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean }
 
   const dedented = dedentLines(lines);
   return dedented.join("\n").trimEnd();
+}
+
+function stripLeadingHeading(markdown: string): string {
+  if (!markdown) {
+    return markdown;
+  }
+
+  const lines = markdown.split("\n");
+  let index = 0;
+
+  while (index < lines.length && !lines[index].trim()) {
+    index++;
+  }
+
+  if (index >= lines.length) {
+    return "";
+  }
+
+  const candidate = lines[index].trim();
+  if (!candidate.startsWith("#")) {
+    return markdown;
+  }
+
+  const headingMatch = candidate.match(/^#{1,6}\s+/);
+  if (!headingMatch) {
+    return markdown;
+  }
+
+  lines.splice(index, 1);
+
+  while (index < lines.length && !lines[index].trim()) {
+    lines.splice(index, 1);
+  }
+
+  while (lines.length && !lines[0].trim()) {
+    lines.shift();
+  }
+
+  return lines.join("\n");
 }
 
 function stripListMarker(line: string): string {
@@ -1107,6 +1046,31 @@ function dedentLines(lines: string[]): string[] {
     const slice = Math.min(indent, minIndent);
     return line.slice(slice).replace(/\s+$/, "");
   });
+}
+
+function ensureChildrenOnly(markdown: string): string {
+  const lines = markdown.split(/\r?\n/);
+  if (!lines.length) {
+    return markdown;
+  }
+
+  let firstContentIndex = lines.findIndex(line => line.trim());
+  if (firstContentIndex < 0) {
+    return "";
+  }
+
+  if (!isListItem(lines[firstContentIndex])) {
+    return markdown.trimEnd();
+  }
+
+  const remaining = lines.slice(firstContentIndex + 1);
+  if (!remaining.length) {
+    return stripListMarker(lines[firstContentIndex]).trim();
+  }
+
+  const rebuilt = prepareOutline(remaining.join("\n"), { stripFirstMarker: false });
+  const trimmed = rebuilt.trimEnd();
+  return trimmed || stripListMarker(lines[firstContentIndex]).trim();
 }
 
 function buildBacklinkOutline(lines: string[], startLine: number, snippetOverride?: string): BacklinkOutline | null {

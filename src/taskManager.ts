@@ -543,8 +543,7 @@ export class TaskManager {
                     if (linkFile instanceof TFile) {
                         try {
                             const linkLines = await ensureFileLines(linkFile);
-                            const preview = await this.buildInternalLinkPreview(linkFile, link, linkLines);
-                            attachments[key] = preview;
+                            attachments[key] = await this.buildInternalLinkPreview(linkFile, link, linkLines);
                         } catch (e: any) {
                             console.error(`Failed to read internal link file: ${linkFile.path}`, e);
                             attachments[key] = { error: `Error reading ${linkFile.path}: ${e.message || e}` };
@@ -780,22 +779,19 @@ export class TaskManager {
             if (anchor.startsWith('^')) {
                 const blockId = anchor.replace(/^\^/, '');
                 const needle = `^${blockId}`;
-                    const blockIndex = lines.findIndex(line => line.includes(needle));
-                    if (blockIndex >= 0) {
-                        const snippet = this.extractListSubtreeFromLines(lines, blockIndex);
-                        return snippet;
-                    }
+                const blockIndex = lines.findIndex(line => line.includes(needle));
+                if (blockIndex >= 0) {
+                    return this.extractListSubtreeFromLines(lines, blockIndex);
+                }
             }
 
             const headingInfo = this.findHeadingLine(file, lines, anchor);
             if (headingInfo) {
-                const snippet = this.extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
-                return snippet;
+                return this.extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
             }
         }
 
-        const fallback = lines.slice(0, 40).join('\n');
-        return fallback;
+        return lines.slice(0, 40).join('\n');
     }
 
     private findHeadingLine(file: TFile, lines: string[], anchor: string): { index: number; level: number } | null {
