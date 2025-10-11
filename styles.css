@@ -254,8 +254,12 @@ input[data-task="-"] {
     line-height: 1.4;
 }
 
-.modal-container .prompt .suggestion-item.tree-of-thought__container .tree-of-thought__markdown p {
-    margin: 0.4rem 0 !important;
+.tree-of-thought__markdown p {
+    margin: 0 0 0.75em !important;
+}
+
+.tree-of-thought__markdown p:last-child {
+    margin-bottom: 0 !important;
 }
 
 .tree-of-thought__markdown .internal-embed,

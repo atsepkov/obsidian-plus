@@ -57,7 +57,6 @@ export interface ThoughtOriginSection {
   tooltip?: string;
   targetAnchor?: string | null;
   targetLine?: number | null;
-  sourceSnippet?: string;
 }
 
 export interface ThoughtSection {
@@ -70,7 +69,6 @@ export interface ThoughtSection {
   tooltip?: string;
   targetAnchor?: string | null;
   targetLine?: number | null;
-  sourceMarkdown?: string;
 }
 
 export interface ThoughtReference {
@@ -160,8 +158,7 @@ export async function collectThoughtPreview(
       targetLine:
         typeof origin.targetLine === "number"
           ? Math.max(0, Math.floor(origin.targetLine))
-          : undefined,
-      sourceMarkdown: origin.sourceSnippet ?? origin.markdown
+          : undefined
     };
   }
 
@@ -213,8 +210,7 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
       targetLine:
         typeof originSection.targetLine === "number"
           ? Math.max(0, Math.floor(originSection.targetLine))
-          : undefined,
-      sourceMarkdown: originSection.sourceSnippet ?? originSection.markdown
+          : undefined
     });
   }
 
@@ -289,16 +285,12 @@ async function buildOriginSection(
   let tooltip: string | undefined;
   let targetAnchor: string | null = blockId ? `^${blockId.replace(/^[#^]/, "")}` : null;
   let targetLine: number | null = null;
-  let sourceSnippet: string | undefined;
 
   if (startLine != null) {
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
     const outline = buildBacklinkOutline(lines, startLine);
     if (outline) {
       markdown = outline.markdown ?? "";
-      if (outline.snippet) {
-        sourceSnippet = outline.snippet;
-      }
       const summary = createReferenceSummary(outline);
       if (summary) {
         const parentSegments = filterParentSegments(summary.segments);
@@ -351,8 +343,7 @@ async function buildOriginSection(
     label,
     tooltip,
     targetAnchor,
-    targetLine,
-    sourceSnippet: sourceSnippet ?? (markdown ? markdown.trimEnd() : undefined)
+    targetLine
   };
 }
 
@@ -429,8 +420,7 @@ async function buildBacklinkSections(
           segments: filterParentSegments(summary?.segments) ?? summary?.segments,
           tooltip: summary?.tooltip,
           targetAnchor: sanitizeAnchor(outline.rootAnchor),
-          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined,
-          sourceMarkdown: outline.snippet
+          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined
         });
       } else {
         const summary = createReferenceSummary(outline);
@@ -468,16 +458,26 @@ function injectInternalLinkSections(
     return sections;
   }
 
-  const previewMap = new Map<string, string>();
-  for (const [raw, value] of Object.entries(linkMap)) {
-    if (!hasVisibleMarkdown(value)) {
-      continue;
-    }
-    previewMap.set(raw, value);
+  const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
+  if (!entries.length) {
+    return sections;
   }
 
-  if (!previewMap.size) {
-    return sections;
+  const previewMap = new Map<string, string>();
+  for (const [raw, value] of entries) {
+    previewMap.set(raw, (value as string).trim());
+  }
+
+  const rootAnchors = new Set<string>();
+  for (const section of sections) {
+    if (section.role !== "root") {
+      continue;
+    }
+
+    const anchor = typeof section.targetAnchor === "string" ? section.targetAnchor.trim() : "";
+    if (anchor) {
+      rootAnchors.add(anchor);
+    }
   }
 
   const used = new Set<string>();
@@ -487,7 +487,7 @@ function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = collectInternalLinkSections(app, section, previewMap, used);
+    const extras = collectInternalLinkSections(app, section, previewMap, used, rootAnchors);
     if (extras.length) {
       result.push(...extras);
       modified = true;
@@ -501,23 +501,14 @@ function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
-  used: Set<string>
+  used: Set<string>,
+  rootAnchors: Set<string>
 ): ThoughtSection[] {
-  const searchTexts = [section?.sourceMarkdown, section?.markdown]
-    .filter((value): value is string => typeof value === "string" && value.includes("[["));
-
-  if (!searchTexts.length) {
+  if (!section?.markdown || !section.markdown.includes("[[")) {
     return [];
   }
 
-  const linkMatches: RegExpMatchArray[] = [];
-  for (const text of searchTexts) {
-    const iterator = text.matchAll(/!\?\[\[[^\]]+\]\]/g);
-    for (const match of iterator) {
-      linkMatches.push(match);
-    }
-  }
-
+  const linkMatches = section.markdown.matchAll(/!\?\[\[[^\]]+\]\]/g);
   const extras: ThoughtSection[] = [];
 
   for (const match of linkMatches) {
@@ -536,7 +527,7 @@ function collectInternalLinkSections(
     }
 
     const preview = previewMap.get(raw);
-    if (!hasVisibleMarkdown(preview)) {
+    if (!preview || !preview.trim()) {
       continue;
     }
 
@@ -546,6 +537,11 @@ function collectInternalLinkSections(
     }
 
     let markdown = prepareOutline(preview, { stripFirstMarker: false });
+    const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
+    if (targetAnchor && rootAnchors.has(targetAnchor)) {
+      continue;
+    }
+
     markdown = stripLeadingHeading(markdown).trimEnd();
     if (!markdown) {
       continue;
@@ -557,7 +553,6 @@ function collectInternalLinkSections(
       continue;
     }
 
-    const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
 
     extras.push({
@@ -639,6 +634,33 @@ function resolveThoughtLinkAnchor(anchor?: string | null): string | null {
   return slugifyHeading(trimmed);
 }
 
+function stripLeadingHeading(markdown: string): string {
+  if (typeof markdown !== "string" || !markdown) {
+    return markdown;
+  }
+
+  const lines = markdown.split("\n");
+  if (!lines.length) {
+    return markdown;
+  }
+
+  const firstLine = lines[0];
+  if (!firstLine?.trim()) {
+    return markdown;
+  }
+
+  if (!/^\s{0,3}#{1,6}\s+/.test(firstLine)) {
+    return markdown;
+  }
+
+  lines.shift();
+  if (lines.length && !lines[0].trim()) {
+    lines.shift();
+  }
+
+  return lines.join("\n");
+}
+
 function createThoughtLinkSegments(
   label: string,
   anchor: string | null
@@ -654,10 +676,6 @@ function createThoughtLinkSegments(
       anchor: anchor ?? undefined
     }
   ];
-}
-
-function hasVisibleMarkdown(value: unknown): value is string {
-  return typeof value === "string" && /\S/.test(value);
 }
 
 async function collectMetadataBacklinks(
@@ -986,28 +1004,6 @@ function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean }
 
   const dedented = dedentLines(lines);
   return dedented.join("\n").trimEnd();
-}
-
-function stripLeadingHeading(markdown: string): string {
-  if (!markdown.trim()) {
-    return "";
-  }
-
-  const lines = markdown.split(/\r?\n/);
-  if (!lines.length) {
-    return "";
-  }
-
-  if (!isHeading(lines[0])) {
-    return markdown;
-  }
-
-  lines.shift();
-  while (lines.length && !lines[0].trim()) {
-    lines.shift();
-  }
-
-  return lines.join("\n");
 }
 
 function stripListMarker(line: string): string {
