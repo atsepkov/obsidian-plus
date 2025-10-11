@@ -228,7 +228,7 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   references.push(...backlinkResult.references);
 
   const enrichedSections = context?.linksFromTask
-    ? injectInternalLinkSections(app, sections, context.linksFromTask)
+    ? await injectInternalLinkSections(app, sections, context.linksFromTask)
     : sections;
 
   if (!enrichedSections.length && !references.length) {
@@ -455,27 +455,26 @@ async function buildBacklinkSections(
   return { branches: branchSections, references: referenceSections };
 }
 
-function injectInternalLinkSections(
+async function injectInternalLinkSections(
   app: App,
   sections: ThoughtSection[],
   linkMap?: Record<string, ThoughtLinkPreview> | null
-): ThoughtSection[] {
+): Promise<ThoughtSection[]> {
   if (!Array.isArray(sections) || sections.length === 0) {
     return sections;
   }
 
-  if (!linkMap) {
-    return sections;
-  }
-
-  const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
-  if (!entries.length) {
-    return sections;
-  }
-
   const previewMap = new Map<string, string>();
-  for (const [raw, value] of entries) {
-    previewMap.set(raw, (value as string).trim());
+  if (linkMap) {
+    for (const [raw, value] of Object.entries(linkMap)) {
+      if (typeof value !== "string") {
+        continue;
+      }
+      if (!hasVisibleMarkdown(value)) {
+        continue;
+      }
+      previewMap.set(raw, value);
+    }
   }
 
   const used = new Set<string>();
@@ -485,7 +484,7 @@ function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = collectInternalLinkSections(app, section, previewMap, used);
+    const extras = await collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
       result.push(...extras);
       modified = true;
@@ -495,12 +494,12 @@ function injectInternalLinkSections(
   return modified ? result : sections;
 }
 
-function collectInternalLinkSections(
+async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
   used: Set<string>
-): ThoughtSection[] {
+): Promise<ThoughtSection[]> {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
     .filter((value): value is string => typeof value === "string" && value.includes("[["));
 
@@ -520,7 +519,7 @@ function collectInternalLinkSections(
 
   for (const match of linkMatches) {
     const raw = match[0];
-    if (!previewMap.has(raw) || used.has(raw)) {
+    if (used.has(raw)) {
       continue;
     }
 
@@ -529,8 +528,7 @@ function collectInternalLinkSections(
       continue;
     }
 
-    const preview = previewMap.get(raw);
-    if (!preview || !preview.trim()) {
+    if (parsed.display === "⇠") {
       continue;
     }
 
@@ -539,9 +537,22 @@ function collectInternalLinkSections(
       continue;
     }
 
-    const outline = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
-    const markdown = stripLeadingHeading(outline);
-    if (!markdown) {
+    let preview = previewMap.get(raw) ?? null;
+    if (!hasVisibleMarkdown(preview)) {
+      preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
+      if (hasVisibleMarkdown(preview)) {
+        previewMap.set(raw, preview!);
+      }
+    }
+
+    if (!hasVisibleMarkdown(preview)) {
+      continue;
+    }
+
+    const normalized = normalizePreviewMarkdown(preview!);
+    const withoutHeading = stripLeadingHeading(normalized);
+    const markdown = withoutHeading.trimEnd();
+    if (!hasVisibleMarkdown(markdown)) {
       continue;
     }
 
@@ -570,6 +581,99 @@ function collectInternalLinkSections(
   }
 
   return extras;
+}
+
+async function resolveThoughtLinkPreview(
+  app: App,
+  targetFile: TFile,
+  parsed: ParsedThoughtLink
+): Promise<string | null> {
+  const lines = await readFileLines(app, targetFile);
+  if (!lines.length) {
+    return null;
+  }
+
+  const anchor = parsed.anchor?.trim();
+  if (anchor) {
+    const blockPreview = extractBlockPreview(lines, anchor);
+    if (hasVisibleMarkdown(blockPreview)) {
+      return blockPreview;
+    }
+
+    const headingPreview = extractHeadingPreview(lines, anchor);
+    if (hasVisibleMarkdown(headingPreview)) {
+      return headingPreview;
+    }
+  }
+
+  return lines.slice(0, Math.min(lines.length, 40)).join("\n");
+}
+
+function extractBlockPreview(lines: string[], anchor: string): string | null {
+  const normalized = anchor.startsWith("^") ? anchor.slice(1) : anchor;
+  if (!normalized) {
+    return null;
+  }
+
+  const needle = `^${normalized}`;
+  const index = lines.findIndex(line => line.includes(needle));
+  if (index < 0) {
+    return null;
+  }
+
+  return extractListSubtree(lines, index);
+}
+
+function extractHeadingPreview(lines: string[], anchor: string): string | null {
+  const sanitized = anchor.replace(/^#/, "").trim();
+  if (!sanitized) {
+    return null;
+  }
+
+  const slug = slugifyHeading(sanitized);
+  if (!slug) {
+    return null;
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    const match = lines[i].match(/^(#+)\s+(.*)$/);
+    if (!match) {
+      continue;
+    }
+
+    const headingText = (match[2] ?? "").trim();
+    if (!headingText) {
+      continue;
+    }
+
+    if (slugifyHeading(headingText) !== slug) {
+      continue;
+    }
+
+    const level = match[1].length;
+    const snippet = extractHeadingSection(lines, i, level);
+    return snippet?.trim() ? snippet : null;
+  }
+
+  return null;
+}
+
+function extractHeadingSection(lines: string[], startLine: number, level: number): string {
+  const snippet: string[] = [];
+
+  for (let i = startLine; i < lines.length; i++) {
+    const line = lines[i];
+    if (i > startLine) {
+      const headingMatch = line.match(/^(#+)\s+/);
+      if (headingMatch && headingMatch[1].length <= level) {
+        break;
+      }
+    }
+
+    snippet.push(line);
+  }
+
+  return snippet.join("\n");
 }
 
 function parseThoughtWikiLink(raw: string): ParsedThoughtLink | null {
@@ -648,6 +752,17 @@ function createThoughtLinkSegments(
       anchor: anchor ?? undefined
     }
   ];
+}
+
+function normalizePreviewMarkdown(snippet: string): string {
+  if (typeof snippet !== "string" || !snippet.length) {
+    return "";
+  }
+  return snippet.replace(/\r\n?/g, "\n");
+}
+
+function hasVisibleMarkdown(value: string | null | undefined): value is string {
+  return typeof value === "string" && /\S/.test(value);
 }
 
 async function collectMetadataBacklinks(
