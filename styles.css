@@ -254,6 +254,14 @@ input[data-task="-"] {
     line-height: 1.4;
 }
 
+.tree-of-thought__markdown p {
+    margin: 0 0 0.75em !important;
+}
+
+.tree-of-thought__markdown p:last-child {
+    margin-bottom: 0 !important;
+}
+
 .tree-of-thought__markdown .internal-embed,
 .tree-of-thought__markdown img {
     max-width: 100%;

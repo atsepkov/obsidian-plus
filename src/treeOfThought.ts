@@ -57,7 +57,6 @@ export interface ThoughtOriginSection {
   tooltip?: string;
   targetAnchor?: string | null;
   targetLine?: number | null;
-  sourceSnippet?: string;
 }
 
 export interface ThoughtSection {
@@ -70,7 +69,6 @@ export interface ThoughtSection {
   tooltip?: string;
   targetAnchor?: string | null;
   targetLine?: number | null;
-  sourceMarkdown?: string;
 }
 
 export interface ThoughtReference {
@@ -160,8 +158,7 @@ export async function collectThoughtPreview(
       targetLine:
         typeof origin.targetLine === "number"
           ? Math.max(0, Math.floor(origin.targetLine))
-          : undefined,
-      sourceMarkdown: origin.sourceSnippet ?? origin.markdown
+          : undefined
     };
   }
 
@@ -213,8 +210,7 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
       targetLine:
         typeof originSection.targetLine === "number"
           ? Math.max(0, Math.floor(originSection.targetLine))
-          : undefined,
-      sourceMarkdown: originSection.sourceSnippet ?? originSection.markdown
+          : undefined
     });
   }
 
@@ -227,11 +223,9 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   sections.push(...backlinkResult.branches);
   references.push(...backlinkResult.references);
 
-  const enrichedSections = await injectInternalLinkSections(
-    app,
-    sections,
-    context?.linksFromTask ?? null
-  );
+  const enrichedSections = context?.linksFromTask
+    ? injectInternalLinkSections(app, sections, context.linksFromTask)
+    : sections;
 
   if (!enrichedSections.length && !references.length) {
     return {
@@ -284,16 +278,6 @@ async function buildOriginSection(
   const lines = Array.isArray(linesOverride) ? linesOverride : await readFileLines(app, file);
   const startLine = findTaskLine(task, lines, blockId);
 
-  console.log("[TreeOfThought] buildOriginSection:start", {
-    file: file.path,
-    blockId,
-    startLine,
-    lineSample:
-      startLine != null && startLine >= 0 && startLine < lines.length
-        ? lines[startLine]?.trim()
-        : null
-  });
-
   let markdown = "";
   let headerMarkdown: string | undefined;
   let segments: ThoughtReferenceSegment[] | undefined;
@@ -301,16 +285,12 @@ async function buildOriginSection(
   let tooltip: string | undefined;
   let targetAnchor: string | null = blockId ? `^${blockId.replace(/^[#^]/, "")}` : null;
   let targetLine: number | null = null;
-  let sourceSnippet: string | undefined;
 
   if (startLine != null) {
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
     const outline = buildBacklinkOutline(lines, startLine);
     if (outline) {
       markdown = outline.markdown ?? "";
-      if (outline.snippet) {
-        sourceSnippet = outline.snippet;
-      }
       const summary = createReferenceSummary(outline);
       if (summary) {
         const parentSegments = filterParentSegments(summary.segments);
@@ -363,8 +343,7 @@ async function buildOriginSection(
     label,
     tooltip,
     targetAnchor,
-    targetLine,
-    sourceSnippet: sourceSnippet ?? (markdown ? markdown.trimEnd() : undefined)
+    targetLine
   };
 }
 
@@ -441,8 +420,7 @@ async function buildBacklinkSections(
           segments: filterParentSegments(summary?.segments) ?? summary?.segments,
           tooltip: summary?.tooltip,
           targetAnchor: sanitizeAnchor(outline.rootAnchor),
-          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined,
-          sourceMarkdown: outline.snippet
+          targetLine: Number.isFinite(lineIndex) ? Math.max(0, Math.floor(lineIndex)) : undefined
         });
       } else {
         const summary = createReferenceSummary(outline);
@@ -467,24 +445,38 @@ async function buildBacklinkSections(
   return { branches: branchSections, references: referenceSections };
 }
 
-async function injectInternalLinkSections(
+function injectInternalLinkSections(
   app: App,
   sections: ThoughtSection[],
   linkMap?: Record<string, ThoughtLinkPreview> | null
-): Promise<ThoughtSection[]> {
+): ThoughtSection[] {
   if (!Array.isArray(sections) || sections.length === 0) {
     return sections;
   }
 
+  if (!linkMap) {
+    return sections;
+  }
+
+  const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
+  if (!entries.length) {
+    return sections;
+  }
+
   const previewMap = new Map<string, string>();
-  if (linkMap) {
-    const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
-    for (const [raw, value] of entries) {
-      const trimmed = typeof value === "string" ? value.trim() : "";
-      if (!trimmed) {
-        continue;
-      }
-      previewMap.set(raw, trimmed);
+  for (const [raw, value] of entries) {
+    previewMap.set(raw, (value as string).trim());
+  }
+
+  const rootAnchors = new Set<string>();
+  for (const section of sections) {
+    if (section.role !== "root") {
+      continue;
+    }
+
+    const anchor = typeof section.targetAnchor === "string" ? section.targetAnchor.trim() : "";
+    if (anchor) {
+      rootAnchors.add(anchor);
     }
   }
 
@@ -495,12 +487,8 @@ async function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = await collectInternalLinkSections(app, section, previewMap, used);
+    const extras = collectInternalLinkSections(app, section, previewMap, used, rootAnchors);
     if (extras.length) {
-      console.log("[TreeOfThought] Injecting link sections", {
-        source: section.label,
-        extras: extras.map(extra => ({ label: extra.label, target: extra.targetAnchor }))
-      });
       result.push(...extras);
       modified = true;
     }
@@ -509,79 +497,53 @@ async function injectInternalLinkSections(
   return modified ? result : sections;
 }
 
-async function collectInternalLinkSections(
+function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
-  used: Set<string>
-): Promise<ThoughtSection[]> {
-  const searchTexts = [section?.sourceMarkdown, section?.markdown]
-    .filter((value): value is string => typeof value === "string" && value.includes("[["));
-
-  if (!searchTexts.length) {
+  used: Set<string>,
+  rootAnchors: Set<string>
+): ThoughtSection[] {
+  if (!section?.markdown || !section.markdown.includes("[[")) {
     return [];
   }
 
-  const linkMatches: RegExpMatchArray[] = [];
-  for (const text of searchTexts) {
-    const iterator = text.matchAll(/!?\[\[[^\]]+\]\]/g);
-    for (const match of iterator) {
-      linkMatches.push(match);
-    }
-  }
-
+  const linkMatches = section.markdown.matchAll(/!\?\[\[[^\]]+\]\]/g);
   const extras: ThoughtSection[] = [];
 
   for (const match of linkMatches) {
     const raw = match[0];
-    const parsed = parseThoughtWikiLink(raw);
-    if (!parsed || parsed.isEmbed) {
-      console.log("[TreeOfThought] Skipping unsupported link", {
-        raw,
-        parsed,
-        section: section.label
-      });
+    if (!previewMap.has(raw) || used.has(raw)) {
       continue;
     }
 
-    if (used.has(raw)) {
-      console.log("[TreeOfThought] Skipping already injected link", { raw, section: section.label });
+    const parsed = parseThoughtWikiLink(raw);
+    if (!parsed || parsed.isEmbed) {
+      continue;
+    }
+
+    if (parsed.display === "⇠") {
+      continue;
+    }
+
+    const preview = previewMap.get(raw);
+    if (!preview || !preview.trim()) {
       continue;
     }
 
     const targetFile = resolveThoughtLinkFile(app, section.file, parsed.path);
     if (!targetFile) {
-      console.log("[TreeOfThought] Unable to resolve link target", {
-        raw,
-        path: parsed.path,
-        section: section.label
-      });
       continue;
     }
 
-    let preview: string | null = previewMap.get(raw) ?? null;
-    if (!preview || !preview.trim()) {
-      console.log("[TreeOfThought] Missing cached preview, attempting fallback", {
-        raw,
-        section: section.label
-      });
-      preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
-      if (preview?.trim()) {
-        previewMap.set(raw, preview);
-      }
-    }
-
-    if (!preview || !preview.trim()) {
-      console.log("[TreeOfThought] Unable to resolve preview for link", {
-        raw,
-        section: section.label
-      });
+    let markdown = prepareOutline(preview, { stripFirstMarker: false });
+    const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
+    if (targetAnchor && rootAnchors.has(targetAnchor)) {
       continue;
     }
 
-    const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
+    markdown = stripLeadingHeading(markdown).trimEnd();
     if (!markdown) {
-      console.log("[TreeOfThought] Preview produced no markdown", { raw, section: section.label });
       continue;
     }
 
@@ -591,16 +553,7 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
-
-    console.log("[TreeOfThought] Injecting wiki-link section", {
-      raw,
-      label,
-      source: section.label,
-      target: targetFile.path,
-      anchor: targetAnchor
-    });
 
     extras.push({
       role: "branch",
@@ -618,99 +571,6 @@ async function collectInternalLinkSections(
   }
 
   return extras;
-}
-
-async function resolveThoughtLinkPreview(
-  app: App,
-  targetFile: TFile,
-  parsed: ParsedThoughtLink
-): Promise<string | null> {
-  const lines = await readFileLines(app, targetFile);
-  if (!lines.length) {
-    return null;
-  }
-
-  const anchor = parsed.anchor?.trim();
-  if (anchor) {
-    const blockPreview = extractBlockPreview(lines, anchor);
-    if (blockPreview) {
-      return blockPreview;
-    }
-
-    const headingPreview = extractHeadingPreview(lines, anchor);
-    if (headingPreview) {
-      return headingPreview;
-    }
-  }
-
-  return lines.slice(0, Math.min(lines.length, 40)).join("\n");
-}
-
-function extractBlockPreview(lines: string[], anchor: string): string | null {
-  const normalized = anchor.startsWith("^") ? anchor.slice(1) : anchor;
-  if (!normalized) {
-    return null;
-  }
-
-  const needle = `^${normalized}`;
-  const index = lines.findIndex(line => line.includes(needle));
-  if (index < 0) {
-    return null;
-  }
-
-  return extractListSubtree(lines, index);
-}
-
-function extractHeadingPreview(lines: string[], anchor: string): string | null {
-  const sanitized = anchor.replace(/^#/, "").trim();
-  if (!sanitized) {
-    return null;
-  }
-
-  const slug = slugifyHeading(sanitized);
-  if (!slug) {
-    return null;
-  }
-
-  for (let i = 0; i < lines.length; i++) {
-    const match = lines[i].match(/^(#+)\s+(.*)$/);
-    if (!match) {
-      continue;
-    }
-
-    const headingText = (match[2] ?? "").trim();
-    if (!headingText) {
-      continue;
-    }
-
-    if (slugifyHeading(headingText) !== slug) {
-      continue;
-    }
-
-    const level = match[1].length;
-    const snippet = extractHeadingSection(lines, i, level);
-    return snippet?.trim() ? snippet : null;
-  }
-
-  return null;
-}
-
-function extractHeadingSection(lines: string[], startLine: number, level: number): string {
-  const snippet: string[] = [];
-
-  for (let i = startLine; i < lines.length; i++) {
-    const line = lines[i];
-    if (i > startLine) {
-      const headingMatch = line.match(/^(#+)\s+/);
-      if (headingMatch && headingMatch[1].length <= level) {
-        break;
-      }
-    }
-
-    snippet.push(line);
-  }
-
-  return snippet.join("\n");
 }
 
 function parseThoughtWikiLink(raw: string): ParsedThoughtLink | null {
@@ -772,6 +632,33 @@ function resolveThoughtLinkAnchor(anchor?: string | null): string | null {
   }
 
   return slugifyHeading(trimmed);
+}
+
+function stripLeadingHeading(markdown: string): string {
+  if (typeof markdown !== "string" || !markdown) {
+    return markdown;
+  }
+
+  const lines = markdown.split("\n");
+  if (!lines.length) {
+    return markdown;
+  }
+
+  const firstLine = lines[0];
+  if (!firstLine?.trim()) {
+    return markdown;
+  }
+
+  if (!/^\s{0,3}#{1,6}\s+/.test(firstLine)) {
+    return markdown;
+  }
+
+  lines.shift();
+  if (lines.length && !lines[0].trim()) {
+    lines.shift();
+  }
+
+  return lines.join("\n");
 }
 
 function createThoughtLinkSegments(
@@ -1180,12 +1067,6 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     return null;
   }
 
-  console.log("[TreeOfThought] buildBacklinkOutline:start", {
-    startLine,
-    snippetOverride: snippetOverride?.slice(0, 200) ?? null,
-    lineSample: lines[startLine]?.trim()
-  });
-
   const source = typeof snippetOverride === "string" && snippetOverride.trim()
     ? snippetOverride
     : extractListSubtree(lines, startLine);
@@ -1204,12 +1085,6 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   if (!rootLine.trim()) {
     return null;
   }
-
-  console.log("[TreeOfThought] buildBacklinkOutline:root", {
-    startLine,
-    rootLine: rootLine.slice(0, 200),
-    totalLines: snippetLines.length
-  });
 
   const rootIndent = leadingSpace(rootLine);
   const rootText = stripListMarker(rootLine).trim();
