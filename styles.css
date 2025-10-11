@@ -255,7 +255,7 @@ input[data-task="-"] {
 }
 
 .modal-container .prompt .suggestion-item.tree-of-thought__container .tree-of-thought__markdown p {
-    margin: 0.35rem 0 !important;
+    margin: 0.4rem 0 !important;
 }
 
 .tree-of-thought__markdown .internal-embed,
