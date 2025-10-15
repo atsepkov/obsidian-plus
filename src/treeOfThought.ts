@@ -485,7 +485,7 @@ async function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = await collectInternalLinkSections(app, section, previewMap, used, result);
+    const extras = await collectInternalLinkSections(app, section, previewMap, used);
     if (extras.length) {
       result.push(...extras);
       modified = true;
@@ -499,8 +499,7 @@ async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
-  used: Set<string>,
-  existingSections: ThoughtSection[]
+  used: Set<string>
 ): Promise<ThoughtSection[]> {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
     .filter((value): value is string => typeof value === "string" && value.includes("[["));
@@ -557,11 +556,6 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    const normalizedMarkdown = markdown.trim();
-    if (!normalizedMarkdown) {
-      continue;
-    }
-
     const linktext = app.metadataCache.fileToLinktext(targetFile, section.file.path) || targetFile.basename;
     const label = (parsed.display || linktext || targetFile.basename).trim();
     if (!label) {
@@ -570,14 +564,6 @@ async function collectInternalLinkSections(
 
     const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
-
-    if (
-      hasDuplicateThoughtSection(existingSections, targetFile.path, targetAnchor, normalizedMarkdown) ||
-      hasDuplicateThoughtSection(extras, targetFile.path, targetAnchor, normalizedMarkdown)
-    ) {
-      used.add(raw);
-      continue;
-    }
 
     extras.push({
       role: "branch",
@@ -674,20 +660,11 @@ function extractHeadingPreview(lines: string[], anchor: string): string | null {
 
 function extractHeadingSection(lines: string[], startLine: number, level: number): string {
   const snippet: string[] = [];
-  let inCodeBlock = isWithinCodeBlock(lines, startLine - 1);
 
   for (let i = startLine; i < lines.length; i++) {
     const line = lines[i];
-    const normalized = normalizeSnippet(line);
-
-    if (isCodeFenceLine(normalized)) {
-      snippet.push(line);
-      inCodeBlock = !inCodeBlock;
-      continue;
-    }
-
-    if (i > startLine && !inCodeBlock) {
-      const headingMatch = normalized.match(/^(#+)\s+/);
+    if (i > startLine) {
+      const headingMatch = line.match(/^(#+)\s+/);
       if (headingMatch && headingMatch[1].length <= level) {
         break;
       }
@@ -775,41 +752,6 @@ function createThoughtLinkSegments(
       anchor: anchor ?? undefined
     }
   ];
-}
-
-function hasDuplicateThoughtSection(
-  sections: readonly ThoughtSection[] | ThoughtSection[],
-  filePath: string,
-  anchor: string | null,
-  markdown: string
-): boolean {
-  if (!Array.isArray(sections) || !sections.length) {
-    return false;
-  }
-
-  const normalizedAnchor = sanitizeAnchor(anchor);
-  const normalizedMarkdown = markdown.trim();
-  if (!normalizedMarkdown) {
-    return false;
-  }
-
-  return sections.some(section => {
-    if (!section || !section.file || section.file.path !== filePath) {
-      return false;
-    }
-
-    const sectionMarkdown = (section.markdown ?? "").trim();
-    if (!sectionMarkdown || sectionMarkdown !== normalizedMarkdown) {
-      return false;
-    }
-
-    const sectionAnchor = sanitizeAnchor(section.targetAnchor);
-    if (normalizedAnchor && sectionAnchor && normalizedAnchor !== sectionAnchor) {
-      return false;
-    }
-
-    return true;
-  });
 }
 
 async function collectMetadataBacklinks(
@@ -903,30 +845,14 @@ function extractListSubtree(
 
   const rootIndent = leadingSpace(rawRoot);
   const collected: string[] = [];
-  let inCodeBlock = isWithinCodeBlock(lines, startLine);
 
   if (!omitRoot) {
     collected.push(rawRoot);
-    if (isCodeFenceLine(rawRoot)) {
-      inCodeBlock = !inCodeBlock;
-    }
   }
 
   for (let i = startLine + 1; i < lines.length; i++) {
     const rawLine = normalizeSnippet(lines[i]);
     const trimmed = rawLine.trim();
-
-    if (isCodeFenceLine(rawLine)) {
-      collected.push(rawLine);
-      inCodeBlock = !inCodeBlock;
-      continue;
-    }
-
-    if (inCodeBlock) {
-      collected.push(rawLine);
-      continue;
-    }
-
     if (!trimmed) {
       collected.push(rawLine);
       continue;
@@ -1130,30 +1056,6 @@ function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
 }
 
-function isCodeFenceLine(value: string): boolean {
-  const trimmed = normalizeSnippet(value).trim();
-  if (!trimmed) {
-    return false;
-  }
-  return /^(```+|~~~+)/.test(trimmed);
-}
-
-function isWithinCodeBlock(lines: string[], index: number): boolean {
-  if (!Array.isArray(lines) || index < 0) {
-    return false;
-  }
-
-  let inside = false;
-  const end = Math.min(index, lines.length - 1);
-  for (let i = 0; i <= end; i++) {
-    if (isCodeFenceLine(lines[i])) {
-      inside = !inside;
-    }
-  }
-
-  return inside;
-}
-
 function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean } = {}): string {
   const normalized = normalizeSnippet(snippet);
   if (!normalized.trim()) {
@@ -1281,25 +1183,11 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   let firstChildText: string | null = null;
   let firstChildLine: number | null = null;
   let firstChildAnchor: string | null = null;
-  let snippetInCodeBlock = isCodeFenceLine(rootLine);
 
   for (let i = 1; i < snippetLines.length; i++) {
     const raw = normalizeSnippet(snippetLines[i]);
-    const trimmed = raw.trim();
-
-    if (!trimmed) {
+    if (!raw.trim()) {
       children.push("");
-      continue;
-    }
-
-    if (isCodeFenceLine(raw)) {
-      children.push(raw);
-      snippetInCodeBlock = !snippetInCodeBlock;
-      continue;
-    }
-
-    if (snippetInCodeBlock) {
-      children.push(raw);
       continue;
     }
 
@@ -1309,7 +1197,7 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     }
 
     if (!firstChildText) {
-      const childText = stripListMarker(raw).trim() || trimmed;
+      const childText = stripListMarker(raw).trim() || raw.trim();
       if (childText) {
         firstChildText = childText;
         firstChildLine = startLine + i;
@@ -1322,29 +1210,22 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   }
 
   if (firstChildText == null) {
-    let inCodeBlock = isWithinCodeBlock(lines, startLine);
     for (let i = startLine + 1; i < lines.length; i++) {
       const raw = normalizeSnippet(lines[i]);
-      const trimmed = raw.trim();
-
-      if (isCodeFenceLine(raw)) {
-        inCodeBlock = !inCodeBlock;
-        continue;
-      }
-
-      if (!trimmed) {
+      if (!raw.trim()) {
         continue;
       }
 
       const indent = leadingSpace(raw);
+      const trimmed = raw.trim();
 
-      if (!inCodeBlock && indent <= rootIndent) {
+      if (indent <= rootIndent) {
         if (isHeading(trimmed) || isListItem(raw) || !trimmed) {
           break;
         }
       }
 
-      if (!inCodeBlock && indent > rootIndent && isListItem(raw)) {
+      if (indent > rootIndent && isListItem(raw)) {
         const childText = stripListMarker(raw).trim() || raw.trim();
         if (childText) {
           firstChildText = childText;
@@ -1355,43 +1236,24 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
       }
     }
   } else {
-    let snippetChildIndex: number | null = null;
-    let snippetState = isCodeFenceLine(rootLine);
-    for (let idx = 1; idx < snippetLines.length; idx++) {
-      const normalized = normalizeSnippet(snippetLines[idx]);
-      if (isCodeFenceLine(normalized)) {
-        snippetState = !snippetState;
-        continue;
-      }
-      if (snippetState) {
-        continue;
-      }
-      if (leadingSpace(normalized) > rootIndent && isListItem(normalized)) {
-        snippetChildIndex = idx;
-        break;
-      }
-    }
-    if (typeof snippetChildIndex === "number" && snippetChildIndex > 0) {
+    const snippetChildIndex = snippetLines.findIndex((line, idx) => {
+      if (idx === 0) return false;
+      const normalized = normalizeSnippet(line);
+      return leadingSpace(normalized) > rootIndent && isListItem(normalized);
+    });
+    if (snippetChildIndex > 0) {
       firstChildLine = startLine + snippetChildIndex;
     }
   }
 
   if (firstChildLine == null && firstChildText != null) {
-    let inCodeBlock = isWithinCodeBlock(lines, startLine);
     for (let i = startLine + 1; i < lines.length; i++) {
       const raw = normalizeSnippet(lines[i]);
-      const trimmed = raw.trim();
-
-      if (isCodeFenceLine(raw)) {
-        inCodeBlock = !inCodeBlock;
-        continue;
-      }
-
-      if (!trimmed) {
+      if (!raw.trim()) {
         continue;
       }
       const indent = leadingSpace(raw);
-      if (!inCodeBlock && indent <= rootIndent && (isListItem(raw) || isHeading(trimmed))) {
+      if (indent <= rootIndent && (isListItem(raw) || isHeading(raw.trim()))) {
         break;
       }
       if (stripListMarker(raw).trim() === firstChildText) {
@@ -1537,16 +1399,10 @@ function collectParentChain(lines: string[], startLine: number, rootIndent: numb
   const chain: ParentContext[] = [];
   let currentIndent = rootIndent;
   let headingCaptured = false;
-  let inCodeBlock = isWithinCodeBlock(lines, startLine);
 
   for (let i = startLine - 1; i >= 0; i--) {
     const raw = normalizeSnippet(lines[i]);
-    if (isCodeFenceLine(raw)) {
-      inCodeBlock = !inCodeBlock;
-      continue;
-    }
-
-    if (!raw.trim() || inCodeBlock) {
+    if (!raw.trim()) {
       continue;
     }
 
