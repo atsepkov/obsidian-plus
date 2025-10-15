@@ -660,11 +660,20 @@ function extractHeadingPreview(lines: string[], anchor: string): string | null {
 
 function extractHeadingSection(lines: string[], startLine: number, level: number): string {
   const snippet: string[] = [];
+  let inCodeBlock = isWithinCodeBlock(lines, startLine - 1);
 
   for (let i = startLine; i < lines.length; i++) {
     const line = lines[i];
-    if (i > startLine) {
-      const headingMatch = line.match(/^(#+)\s+/);
+    const normalized = normalizeSnippet(line);
+
+    if (isCodeFenceLine(normalized)) {
+      snippet.push(line);
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (i > startLine && !inCodeBlock) {
+      const headingMatch = normalized.match(/^(#+)\s+/);
       if (headingMatch && headingMatch[1].length <= level) {
         break;
       }
@@ -845,14 +854,30 @@ function extractListSubtree(
 
   const rootIndent = leadingSpace(rawRoot);
   const collected: string[] = [];
+  let inCodeBlock = isWithinCodeBlock(lines, startLine);
 
   if (!omitRoot) {
     collected.push(rawRoot);
+    if (isCodeFenceLine(rawRoot)) {
+      inCodeBlock = !inCodeBlock;
+    }
   }
 
   for (let i = startLine + 1; i < lines.length; i++) {
     const rawLine = normalizeSnippet(lines[i]);
     const trimmed = rawLine.trim();
+
+    if (isCodeFenceLine(rawLine)) {
+      collected.push(rawLine);
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (inCodeBlock) {
+      collected.push(rawLine);
+      continue;
+    }
+
     if (!trimmed) {
       collected.push(rawLine);
       continue;
@@ -1056,6 +1081,30 @@ function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
 }
 
+function isCodeFenceLine(value: string): boolean {
+  const trimmed = normalizeSnippet(value).trim();
+  if (!trimmed) {
+    return false;
+  }
+  return /^(```+|~~~+)/.test(trimmed);
+}
+
+function isWithinCodeBlock(lines: string[], index: number): boolean {
+  if (!Array.isArray(lines) || index < 0) {
+    return false;
+  }
+
+  let inside = false;
+  const end = Math.min(index, lines.length - 1);
+  for (let i = 0; i <= end; i++) {
+    if (isCodeFenceLine(lines[i])) {
+      inside = !inside;
+    }
+  }
+
+  return inside;
+}
+
 function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean } = {}): string {
   const normalized = normalizeSnippet(snippet);
   if (!normalized.trim()) {
@@ -1183,11 +1232,25 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   let firstChildText: string | null = null;
   let firstChildLine: number | null = null;
   let firstChildAnchor: string | null = null;
+  let snippetInCodeBlock = isCodeFenceLine(rootLine);
 
   for (let i = 1; i < snippetLines.length; i++) {
     const raw = normalizeSnippet(snippetLines[i]);
-    if (!raw.trim()) {
+    const trimmed = raw.trim();
+
+    if (!trimmed) {
       children.push("");
+      continue;
+    }
+
+    if (isCodeFenceLine(raw)) {
+      children.push(raw);
+      snippetInCodeBlock = !snippetInCodeBlock;
+      continue;
+    }
+
+    if (snippetInCodeBlock) {
+      children.push(raw);
       continue;
     }
 
@@ -1197,7 +1260,7 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
     }
 
     if (!firstChildText) {
-      const childText = stripListMarker(raw).trim() || raw.trim();
+      const childText = stripListMarker(raw).trim() || trimmed;
       if (childText) {
         firstChildText = childText;
         firstChildLine = startLine + i;
@@ -1210,22 +1273,29 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
   }
 
   if (firstChildText == null) {
+    let inCodeBlock = isWithinCodeBlock(lines, startLine);
     for (let i = startLine + 1; i < lines.length; i++) {
       const raw = normalizeSnippet(lines[i]);
-      if (!raw.trim()) {
+      const trimmed = raw.trim();
+
+      if (isCodeFenceLine(raw)) {
+        inCodeBlock = !inCodeBlock;
+        continue;
+      }
+
+      if (!trimmed) {
         continue;
       }
 
       const indent = leadingSpace(raw);
-      const trimmed = raw.trim();
 
-      if (indent <= rootIndent) {
+      if (!inCodeBlock && indent <= rootIndent) {
         if (isHeading(trimmed) || isListItem(raw) || !trimmed) {
           break;
         }
       }
 
-      if (indent > rootIndent && isListItem(raw)) {
+      if (!inCodeBlock && indent > rootIndent && isListItem(raw)) {
         const childText = stripListMarker(raw).trim() || raw.trim();
         if (childText) {
           firstChildText = childText;
@@ -1236,24 +1306,43 @@ function buildBacklinkOutline(lines: string[], startLine: number, snippetOverrid
       }
     }
   } else {
-    const snippetChildIndex = snippetLines.findIndex((line, idx) => {
-      if (idx === 0) return false;
-      const normalized = normalizeSnippet(line);
-      return leadingSpace(normalized) > rootIndent && isListItem(normalized);
-    });
-    if (snippetChildIndex > 0) {
+    let snippetChildIndex: number | null = null;
+    let snippetState = isCodeFenceLine(rootLine);
+    for (let idx = 1; idx < snippetLines.length; idx++) {
+      const normalized = normalizeSnippet(snippetLines[idx]);
+      if (isCodeFenceLine(normalized)) {
+        snippetState = !snippetState;
+        continue;
+      }
+      if (snippetState) {
+        continue;
+      }
+      if (leadingSpace(normalized) > rootIndent && isListItem(normalized)) {
+        snippetChildIndex = idx;
+        break;
+      }
+    }
+    if (typeof snippetChildIndex === "number" && snippetChildIndex > 0) {
       firstChildLine = startLine + snippetChildIndex;
     }
   }
 
   if (firstChildLine == null && firstChildText != null) {
+    let inCodeBlock = isWithinCodeBlock(lines, startLine);
     for (let i = startLine + 1; i < lines.length; i++) {
       const raw = normalizeSnippet(lines[i]);
-      if (!raw.trim()) {
+      const trimmed = raw.trim();
+
+      if (isCodeFenceLine(raw)) {
+        inCodeBlock = !inCodeBlock;
+        continue;
+      }
+
+      if (!trimmed) {
         continue;
       }
       const indent = leadingSpace(raw);
-      if (indent <= rootIndent && (isListItem(raw) || isHeading(raw.trim()))) {
+      if (!inCodeBlock && indent <= rootIndent && (isListItem(raw) || isHeading(trimmed))) {
         break;
       }
       if (stripListMarker(raw).trim() === firstChildText) {
@@ -1399,10 +1488,16 @@ function collectParentChain(lines: string[], startLine: number, rootIndent: numb
   const chain: ParentContext[] = [];
   let currentIndent = rootIndent;
   let headingCaptured = false;
+  let inCodeBlock = isWithinCodeBlock(lines, startLine);
 
   for (let i = startLine - 1; i >= 0; i--) {
     const raw = normalizeSnippet(lines[i]);
-    if (!raw.trim()) {
+    if (isCodeFenceLine(raw)) {
+      inCodeBlock = !inCodeBlock;
+      continue;
+    }
+
+    if (!raw.trim() || inCodeBlock) {
       continue;
     }
 
