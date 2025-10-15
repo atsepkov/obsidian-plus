@@ -485,7 +485,7 @@ async function injectInternalLinkSections(
   for (const section of sections) {
     result.push(section);
 
-    const extras = await collectInternalLinkSections(app, section, previewMap, used);
+    const extras = await collectInternalLinkSections(app, section, previewMap, used, result);
     if (extras.length) {
       result.push(...extras);
       modified = true;
@@ -499,7 +499,8 @@ async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
   previewMap: Map<string, string>,
-  used: Set<string>
+  used: Set<string>,
+  existingSections: ThoughtSection[]
 ): Promise<ThoughtSection[]> {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
     .filter((value): value is string => typeof value === "string" && value.includes("[["));
@@ -556,6 +557,11 @@ async function collectInternalLinkSections(
       continue;
     }
 
+    const normalizedMarkdown = markdown.trim();
+    if (!normalizedMarkdown) {
+      continue;
+    }
+
     const linktext = app.metadataCache.fileToLinktext(targetFile, section.file.path) || targetFile.basename;
     const label = (parsed.display || linktext || targetFile.basename).trim();
     if (!label) {
@@ -564,6 +570,14 @@ async function collectInternalLinkSections(
 
     const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
+
+    if (
+      hasDuplicateThoughtSection(existingSections, targetFile.path, targetAnchor, normalizedMarkdown) ||
+      hasDuplicateThoughtSection(extras, targetFile.path, targetAnchor, normalizedMarkdown)
+    ) {
+      used.add(raw);
+      continue;
+    }
 
     extras.push({
       role: "branch",
@@ -761,6 +775,41 @@ function createThoughtLinkSegments(
       anchor: anchor ?? undefined
     }
   ];
+}
+
+function hasDuplicateThoughtSection(
+  sections: readonly ThoughtSection[] | ThoughtSection[],
+  filePath: string,
+  anchor: string | null,
+  markdown: string
+): boolean {
+  if (!Array.isArray(sections) || !sections.length) {
+    return false;
+  }
+
+  const normalizedAnchor = sanitizeAnchor(anchor);
+  const normalizedMarkdown = markdown.trim();
+  if (!normalizedMarkdown) {
+    return false;
+  }
+
+  return sections.some(section => {
+    if (!section || !section.file || section.file.path !== filePath) {
+      return false;
+    }
+
+    const sectionMarkdown = (section.markdown ?? "").trim();
+    if (!sectionMarkdown || sectionMarkdown !== normalizedMarkdown) {
+      return false;
+    }
+
+    const sectionAnchor = sanitizeAnchor(section.targetAnchor);
+    if (normalizedAnchor && sectionAnchor && normalizedAnchor !== sectionAnchor) {
+      return false;
+    }
+
+    return true;
+  });
 }
 
 async function collectMetadataBacklinks(
