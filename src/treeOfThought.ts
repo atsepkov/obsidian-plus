@@ -660,11 +660,31 @@ function extractHeadingPreview(lines: string[], anchor: string): string | null {
 
 function extractHeadingSection(lines: string[], startLine: number, level: number): string {
   const snippet: string[] = [];
+  const startLineValue = lines[startLine] ?? "";
+  let fence = detectCodeFence(normalizeSnippet(startLineValue));
+  let inCodeFence = Boolean(fence);
 
   for (let i = startLine; i < lines.length; i++) {
     const line = lines[i];
-    if (i > startLine) {
-      const headingMatch = line.match(/^(#+)\s+/);
+    const normalized = normalizeSnippet(line);
+
+    const fenceInfo = detectCodeFence(normalized);
+    if (fenceInfo) {
+      snippet.push(line);
+      if (inCodeFence) {
+        if (fence && fenceInfo.char === fence.char && fenceInfo.length >= fence.length) {
+          fence = null;
+          inCodeFence = false;
+        }
+      } else {
+        fence = fenceInfo;
+        inCodeFence = true;
+      }
+      continue;
+    }
+
+    if (i > startLine && !inCodeFence) {
+      const headingMatch = normalized.match(/^(#+)\s+/);
       if (headingMatch && headingMatch[1].length <= level) {
         break;
       }
@@ -850,30 +870,54 @@ function extractListSubtree(
     collected.push(rawRoot);
   }
 
+  let fence = detectCodeFence(rawRoot);
+  let inCodeFence = Boolean(fence);
+
   for (let i = startLine + 1; i < lines.length; i++) {
     const rawLine = normalizeSnippet(lines[i]);
     const trimmed = rawLine.trim();
+
+    const fenceInfo = detectCodeFence(rawLine);
+    if (fenceInfo) {
+      collected.push(rawLine);
+      if (inCodeFence) {
+        if (fence && fenceInfo.char === fence.char && fenceInfo.length >= fence.length) {
+          fence = null;
+          inCodeFence = false;
+        }
+      } else {
+        fence = fenceInfo;
+        inCodeFence = true;
+      }
+      continue;
+    }
+
     if (!trimmed) {
       collected.push(rawLine);
       continue;
     }
 
-    const indent = leadingSpace(rawLine);
-    if (indent < rootIndent && trimmed) {
-      break;
-    }
+    if (!inCodeFence) {
+      const indent = leadingSpace(rawLine);
 
-    if (indent <= rootIndent && (isListItem(rawLine) || isHeading(trimmed))) {
-      break;
-    }
+      if (indent < rootIndent) {
+        break;
+      }
 
-    const paragraphLike = !isListItem(rawLine) && !isHeading(trimmed);
-    if (indent <= rootIndent && paragraphLike) {
-      break;
-    }
+      if (indent <= rootIndent) {
+        if (isListItem(rawLine) || isHeading(trimmed)) {
+          break;
+        }
 
-    if (omitRoot && indent <= rootIndent) {
-      break;
+        const paragraphLike = !isListItem(rawLine) && !isHeading(trimmed);
+        if (paragraphLike) {
+          break;
+        }
+      }
+
+      if (omitRoot && indent <= rootIndent) {
+        break;
+      }
     }
 
     collected.push(rawLine);
@@ -1054,6 +1098,19 @@ function isHeading(value: string): boolean {
 
 function normalizeSnippet(value: string): string {
   return value.replace(/\t/g, "    ");
+}
+
+function detectCodeFence(value: string): { char: string; length: number } | null {
+  const match = value.trim().match(/^([`~]{3,})/);
+  if (!match) {
+    return null;
+  }
+
+  const marker = match[1];
+  return {
+    char: marker[0],
+    length: marker.length,
+  };
 }
 
 function prepareOutline(snippet: string, options: { stripFirstMarker?: boolean } = {}): string {
