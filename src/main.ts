@@ -1138,8 +1138,17 @@ export default class ObsidianPlus extends Plugin {
                                 continue;
                         }
 
-                        const tags = trimmed.match(/#[^\s#]+/g);
-                        if (!tags || tags.length === 0) {
+                        const tags: string[] = [];
+                        const tagPattern = /#[^\s#]+/g;
+                        let match: RegExpExecArray | null;
+                        while ((match = tagPattern.exec(trimmed)) !== null) {
+                                const index = match.index;
+                                if (index === 0 || /\s/.test(trimmed[index - 1])) {
+                                        tags.push(match[0]);
+                                }
+                        }
+
+                        if (tags.length === 0) {
                                 continue;
                         }
 
