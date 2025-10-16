@@ -1138,19 +1138,13 @@ function escapeCssIdentifier(value: string): string {
 
         const run = async () => {
           try {
-            let previewBlockId = this.resolveThoughtBlockId(state);
+            let previewBlockId = this.resolveThoughtBlockId(state, state.context ?? null);
+            const initialPreviewBlockId = previewBlockId;
 
             const previewChanged = await this.applyThoughtPreview(state, token, previewBlockId, state.context ?? undefined);
             if (!this.isCurrentThoughtState(state, token)) {
               return;
             }
-
-            const previewAnchorId = this.extractBlockIdFromOrigin(state.prefetchedOrigin);
-            if (previewAnchorId && previewAnchorId !== (state.blockId ?? "")) {
-              state.blockId = previewAnchorId;
-              previewBlockId = previewAnchorId;
-            }
-
             if (previewChanged) {
               this.scheduleThoughtRerender();
             }
@@ -1171,40 +1165,34 @@ function escapeCssIdentifier(value: string): string {
 
             state.context = context;
 
-            const resolvedBlockId = this.resolveThoughtBlockId(state, context);
-            if (resolvedBlockId && resolvedBlockId !== (state.blockId ?? "")) {
-              state.blockId = resolvedBlockId;
-            }
+            const blockId = this.resolveThoughtBlockId(state, context);
 
-            const originBlockId = this.extractBlockIdFromOrigin(state.prefetchedOrigin);
-            const finalBlockId = this.resolveThoughtBlockId(state, context);
-            const needsRefresh =
+            const originBlockId = this.normalizeBlockId(state.prefetchedOrigin?.targetAnchor ?? null);
+            let needsRefresh =
               !state.prefetchedOrigin ||
               !state.initialSections.length ||
-              finalBlockId !== previewBlockId ||
-              (finalBlockId && finalBlockId !== (originBlockId ?? ""));
+              (blockId && blockId !== originBlockId);
+
+            if (blockId && blockId !== initialPreviewBlockId) {
+              needsRefresh = true;
+            }
 
             if (needsRefresh) {
-              previewBlockId = finalBlockId;
-              const refreshed = await this.applyThoughtPreview(state, token, finalBlockId, context ?? undefined);
+              const refreshed = await this.applyThoughtPreview(state, token, blockId, context ?? undefined);
               if (!this.isCurrentThoughtState(state, token)) {
                 return;
-              }
-              const refreshedBlockId = this.extractBlockIdFromOrigin(state.prefetchedOrigin);
-              if (refreshedBlockId && refreshedBlockId !== (state.blockId ?? "")) {
-                state.blockId = refreshedBlockId;
               }
               if (refreshed) {
                 this.scheduleThoughtRerender();
               }
             }
 
-            const blockIdForThought = this.resolveThoughtBlockId(state, context);
+            const finalBlockId = this.resolveThoughtBlockId(state, context);
 
             const thought = await loadTreeOfThought({
               app: this.app,
               task: state.task,
-              blockId: blockIdForThought,
+              blockId: finalBlockId,
               context,
               prefetchedLines: state.prefetchedLines ?? undefined,
               prefetchedOrigin: state.prefetchedOrigin ?? undefined
@@ -1270,6 +1258,13 @@ function escapeCssIdentifier(value: string): string {
 
           state.prefetchedLines = previewResult.lines ?? null;
           state.prefetchedOrigin = previewResult.origin ?? null;
+
+          if (previewResult.origin?.targetAnchor) {
+            this.captureThoughtBlockId(state, previewResult.origin.targetAnchor);
+          }
+          if (previewResult.section?.targetAnchor) {
+            this.captureThoughtBlockId(state, previewResult.section.targetAnchor);
+          }
 
           let changed = false;
 
@@ -1386,29 +1381,39 @@ function escapeCssIdentifier(value: string): string {
       state: ThoughtViewState,
       context?: TaskContextSnapshot | null
     ): string {
+        const contextBlockId = context?.blockId ?? state.context?.blockId ?? null;
         const candidates = [
-          this.normalizeBlockId(state.blockId),
-          this.extractBlockIdFromOrigin(state.prefetchedOrigin),
-          this.normalizeBlockId(context?.blockId ?? null),
-          this.normalizeBlockId(state.task.id ?? null)
+          state.blockId,
+          contextBlockId,
+          state.prefetchedOrigin?.targetAnchor ?? null,
+          state.task?.id ?? null
         ];
 
         for (const candidate of candidates) {
-          if (candidate) {
-            return candidate;
+          const normalized = this.captureThoughtBlockId(state, candidate);
+          if (normalized) {
+            return normalized;
           }
         }
 
         return "";
     }
 
-    private extractBlockIdFromOrigin(origin?: ThoughtOriginSection | null): string | null {
-        if (!origin?.targetAnchor) {
-          return null;
+    private captureThoughtBlockId(state: ThoughtViewState, value?: string | null): string {
+        const normalized = this.normalizeBlockId(value ?? null);
+        if (!normalized) {
+          return "";
         }
 
-        const normalized = this.normalizeBlockId(origin.targetAnchor);
-        return normalized || null;
+        if (state.blockId !== normalized) {
+          state.blockId = normalized;
+        }
+
+        if (state.task && state.task.id !== normalized) {
+          state.task.id = normalized;
+        }
+
+        return normalized;
     }
 
     private normalizeBlockId(value?: string | null): string {
