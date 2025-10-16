@@ -279,6 +279,31 @@ input[data-task="-"] {
     color: var(--text-muted);
 }
 
+.tree-of-thought__truncation {
+    margin-top: 0.75em;
+    display: flex;
+    justify-content: flex-start;
+}
+
+.tree-of-thought__expand-button {
+    font-size: var(--font-ui-smaller);
+    padding: var(--size-2-2) var(--size-2-4);
+    border-radius: var(--radius-s);
+    cursor: pointer;
+    border: 1px solid var(--background-modifier-border);
+    background: transparent;
+    color: var(--text-normal);
+}
+
+.tree-of-thought__expand-button.is-loading {
+    cursor: progress;
+}
+
+.tree-of-thought__expand-button:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
 .tree-of-thought__reference-list {
     margin: 0;
     padding-left: 1.4rem;

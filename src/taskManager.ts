@@ -5,6 +5,7 @@ import { DataviewApi, Task } from 'obsidian-dataview'; // Assuming Task type exi
 // Import helpers - fetchExternalLinkContent will be moved into this class
 import { generateId } from './utilities';
 import { isActiveStatus } from './statusFilters';
+import type { ThoughtLinkPreview } from './treeOfThought';
 
 // Define TaskInfo structure used by findDvTask
 interface TaskInfo {
@@ -455,8 +456,8 @@ export class TaskManager {
         return parents.reverse();
     }
 
-    public async getDvTaskLinks(listItem: Task): Promise<Record<string, string | null | { error: string }>> {
-        const attachments: Record<string, string | null | { error: string }> = {};
+    public async getDvTaskLinks(listItem: Task): Promise<Record<string, ThoughtLinkPreview>> {
+        const attachments: Record<string, ThoughtLinkPreview> = {};
         if (!listItem || !listItem.path) {
             console.warn('[getDvTaskLinks] Invalid listItem provided');
             return attachments;
