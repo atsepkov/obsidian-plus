@@ -3,14 +3,12 @@ import {
 	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
 	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
-import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
-// TODO: remove if no longer in use after refactor
-import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 import { TaskTagTrigger, TaskTagModal } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
@@ -19,6 +17,10 @@ import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
 });
+
+const flaggedLineDecoration = Decoration.line({ class: 'cm-flagged-line' });
+const responseLineDecoration = Decoration.line({ class: 'cm-response-line' });
+const errorLineDecoration = Decoration.line({ class: 'cm-error-line' });
 
 // this effect will fire whenever user updates the plugin config
 export const setConfigEffect = StateEffect.define<MyConfigType>();
@@ -743,16 +745,32 @@ export default class ObsidianPlus extends Plugin {
 
 	// --- End Additions for Sticky Header ---
 
-	// Called to mark/color-code lines based on type/error for user's attention
-	private buildDecorationSet(state: EditorState): DecorationSet {
-		// console.log('STATE', state, this)
-		const activeFile = this.app.workspace.getActiveFile();
-		if (activeFile?.path === this.settings.tagListFilePath) {
-				return Decoration.none;
-		}
+        // Called to mark/color-code lines based on type/error for user's attention
+        private buildDecorationSet(
+                state: EditorState,
+                flaggedLines: number[],
+                previousDeco?: DecorationSet,
+                lineIndicesToRecompute?: number[]
+        ): DecorationSet {
+                const activeFile = this.app.workspace.getActiveFile();
+                if (activeFile?.path === this.settings.tagListFilePath) {
+                        flaggedLines.length = 0;
+                        return Decoration.none;
+                }
 
-                const lines = state.doc.toString().split("\n");
-                const decorations: Range<Decoration>[] = [];
+                const doc = state.doc;
+                const dirtyLineSet = lineIndicesToRecompute ? new Set(lineIndicesToRecompute) : null;
+                const builder = new RangeSetBuilder<Decoration>();
+
+                if (previousDeco && dirtyLineSet) {
+                        previousDeco.between(0, doc.length, (from, to, value) => {
+                                const lineNumber = doc.lineAt(from).number - 1;
+                                if (!dirtyLineSet.has(lineNumber)) {
+                                        builder.add(from, to, value);
+                                }
+                        });
+                }
+
                 const taskTagSet = new Set(this.settings.taskTags ?? []);
                 const projectTagSet = new Set(this.settings.projectTags ?? []);
                 const projectRootSet = new Set(this.settings.projects ?? []);
@@ -760,19 +778,22 @@ export default class ObsidianPlus extends Plugin {
                 const bulletRegex = /^(\s*)([-*+])\s+/;
                 const tagRegex = /#[^\s#]+/g;
 
-                let prevLine = ''
-                for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
+                const updatedFlaggedLines: number[] = [];
+                let prevLine = '';
+
+                for (let i = 0; i < doc.lines; i++) {
+                        const cmLine = doc.line(i + 1);
+                        const line = cmLine.text;
                         const cleanLine = line.trim();
 
-                        const leadingWhitespace = (line.match(/^\s*/) ?? [""])[0];
-                        let indent = leadingWhitespace.replace(/\t/g, "    ").length;
+                        const leadingWhitespace = (line.match(/^\s*/) ?? [''])[0];
+                        let indent = leadingWhitespace.replace(/\t/g, '    ').length;
                         const bulletMatch = line.match(bulletRegex);
                         let isBullet = false;
                         if (bulletMatch) {
                                 isBullet = true;
-                                const indentSource = bulletMatch[1] ?? "";
-                                indent = indentSource.replace(/\t/g, "    ").length;
+                                const indentSource = bulletMatch[1] ?? '';
+                                indent = indentSource.replace(/\t/g, '    ').length;
                         }
                         if (isBullet || cleanLine.length > 0) {
                                 while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
@@ -795,7 +816,7 @@ export default class ObsidianPlus extends Plugin {
                                                 const rest = trimmed.slice(bulletPrefix[0].length);
                                                 const hasCheckbox = /^\[[^\]]\]\s+/.test(rest);
                                                 if (!hasCheckbox) {
-                                                        const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+                                                        const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
                                                         const tagAtStart = new RegExp(`^${escapedTag}(?:$|\s|[.,:;!?])`);
                                                         if (tagAtStart.test(rest)) {
                                                                 shouldFlag = true;
@@ -812,53 +833,56 @@ export default class ObsidianPlus extends Plugin {
                         }
 
                         if (shouldFlag) {
-                                const cmLine = state.doc.line(i + 1);
-                                decorations.push(
-                                        Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
-                                );
+                                updatedFlaggedLines.push(i);
+                                if (!dirtyLineSet || dirtyLineSet.has(i)) {
+                                        const range = flaggedLineDecoration.range(cmLine.from);
+                                        builder.add(range.from, range.to, range.value);
+                                }
                         }
 
                         if (isBullet) {
                                 contextStack.push({ indent, inProject: lineInProject });
                         }
 
-                        // TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
+                        const includeLine = !dirtyLineSet || dirtyLineSet.has(i);
 
-                        // highlight errors and responses
                         if (cleanLine.startsWith('+ ')) {
-				// - = outgoing request, + = incoming response
-				const cmLine = state.doc.line(i + 1);
-				decorations.push(
-					Decoration.line({ class: "cm-response-line" }).range(cmLine.from)
-				);
-			} else if (cleanLine.startsWith('* ')) {
-				const cmLine = state.doc.line(i + 1);
-				decorations.push(
-					Decoration.line({ class: "cm-error-line" }).range(cmLine.from)
-				);
-			} else {
-				let incrementPrev = true;
-				for (const tag in this.settings.webTags) {
-					if (prevLine.includes(tag) && this.settings.webTags[tag].config.errorFormat) {
-						// let errorRegex = new RegExp(this.settings.webTags[tag].errorFormat);
-						// if (errorRegex.test(line)) {
-						if (cleanLine.startsWith('- ' + this.settings.webTags[tag].config.errorFormat)) {
-							const cmLine = state.doc.line(i + 1);
-							decorations.push(
-								Decoration.line({ class: "cm-error-line" }).range(cmLine.from)
-							);
-							incrementPrev = false;
-							break;
-						}
-					}
-				}
-				if (incrementPrev) {
-					prevLine = line;
-				}
-			}
-		}
-		return Decoration.set(decorations);
-	}
+                                if (includeLine) {
+                                        const range = responseLineDecoration.range(cmLine.from);
+                                        builder.add(range.from, range.to, range.value);
+                                }
+                        } else if (cleanLine.startsWith('* ')) {
+                                if (includeLine) {
+                                        const range = errorLineDecoration.range(cmLine.from);
+                                        builder.add(range.from, range.to, range.value);
+                                }
+                        } else {
+                                let incrementPrev = true;
+                                let shouldMarkError = false;
+                                for (const tag in this.settings.webTags) {
+                                        if (prevLine.includes(tag) && this.settings.webTags[tag].config.errorFormat) {
+                                                if (cleanLine.startsWith('- ' + this.settings.webTags[tag].config.errorFormat)) {
+                                                        shouldMarkError = true;
+                                                        incrementPrev = false;
+                                                        break;
+                                                }
+                                        }
+                                }
+                                if (shouldMarkError && includeLine) {
+                                        const range = errorLineDecoration.range(cmLine.from);
+                                        builder.add(range.from, range.to, range.value);
+                                }
+                                if (incrementPrev) {
+                                        prevLine = line;
+                                }
+                        }
+                }
+
+                flaggedLines.length = 0;
+                flaggedLines.push(...updatedFlaggedLines);
+
+                return builder.finish();
+        }
 
 	// our convention is to use - for user bullets, + for responses, and * for errors
 	// when user types, we want to default to - bullets
@@ -927,22 +951,90 @@ export default class ObsidianPlus extends Plugin {
 			},
 	
 			// Called whenever the document changes
-			update(deco, transaction) {
-				// If doc changed or something else triggers a re-check,
-				// we can rebuild the decorations
-				if (transaction.docChanged) {
-					return self.buildDecorationSet(transaction.state, getFlaggedLines());
-				}
+                        update(deco, transaction) {
+                                let mapped = deco.map(transaction.changes);
+                                const flaggedLinesRef = getFlaggedLines();
+                                let configChanged = false;
+                                for (const effect of transaction.effects) {
+                                        if (effect.is(setConfigEffect)) {
+                                                configChanged = true;
+                                                break;
+                                        }
+                                }
 
-				// also check if we got new config effect
-				for (let effect of transaction.effects) {
-					if (effect.is(setConfigEffect)) {
-						return self.buildDecorationSet(transaction.state, getFlaggedLines());
-					}
-				}
+                                if (configChanged) {
+                                        return self.buildDecorationSet(transaction.state, flaggedLinesRef, mapped);
+                                }
 
-				return deco;
-			},
+                                if (!transaction.docChanged) {
+                                        return mapped;
+                                }
+
+                                const doc = transaction.state.doc;
+                                if (doc.lines === 0) {
+                                        flaggedLinesRef.length = 0;
+                                        return mapped;
+                                }
+
+                                const dirtyLines = new Set<number>();
+                                const bulletRegex = /^(\s*)([-*+])\s+/;
+
+                                const computeIndent = (text: string) => {
+                                        const leadingWhitespace = (text.match(/^\s*/) ?? [''])[0];
+                                        let indent = leadingWhitespace.replace(/\t/g, '    ').length;
+                                        const bulletMatch = text.match(bulletRegex);
+                                        if (bulletMatch) {
+                                                indent = (bulletMatch[1] ?? '').replace(/\t/g, '    ').length;
+                                        }
+                                        return indent;
+                                };
+
+                                const getLineIndex = (pos: number) => {
+                                        const clamped = Math.min(Math.max(pos, 0), doc.length);
+                                        return doc.lineAt(clamped).number - 1;
+                                };
+
+                                const addLineWithDescendants = (lineIndex: number) => {
+                                        if (lineIndex < 0 || lineIndex >= doc.lines || dirtyLines.has(lineIndex)) {
+                                                return;
+                                        }
+                                        dirtyLines.add(lineIndex);
+                                        const baseIndent = computeIndent(doc.line(lineIndex + 1).text);
+                                        for (let i = lineIndex + 1; i < doc.lines; i++) {
+                                                const nextLine = doc.line(i + 1).text;
+                                                if (!nextLine.trim()) {
+                                                        dirtyLines.add(i);
+                                                        continue;
+                                                }
+                                                const nextIndent = computeIndent(nextLine);
+                                                if (nextIndent <= baseIndent) {
+                                                        break;
+                                                }
+                                                dirtyLines.add(i);
+                                        }
+                                };
+
+                                const addLineRange = (fromPos: number, toPos: number) => {
+                                        const startLine = getLineIndex(fromPos);
+                                        const endLine = getLineIndex(toPos);
+                                        for (let line = startLine; line <= endLine; line++) {
+                                                addLineWithDescendants(line);
+                                        }
+                                };
+
+                                transaction.changes.iterChanges((_, __, fromB, toB) => {
+                                        addLineRange(fromB, toB);
+                                        addLineWithDescendants(getLineIndex(fromB) - 1);
+                                        addLineWithDescendants(getLineIndex(toB));
+                                });
+
+                                if (!dirtyLines.size) {
+                                        return mapped;
+                                }
+
+                                const linesToUpdate = Array.from(dirtyLines).sort((a, b) => a - b);
+                                return self.buildDecorationSet(transaction.state, flaggedLinesRef, mapped, linesToUpdate);
+                        },
 	
 			// Let CodeMirror know these are decorations
 			provide: (field) => EditorView.decorations.from(field),
