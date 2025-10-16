@@ -1054,6 +1054,8 @@ export default class ObsidianPlus extends Plugin {
                         return null;
                 }
 
+                const search = this.deriveInitialThoughtSearch(tagDetails.text, tagDetails.tag);
+
                 const context: TreeOfThoughtOpenOptions = {
                         tag: tagDetails.tag,
                         taskHint: {
@@ -1061,7 +1063,8 @@ export default class ObsidianPlus extends Plugin {
                                 line: tagDetails.line,
                                 blockId: tagDetails.blockId ?? null,
                                 text: tagDetails.text
-                        }
+                        },
+                        search: search ?? null
                 };
 
                 return context;
@@ -1115,6 +1118,30 @@ export default class ObsidianPlus extends Plugin {
                 }
 
                 return null;
+        }
+
+        private deriveInitialThoughtSearch(rawLine: string | undefined, tag: string): string | null {
+                if (!rawLine) {
+                        return null;
+                }
+
+                const withoutBlock = rawLine.replace(/\s*\^[A-Za-z0-9-]+$/, "");
+                const withoutBullet = withoutBlock.replace(/^[-*+]\s*(\[[^\]]*\]\s*)?/, "");
+                const normalized = withoutBullet.trim();
+                if (!normalized) {
+                        return null;
+                }
+
+                const normalizedTag = (tag ?? "").trim();
+                if (!normalizedTag) {
+                        return normalized || null;
+                }
+
+                const tokens = normalized.split(/\s+/);
+                const lowerTag = normalizedTag.toLowerCase();
+                const filtered = tokens.filter(token => token.toLowerCase() !== lowerTag);
+                const result = filtered.join(" ").trim();
+                return result || null;
         }
 
         private getLineIndentation(line: string | undefined): number {

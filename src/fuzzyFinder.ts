@@ -618,7 +618,6 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const tag = this.normalizeTag(this.initialThoughtRequest.tag);
-        const search = (this.initialThoughtRequest.search ?? "").trim();
         const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
           ? this.projectTag
           : null;
@@ -654,8 +653,7 @@ function escapeCssIdentifier(value: string): string {
           displayIndex: index,
           cacheIndex: index,
           task,
-          showIndex: false,
-          search: search.length ? search : undefined
+          showIndex: false
         });
         this.initialThoughtRequest = null;
     }
@@ -891,7 +889,27 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
 
-        const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
+        const tagForQuery = this.extractTagFromCacheKey(key) ?? (this.activeTag || "#");
+        const baseFromInput = this.parseThoughtQuery(this.inputEl.value).baseQuery.trimEnd();
+        let base = baseFromInput || tagForQuery;
+
+        if (task) {
+          const rawText = (task.text ?? "").trim();
+          const normalizedTag = tagForQuery.trim();
+          let taskPortion = rawText;
+          if (normalizedTag && rawText) {
+            const lowerTag = normalizedTag.toLowerCase();
+            if (rawText.toLowerCase().startsWith(lowerTag)) {
+              taskPortion = rawText.slice(normalizedTag.length).trimStart();
+            }
+          }
+          if (taskPortion) {
+            base = `${normalizedTag} ${taskPortion}`.trimEnd();
+          } else if (!base.trim() && normalizedTag) {
+            base = normalizedTag;
+          }
+        }
+
         const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex + 1})` : "";
         let next = `${base}${indexFragment} > `;
         if (normalizedSearch.length) {
