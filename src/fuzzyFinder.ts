@@ -20,6 +20,7 @@ export interface TaskEntry {
   id?:    string;
   path?:  string;        // returned by Dataview
   lines:  string[];
+  searchLines: string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
 }
 
@@ -209,6 +210,18 @@ function escapeCssIdentifier(value: string): string {
       return out;
     }
 
+    function toTaskEntry(row: any): TaskEntry {
+      const lines = explodeLines(row).map((s: string) => s.trim()).filter(Boolean);
+      const searchLines = lines.map(line => line.toLowerCase());
+      return {
+        ...row,
+        text: row.text.trim(),
+        lines,
+        searchLines,
+        status: (row as any).status,
+      } as TaskEntry;
+    }
+
     function collectTasksLazy(
         tag: string,
         plugin: Plugin,
@@ -237,12 +250,12 @@ function escapeCssIdentifier(value: string): string {
           ...(plugin.settings.tagQueryOptions ?? {})      // <-- future user hash
         };
 
-        let rows: TaskEntry[] = [];
+        let rows: any[] = [];
         try {
           if (dv && (plugin as any).query) {
             rows = project
-              ? (plugin as any).query(dv, [project, tag], opt) as TaskEntry[]
-              : (plugin as any).query(dv, tag, opt) as TaskEntry[];
+              ? (plugin as any).query(dv, [project, tag], opt) as any[]
+              : (plugin as any).query(dv, tag, opt) as any[];
           }
         } catch (e) {
           console.error("Dataview query failed", e);
@@ -255,21 +268,9 @@ function escapeCssIdentifier(value: string): string {
         const feed = () => {
           const slice = rows.slice(i, i + CHUNK);
           /* inside collectTasksLazy – while pushing rows into cache[key] */
-        function explodeLines(row: any): string[] {
-            const out = [row.text];
-            row.children?.forEach((c: any) => out.push(...explodeLines(c)));
-            return out;
-        }
-
-        slice.forEach(r => {
-            const lines = explodeLines(r).map(s => s.trim()).filter(Boolean);
-            cache[key].push({
-                ...r,
-                text: r.text.trim(),
-                lines,
-                status: (r as any).status,
-            });
-        });
+          slice.forEach(r => {
+            cache[key].push(toTaskEntry(r));
+          });
         //   slice.forEach(r =>
         //     cache[key].push({ ...r, text: r.text.trim() })
         //   );
@@ -1926,11 +1927,8 @@ function escapeCssIdentifier(value: string): string {
                 onlyOpen: includeCheckboxes ? false : !this.plugin.settings.webTags[tag],
                 onlyPrefixTags: true,
                 includeCheckboxes
-            }) as TaskEntry[];
-            return (rows ?? []).map(r => {
-              const lines = explodeLines(r).map(s => s.trim()).filter(Boolean);
-              return { ...r, text: r.text.trim(), lines, status: (r as any).status };
-            });
+            }) as any[];
+            return (rows ?? []).map(r => toTaskEntry(r));
           } catch (e) { console.error("Dataview query failed", e); }
         }
 
@@ -2016,14 +2014,18 @@ function escapeCssIdentifier(value: string): string {
             let bestScore = -Infinity;
           
             /* evaluate EACH line separately */
-            t.lines.forEach(line => {
+            t.lines.forEach((line, lineIndex) => {
+              const lowered = t.searchLines?.[lineIndex] ?? line.toLowerCase();
+              if (tokens.length && !tokens.every(token => lowered.includes(token))) {
+                return;
+              }
               const m = scorer(line);
               if (!m) return;
-          
+
               /* bonus for whole-word hits on THAT line */
               let bonus = 0;
               for (const regex of tokenRegexes) {
-                if (regex.test(line)) {
+                if (regex.test(lowered)) {
                   bonus += 500;
                 }
               }
