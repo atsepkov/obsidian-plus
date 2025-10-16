@@ -7,7 +7,6 @@ import {
   collectThoughtPreview,
   type ThoughtReference,
   type ThoughtSection,
-  type ThoughtPreviewTruncation,
   type TreeOfThoughtResult,
   type TaskContextSnapshot,
   type ThoughtOriginSection
@@ -1746,27 +1745,6 @@ function escapeCssIdentifier(value: string): string {
 
           this.attachThoughtSectionLinkHandlers(body, section);
 
-          const truncation = section.previewTruncation;
-          const canExpand = truncation && this.shouldShowThoughtExpansion(truncation) && Boolean(section.fullMarkdown?.trim());
-          if (canExpand) {
-            const controls = sectionEl.createDiv({ cls: "tree-of-thought__truncation" });
-            const remaining = typeof truncation.totalLines === "number"
-              ? Math.max(0, truncation.totalLines - truncation.limit)
-              : null;
-            const buttonLabel = remaining && remaining > 0
-              ? `Show full document (${remaining} more lines)`
-              : "Show full document";
-            const expandButton = controls.createEl("button", {
-              text: buttonLabel,
-              cls: "tree-of-thought__expand-button"
-            });
-
-            expandButton.addEventListener("click", evt => {
-              evt.preventDefault();
-              evt.stopPropagation();
-              void this.expandThoughtSection(section, body, controls, expandButton);
-            });
-          }
         }
 
         if (references.length) {
@@ -1859,70 +1837,6 @@ function escapeCssIdentifier(value: string): string {
             evt.stopPropagation();
           });
         });
-    }
-
-    private shouldShowThoughtExpansion(truncation: ThoughtPreviewTruncation | null | undefined): boolean {
-        if (!truncation) {
-          return false;
-        }
-
-        if (typeof truncation.limit !== "number" || truncation.limit <= 0) {
-          return false;
-        }
-
-        if (typeof truncation.totalLines === "number") {
-          return truncation.totalLines > truncation.limit;
-        }
-
-        return true;
-    }
-
-    private async expandThoughtSection(
-        section: ThoughtSection,
-        body: HTMLElement,
-        controls: HTMLElement,
-        button: HTMLButtonElement
-    ): Promise<void> {
-        if (!section?.file) {
-          return;
-        }
-
-        const full = section.fullMarkdown?.trimEnd();
-        if (!full) {
-          controls.remove();
-          section.previewTruncation = null;
-          return;
-        }
-
-        const originalLabel = button.textContent ?? button.innerText ?? "Show full document";
-        button.disabled = true;
-        button.classList.add("is-loading");
-        button.setText("Loading…");
-
-        try {
-          body.empty();
-          await MarkdownRenderer.render(this.app, full, body, section.file.path, this.plugin);
-          await this.waitForNextFrame();
-
-          if (!body.childElementCount && !body.textContent?.trim()) {
-            body.createEl("pre", { text: full });
-          }
-
-          this.attachThoughtSectionLinkHandlers(body, section);
-
-          section.markdown = full;
-          section.fullMarkdown = full;
-          section.previewTruncation = null;
-          controls.remove();
-        } catch (error) {
-          console.error("Failed to expand tree-of-thought preview", error);
-          button.disabled = false;
-          button.classList.remove("is-loading");
-          button.setText(originalLabel);
-          return;
-        }
-
-        button.classList.remove("is-loading");
     }
 
     private async renderReferenceSegmentMarkdown(target: HTMLElement, markdown: string, filePath: string) {

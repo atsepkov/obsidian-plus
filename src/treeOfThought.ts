@@ -15,15 +15,7 @@ interface ThoughtBacklink {
   snippet?: string;
 }
 
-export interface ThoughtPreviewContent {
-  markdown: string;
-  truncated?: boolean;
-  totalLines?: number;
-  limit?: number;
-  full?: string;
-}
-
-export type ThoughtLinkPreview = string | null | { error?: string } | ThoughtPreviewContent;
+export type ThoughtLinkPreview = string | null | { error?: string };
 
 type ParentContextType = "heading" | "list" | "paragraph";
 
@@ -70,12 +62,6 @@ export interface ThoughtOriginSection {
   sourceSnippet?: string;
 }
 
-export interface ThoughtPreviewTruncation {
-  limit: number;
-  totalLines?: number | null;
-  rawLink?: string | null;
-}
-
 export interface ThoughtSection {
   role: "root" | "branch";
   label: string;
@@ -87,8 +73,6 @@ export interface ThoughtSection {
   targetAnchor?: string | null;
   targetLine?: number | null;
   sourceMarkdown?: string;
-  fullMarkdown?: string;
-  previewTruncation?: ThoughtPreviewTruncation | null;
 }
 
 export interface ThoughtReference {
@@ -486,15 +470,18 @@ async function injectInternalLinkSections(
     return sections;
   }
 
-  const previewMap = new Map<string, ThoughtPreviewContent>();
+  const previewMap = new Map<string, string>();
   if (linkMap) {
     const entries = Object.entries(linkMap);
     for (const [raw, value] of entries) {
-      const normalized = normalizeThoughtLinkPreview(value);
-      if (!normalized) {
+      if (typeof value !== "string") {
         continue;
       }
-      previewMap.set(raw, normalized);
+      const trimmed = value.trim();
+      if (!trimmed) {
+        continue;
+      }
+      previewMap.set(raw, trimmed);
     }
   }
 
@@ -518,7 +505,7 @@ async function injectInternalLinkSections(
 async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
-  previewMap: Map<string, ThoughtPreviewContent>,
+  previewMap: Map<string, string>,
   used: Set<string>
 ): Promise<ThoughtSection[]> {
   const searchTexts = [section?.sourceMarkdown, section?.markdown]
@@ -559,31 +546,24 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    let previewEntry = previewMap.get(raw) ?? null;
-    if (!previewEntry) {
+    let preview: string | null = previewMap.get(raw) ?? null;
+    if (!preview || !preview.trim()) {
       const resolved = await resolveThoughtLinkPreview(app, targetFile, parsed);
-      previewEntry = normalizeThoughtLinkPreview(resolved);
-      if (previewEntry) {
-        previewMap.set(raw, previewEntry);
+      if (typeof resolved === "string" && resolved.trim()) {
+        preview = resolved;
+        previewMap.set(raw, resolved.trim());
+      } else {
+        preview = null;
       }
     }
 
-    const preview = previewEntry?.markdown?.trim();
-    if (!preview) {
+    if (!preview || !preview.trim()) {
       continue;
     }
 
     const markdown = prepareOutline(preview, { stripFirstMarker: false }).trimEnd();
     if (!markdown) {
       continue;
-    }
-
-    let fullMarkdown: string | undefined;
-    if (previewEntry?.truncated && previewEntry.full) {
-      fullMarkdown = prepareOutline(previewEntry.full, { stripFirstMarker: false }).trimEnd();
-      if (!fullMarkdown?.trim()) {
-        fullMarkdown = undefined;
-      }
     }
 
     const linktext = app.metadataCache.fileToLinktext(targetFile, section.file.path) || targetFile.basename;
@@ -595,14 +575,6 @@ async function collectInternalLinkSections(
     const targetAnchor = resolveThoughtLinkAnchor(parsed.anchor);
     const segments = createThoughtLinkSegments(label, targetAnchor);
 
-    const previewTruncation = previewEntry?.truncated
-      ? {
-          limit: previewEntry.limit ?? DOCUMENT_PREVIEW_LINE_LIMIT,
-          totalLines: previewEntry.totalLines ?? null,
-          rawLink: raw
-        }
-      : undefined;
-
     extras.push({
       role: "branch",
       label,
@@ -613,47 +585,13 @@ async function collectInternalLinkSections(
       targetAnchor,
       tooltip: undefined,
       targetLine: undefined,
-      sourceMarkdown: preview,
-      fullMarkdown,
-      previewTruncation
+      sourceMarkdown: preview
     });
 
     used.add(raw);
   }
 
   return extras;
-}
-
-function normalizeThoughtLinkPreview(value: ThoughtLinkPreview): ThoughtPreviewContent | null {
-  if (!value) {
-    return null;
-  }
-
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    if (!trimmed) {
-      return null;
-    }
-    return { markdown: trimmed };
-  }
-
-  if (typeof value === "object") {
-    if ("error" in value) {
-      return null;
-    }
-
-    if ("markdown" in value && typeof value.markdown === "string") {
-      return {
-        markdown: value.markdown,
-        truncated: Boolean(value.truncated),
-        totalLines: typeof value.totalLines === "number" ? value.totalLines : undefined,
-        limit: typeof value.limit === "number" ? value.limit : undefined,
-        full: typeof value.full === "string" ? value.full : undefined,
-      };
-    }
-  }
-
-  return null;
 }
 
 async function resolveThoughtLinkPreview(
@@ -682,22 +620,13 @@ async function resolveThoughtLinkPreview(
   const limit = DOCUMENT_PREVIEW_LINE_LIMIT;
   const snippetLength = Math.min(lines.length, limit);
   const snippet = lines.slice(0, snippetLength).join("\n");
-  if (lines.length > limit) {
-    return {
-      markdown: snippet,
-      truncated: true,
-      totalLines: lines.length,
-      limit,
-      full: lines.join("\n")
-    };
+
+  if (!anchor && lines.length > limit) {
+    const notice = `\n\n> _Note: preview truncated to the first ${limit} lines._`;
+    return `${snippet}${notice}`;
   }
 
-  return {
-    markdown: snippet,
-    truncated: false,
-    totalLines: lines.length,
-    limit
-  };
+  return snippet;
 }
 
 function extractBlockPreview(lines: string[], anchor: string): string | null {
