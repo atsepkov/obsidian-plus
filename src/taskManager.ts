@@ -714,20 +714,58 @@ export class TaskManager {
         }
 
         const root = lines[startLine];
-        const rootIndent = this.leadingSpace(root);
+        const normalizedRoot = this.normalizeIndentation(root);
+        const rootIndent = this.leadingSpace(normalizedRoot);
         const snippet: string[] = [root];
 
+        let fence = this.detectCodeFence(normalizedRoot);
+        let inCodeFence = Boolean(fence);
+
         for (let i = startLine + 1; i < lines.length; i++) {
-            const line = lines[i];
-            if (line.trim().length === 0) {
-                snippet.push(line);
+            const originalLine = lines[i];
+            const normalizedLine = this.normalizeIndentation(originalLine);
+            const trimmed = normalizedLine.trim();
+
+            const fenceInfo = this.detectCodeFence(normalizedLine);
+            if (fenceInfo) {
+                snippet.push(originalLine);
+                if (inCodeFence) {
+                    if (fence && fenceInfo.char === fence.char && fenceInfo.length >= fence.length) {
+                        fence = null;
+                        inCodeFence = false;
+                    }
+                } else {
+                    fence = fenceInfo;
+                    inCodeFence = true;
+                }
                 continue;
             }
-            const indent = this.leadingSpace(line);
-            if (indent <= rootIndent && this.isListItem(line)) {
-                break;
+
+            if (!trimmed) {
+                snippet.push(originalLine);
+                continue;
             }
-            snippet.push(line);
+
+            if (!inCodeFence) {
+                const indent = this.leadingSpace(normalizedLine);
+
+                if (indent < rootIndent) {
+                    break;
+                }
+
+                if (indent <= rootIndent) {
+                    if (this.isListItem(normalizedLine) || this.isHeading(trimmed)) {
+                        break;
+                    }
+
+                    const paragraphLike = !this.isListItem(normalizedLine) && !this.isHeading(trimmed);
+                    if (paragraphLike) {
+                        break;
+                    }
+                }
+            }
+
+            snippet.push(originalLine);
         }
 
         return snippet.join('\n');
@@ -740,6 +778,27 @@ export class TaskManager {
 
     private isListItem(value: string): boolean {
         return /^\s*[-*+]/.test(value);
+    }
+
+    private isHeading(value: string): boolean {
+        return /^#{1,6}\s/.test(value);
+    }
+
+    private normalizeIndentation(value: string): string {
+        return value.replace(/\t/g, '    ');
+    }
+
+    private detectCodeFence(value: string): { char: string; length: number } | null {
+        const match = value.trim().match(/^([`~]{3,})/);
+        if (!match) {
+            return null;
+        }
+
+        const marker = match[1];
+        return {
+            char: marker[0],
+            length: marker.length,
+        };
     }
 
     private resolveInternalLinkFile(link: InternalLinkMatch, sourcePath: string): TFile | null {
@@ -827,15 +886,39 @@ export class TaskManager {
 
     private extractHeadingSectionFromLines(lines: string[], startLine: number, level: number): string {
         const snippet: string[] = [];
+        const startLineValue = lines[startLine] ?? '';
+        let fence = this.detectCodeFence(this.normalizeIndentation(startLineValue));
+        let inCodeFence = Boolean(fence);
+
         for (let i = startLine; i < lines.length; i++) {
-            if (i > startLine) {
-                const headingMatch = lines[i].match(/^(#+)\s+/);
+            const originalLine = lines[i];
+            const normalizedLine = this.normalizeIndentation(originalLine);
+
+            const fenceInfo = this.detectCodeFence(normalizedLine);
+            if (fenceInfo) {
+                snippet.push(originalLine);
+                if (inCodeFence) {
+                    if (fence && fenceInfo.char === fence.char && fenceInfo.length >= fence.length) {
+                        fence = null;
+                        inCodeFence = false;
+                    }
+                } else {
+                    fence = fenceInfo;
+                    inCodeFence = true;
+                }
+                continue;
+            }
+
+            if (i > startLine && !inCodeFence) {
+                const headingMatch = normalizedLine.match(/^(#+)\s+/);
                 if (headingMatch && headingMatch[1].length <= level) {
                     break;
                 }
             }
-            snippet.push(lines[i]);
+
+            snippet.push(originalLine);
         }
+
         return snippet.join('\n');
     }
 
