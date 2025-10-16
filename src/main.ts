@@ -3,7 +3,7 @@ import {
 	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
 	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
-import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { EditorView, Decoration, ViewUpdate, ViewPlugin, DecorationSet } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
@@ -11,7 +11,7 @@ import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
-import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, StateField, StateEffect, Transaction } from "@codemirror/state";
 import { TaskTagTrigger, TaskTagModal } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
@@ -19,6 +19,10 @@ import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
 });
+
+const flaggedLineDecoration = Decoration.line({ class: 'cm-flagged-line' });
+const responseLineDecoration = Decoration.line({ class: 'cm-response-line' });
+const errorLineDecoration = Decoration.line({ class: 'cm-error-line' });
 
 // this effect will fire whenever user updates the plugin config
 export const setConfigEffect = StateEffect.define<MyConfigType>();
@@ -56,10 +60,20 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
 }
 
 interface TaskLineInfo {
-	lineNumber: number;
-	text: string;
+        lineNumber: number;
+        text: string;
 }
-  
+
+type LineDecorationKind = "flagged" | "response" | "error" | null;
+
+interface LineDecorationInfo {
+        indent: number;
+        isBullet: boolean;
+        inProject: boolean;
+        flagged: boolean;
+        decorationKind: LineDecorationKind;
+}
+
 // Key by file path to an array of (lineNumber, text)
 let taskCache: Map<string, TaskLineInfo[]> = new Map();
 
@@ -122,9 +136,12 @@ export default class ObsidianPlus extends Plugin {
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	private _suggester: TaskTagTrigger;
 	public configLoader: ConfigLoader;
-	public taskManager: TaskManager;
-	public tagQuery: TagQuery;
-	public dv: any;
+        public taskManager: TaskManager;
+        public tagQuery: TagQuery;
+        public dv: any;
+        private lineDecorationCache: Map<string, Map<number, LineDecorationInfo>> = new Map();
+        private flaggedLinesByFile: Map<string, Set<number>> = new Map();
+        private flaggedLines: number[] = [];
 
 	async onload() {
 		await this.loadSettings();
@@ -744,125 +761,376 @@ export default class ObsidianPlus extends Plugin {
 	// --- End Additions for Sticky Header ---
 
 	// Called to mark/color-code lines based on type/error for user's attention
-	private buildDecorationSet(state: EditorState): DecorationSet {
-		// console.log('STATE', state, this)
-		const activeFile = this.app.workspace.getActiveFile();
-		if (activeFile?.path === this.settings.tagListFilePath) {
-				return Decoration.none;
-		}
+	private buildDecorationSet(
+state: EditorState,
+getFlaggedLines: () => number[],
+previousDecorations?: DecorationSet,
+lineIndicesToRecompute?: Set<number>,
+transaction?: Transaction
+): DecorationSet {
+const activeFile = this.app.workspace.getActiveFile();
+if (activeFile?.path === this.settings.tagListFilePath) {
+return Decoration.none;
+}
 
-                const lines = state.doc.toString().split("\n");
-                const decorations: Range<Decoration>[] = [];
-                const taskTagSet = new Set(this.settings.taskTags ?? []);
-                const projectTagSet = new Set(this.settings.projectTags ?? []);
-                const projectRootSet = new Set(this.settings.projects ?? []);
-                const contextStack: { indent: number; inProject: boolean }[] = [];
-                const bulletRegex = /^(\s*)([-*+])\s+/;
-                const tagRegex = /#[^\s#]+/g;
+const filePath = activeFile?.path;
+if (!filePath) {
+return Decoration.none;
+}
 
-                let prevLine = ''
-                for (let i = 0; i < lines.length; i++) {
-                        const line = lines[i];
-                        const cleanLine = line.trim();
+const { lineCache, flaggedSet } = this.ensureLineCaches(filePath);
+const taskTagSet = new Set(this.settings.taskTags ?? []);
+const projectTagSet = new Set(this.settings.projectTags ?? []);
+const projectRootSet = new Set(this.settings.projects ?? []);
+const bulletRegex = /^(\s*)([-*+])\s+/;
+const tagRegex = /#[^\s#]+/g;
+const builder = new RangeSetBuilder<Decoration>();
 
-                        const leadingWhitespace = (line.match(/^\s*/) ?? [""])[0];
-                        let indent = leadingWhitespace.replace(/\t/g, "    ").length;
-                        const bulletMatch = line.match(bulletRegex);
-                        let isBullet = false;
-                        if (bulletMatch) {
-                                isBullet = true;
-                                const indentSource = bulletMatch[1] ?? "";
-                                indent = indentSource.replace(/\t/g, "    ").length;
-                        }
-                        if (isBullet || cleanLine.length > 0) {
-                                while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
-                                        contextStack.pop();
-                                }
-                        }
+const needsFullRecompute =
+!previousDecorations ||
+!lineIndicesToRecompute ||
+!transaction ||
+lineCache.size === 0 ||
+transaction.startState.doc.lines !== state.doc.lines;
 
-                        const parentInProject = contextStack.length ? contextStack[contextStack.length - 1].inProject : false;
-                        const tagMatches = line.match(tagRegex) ?? [];
-                        const tags = Array.from(new Set(tagMatches));
-                        const isProjectLine = tags.some(tag => projectRootSet.has(tag));
-                        const lineInProject = isProjectLine || parentInProject;
+if (needsFullRecompute) {
+lineCache.clear();
+flaggedSet.clear();
 
-                        let shouldFlag = false;
-                        for (const tag of tags) {
-                                if (!shouldFlag && taskTagSet.has(tag)) {
-                                        const trimmed = cleanLine;
-                                        const bulletPrefix = trimmed.match(/^[-*+]\s+/);
-                                        if (bulletPrefix) {
-                                                const rest = trimmed.slice(bulletPrefix[0].length);
-                                                const hasCheckbox = /^\[[^\]]\]\s+/.test(rest);
-                                                if (!hasCheckbox) {
-                                                        const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-                                                        const tagAtStart = new RegExp(`^${escapedTag}(?:$|\s|[.,:;!?])`);
-                                                        if (tagAtStart.test(rest)) {
-                                                                shouldFlag = true;
-                                                        }
-                                                }
-                                        }
-                                }
+const contextStack: { indent: number; inProject: boolean }[] = [];
+let prevLine = "";
 
-                                if (!shouldFlag && projectTagSet.has(tag) && !lineInProject) {
-                                        shouldFlag = true;
-                                }
+for (let index = 0; index < state.doc.lines; index++) {
+const line = state.doc.line(index + 1);
+const lineText = line.text;
+const cleanLine = lineText.trim();
+const indent = this.getLineIndent(lineText);
+const bulletMatch = lineText.match(bulletRegex);
+const isBullet = Boolean(bulletMatch);
 
-                                if (shouldFlag) break;
-                        }
+if (isBullet || cleanLine.length > 0) {
+while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
+contextStack.pop();
+}
+}
 
-                        if (shouldFlag) {
-                                const cmLine = state.doc.line(i + 1);
-                                decorations.push(
-                                        Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
-                                );
-                        }
+const parentInProject = contextStack.length ? contextStack[contextStack.length - 1].inProject : false;
+const tags = Array.from(new Set(lineText.match(tagRegex) ?? []));
+const isProjectLine = tags.some((tag) => projectRootSet.has(tag));
+const lineInProject = isProjectLine || parentInProject;
 
-                        if (isBullet) {
-                                contextStack.push({ indent, inProject: lineInProject });
-                        }
+let shouldFlag = false;
+for (const tag of tags) {
+if (!shouldFlag && taskTagSet.has(tag)) {
+const bulletPrefix = cleanLine.match(/^[-*+]\s+/);
+if (bulletPrefix) {
+const rest = cleanLine.slice(bulletPrefix[0].length);
+const hasCheckbox = /^\[[^\]]\]\s+/.test(rest);
+if (!hasCheckbox) {
+const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const tagAtStart = new RegExp(`^${escapedTag}(?:$|\s|[.,:;!?])`);
+if (tagAtStart.test(rest)) {
+shouldFlag = true;
+}
+}
+}
+}
 
-                        // TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
+if (!shouldFlag && projectTagSet.has(tag) && !lineInProject) {
+shouldFlag = true;
+}
 
-                        // highlight errors and responses
-                        if (cleanLine.startsWith('+ ')) {
-				// - = outgoing request, + = incoming response
-				const cmLine = state.doc.line(i + 1);
-				decorations.push(
-					Decoration.line({ class: "cm-response-line" }).range(cmLine.from)
-				);
-			} else if (cleanLine.startsWith('* ')) {
-				const cmLine = state.doc.line(i + 1);
-				decorations.push(
-					Decoration.line({ class: "cm-error-line" }).range(cmLine.from)
-				);
-			} else {
-				let incrementPrev = true;
-				for (const tag in this.settings.webTags) {
-					if (prevLine.includes(tag) && this.settings.webTags[tag].config.errorFormat) {
-						// let errorRegex = new RegExp(this.settings.webTags[tag].errorFormat);
-						// if (errorRegex.test(line)) {
-						if (cleanLine.startsWith('- ' + this.settings.webTags[tag].config.errorFormat)) {
-							const cmLine = state.doc.line(i + 1);
-							decorations.push(
-								Decoration.line({ class: "cm-error-line" }).range(cmLine.from)
-							);
-							incrementPrev = false;
-							break;
-						}
-					}
-				}
-				if (incrementPrev) {
-					prevLine = line;
-				}
-			}
-		}
-		return Decoration.set(decorations);
+if (shouldFlag) break;
+}
+
+let decorationKind: LineDecorationKind = null;
+if (shouldFlag) {
+decorationKind = "flagged";
+flaggedSet.add(index);
+} else {
+flaggedSet.delete(index);
+}
+
+if (cleanLine.startsWith("+ ")) {
+decorationKind = "response";
+} else if (cleanLine.startsWith("* ")) {
+decorationKind = "error";
+} else {
+const previousLineText = index > 0 ? state.doc.line(index).text : "";
+for (const tag in this.settings.webTags) {
+if (
+previousLineText.includes(tag) &&
+this.settings.webTags[tag].config.errorFormat &&
+cleanLine.startsWith(`- ${this.settings.webTags[tag].config.errorFormat}`)
+) {
+decorationKind = "error";
+break;
+}
+}
+}
+
+const decoration = this.decorationFromKind(decorationKind);
+if (decoration) {
+builder.add(line.from, line.from, decoration);
+}
+
+lineCache.set(index, {
+indent,
+isBullet,
+inProject: lineInProject,
+flagged: shouldFlag,
+decorationKind,
+});
+
+if (isBullet) {
+contextStack.push({ indent, inProject: lineInProject });
+}
+
+if (!cleanLine.startsWith("* ") && !cleanLine.startsWith("+ ")) {
+prevLine = lineText;
+}
+}
+
+this.flaggedLines = Array.from(flaggedSet).sort((a, b) => a - b);
+return builder.finish();
+}
+
+const dirtyLines = new Set(lineIndicesToRecompute);
+const expandedLines = this.expandWithAncestors(state, dirtyLines, lineCache);
+const mappedDecorations = previousDecorations?.map(transaction.changes) ?? Decoration.none;
+
+mappedDecorations.between(0, state.doc.length, (from, _to, decoration) => {
+const lineNumber = state.doc.lineAt(from).number - 1;
+if (!expandedLines.has(lineNumber)) {
+builder.add(from, from, decoration);
+}
+});
+
+const sortedLines = Array.from(expandedLines).sort((a, b) => a - b);
+for (const lineNumber of sortedLines) {
+const info = this.recomputeLineInfo(
+state,
+lineNumber,
+lineCache,
+taskTagSet,
+projectTagSet,
+projectRootSet,
+bulletRegex,
+tagRegex
+);
+
+if (!info) {
+lineCache.delete(lineNumber);
+flaggedSet.delete(lineNumber);
+continue;
+}
+
+if (info.flagged) {
+flaggedSet.add(lineNumber);
+} else {
+flaggedSet.delete(lineNumber);
+}
+
+const decoration = this.decorationFromKind(info.decorationKind);
+if (decoration) {
+const line = state.doc.line(lineNumber + 1);
+builder.add(line.from, line.from, decoration);
+}
+
+lineCache.set(lineNumber, info);
+}
+
+this.flaggedLines = Array.from(flaggedSet).sort((a, b) => a - b);
+return builder.finish();
+}
+private ensureLineCaches(filePath: string) {
+	if (!this.lineDecorationCache.has(filePath)) {
+	this.lineDecorationCache.set(filePath, new Map());
+	}
+	if (!this.flaggedLinesByFile.has(filePath)) {
+	this.flaggedLinesByFile.set(filePath, new Set());
+	}
+	return {
+	lineCache: this.lineDecorationCache.get(filePath)!,
+	flaggedSet: this.flaggedLinesByFile.get(filePath)!,
+	};
 	}
 
-	// our convention is to use - for user bullets, + for responses, and * for errors
-	// when user types, we want to default to - bullets
-	private handleBulletPreference(editor: Editor) {
+	private getLineIndent(lineText: string): number {
+	const leadingWhitespace = (lineText.match(/^\s*/) ?? [""])[0];
+	return leadingWhitespace.replace(/\t/g, "    ").length;
+	}
+
+	private decorationFromKind(kind: LineDecorationKind): Decoration | null {
+	switch (kind) {
+	case "flagged":
+	return flaggedLineDecoration;
+	case "response":
+	return responseLineDecoration;
+	case "error":
+	return errorLineDecoration;
+	default:
+	return null;
+	}
+	}
+
+	private expandWithAncestors(
+	state: EditorState,
+	dirtyLines: Set<number>,
+	lineCache: Map<number, LineDecorationInfo>
+	): Set<number> {
+	const expanded = new Set<number>(dirtyLines);
+	for (const lineNumber of dirtyLines) {
+	if (lineNumber <= 0) continue;
+	const line = state.doc.line(lineNumber + 1);
+	let indent = this.getLineIndent(line.text);
+	for (let ancestor = lineNumber - 1; ancestor >= 0; ancestor--) {
+	const info = lineCache.get(ancestor);
+	if (!info) {
+	expanded.add(ancestor);
+	continue;
+	}
+	if (!info.isBullet) {
+	continue;
+	}
+	if (info.indent < indent) {
+	expanded.add(ancestor);
+	indent = info.indent;
+	}
+	if (indent === 0) {
+	break;
+	}
+	}
+	}
+	return expanded;
+	}
+
+	private resolveParentInProject(
+	lineNumber: number,
+	indent: number,
+	lineCache: Map<number, LineDecorationInfo>
+	): boolean {
+	for (let ancestor = lineNumber - 1; ancestor >= 0; ancestor--) {
+	const info = lineCache.get(ancestor);
+	if (!info) {
+	continue;
+	}
+	if (!info.isBullet) {
+	continue;
+	}
+	if (info.indent < indent) {
+	return info.inProject;
+	}
+	}
+	return false;
+	}
+
+	private recomputeLineInfo(
+	state: EditorState,
+	lineNumber: number,
+	lineCache: Map<number, LineDecorationInfo>,
+	taskTagSet: Set<string>,
+	projectTagSet: Set<string>,
+	projectRootSet: Set<string>,
+	bulletRegex: RegExp,
+	tagRegex: RegExp
+	): LineDecorationInfo | null {
+	if (lineNumber < 0 || lineNumber >= state.doc.lines) {
+	return null;
+	}
+
+	const line = state.doc.line(lineNumber + 1);
+	const lineText = line.text;
+	const cleanLine = lineText.trim();
+	const indent = this.getLineIndent(lineText);
+	const isBullet = Boolean(lineText.match(bulletRegex));
+	const parentInProject = this.resolveParentInProject(lineNumber, indent, lineCache);
+	const tags = Array.from(new Set(lineText.match(tagRegex) ?? []));
+	const isProjectLine = tags.some((tag) => projectRootSet.has(tag));
+	const lineInProject = isProjectLine || parentInProject;
+
+	let shouldFlag = false;
+	for (const tag of tags) {
+	if (!shouldFlag && taskTagSet.has(tag)) {
+	const bulletPrefix = cleanLine.match(/^[-*+]\s+/);
+	if (bulletPrefix) {
+	const rest = cleanLine.slice(bulletPrefix[0].length);
+	const hasCheckbox = /^\[[^\]]\]\s+/.test(rest);
+	if (!hasCheckbox) {
+	const escapedTag = tag.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+	const tagAtStart = new RegExp(`^${escapedTag}(?:$|\s|[.,:;!?])`);
+	if (tagAtStart.test(rest)) {
+	shouldFlag = true;
+	}
+	}
+	}
+	}
+
+	if (!shouldFlag && projectTagSet.has(tag) && !lineInProject) {
+	shouldFlag = true;
+	}
+
+	if (shouldFlag) break;
+	}
+
+	let decorationKind: LineDecorationKind = null;
+	if (shouldFlag) {
+	decorationKind = "flagged";
+	} else if (cleanLine.startsWith("+ ")) {
+	decorationKind = "response";
+	} else if (cleanLine.startsWith("* ")) {
+	decorationKind = "error";
+	} else {
+	const previousLineText = lineNumber > 0 ? state.doc.line(lineNumber).text : "";
+	for (const tag in this.settings.webTags) {
+	if (
+	previousLineText.includes(tag) &&
+	this.settings.webTags[tag].config.errorFormat &&
+	cleanLine.startsWith(`- ${this.settings.webTags[tag].config.errorFormat}`)
+	) {
+	decorationKind = "error";
+	break;
+	}
+	}
+	}
+
+	return {
+	indent,
+	isBullet,
+	inProject: lineInProject,
+	flagged: shouldFlag,
+	decorationKind,
+	};
+	}
+
+	private collectDirtyLineIndices(transaction: Transaction): Set<number> {
+	const dirty = new Set<number>();
+	transaction.changes.iterChanges((fromA, toA, fromB, toB) => {
+	const startOld = transaction.startState.doc.lineAt(fromA).number - 1;
+	const endOld = transaction.startState.doc.lineAt(toA).number - 1;
+	const startNew = transaction.state.doc.lineAt(fromB).number - 1;
+	const endNew = transaction.state.doc.lineAt(toB).number - 1;
+
+	for (let line = startOld; line <= endOld; line++) {
+	if (line >= 0) dirty.add(line);
+	}
+
+	for (let line = startNew; line <= endNew; line++) {
+	if (line >= 0) dirty.add(line);
+	}
+
+	if (startOld > 0) dirty.add(startOld - 1);
+	if (startNew > 0) dirty.add(startNew - 1);
+	});
+	return dirty;
+	}
+
+
+
+
+		// our convention is to use - for user bullets, + for responses, and * for errors
+		// when user types, we want to default to - bullets
+private handleBulletPreference(editor: Editor) {
 		const cursor = editor.getCursor();
 		const line = editor.getLine(cursor.line);
 		const cleanLine = line.trimStart();
@@ -920,29 +1188,32 @@ export default class ObsidianPlus extends Plugin {
                 const self = this;
 
                 // We'll define a StateField that decorates lines
-                return StateField.define<ReturnType<typeof Decoration.set>>({
-			// Called once when the editor state is created
-			create(state: EditorState) {
-				return self.buildDecorationSet(state, getFlaggedLines());
-			},
-	
-			// Called whenever the document changes
-			update(deco, transaction) {
-				// If doc changed or something else triggers a re-check,
-				// we can rebuild the decorations
-				if (transaction.docChanged) {
-					return self.buildDecorationSet(transaction.state, getFlaggedLines());
-				}
+return StateField.define<ReturnType<typeof Decoration.set>>({
+create(state: EditorState) {
+return self.buildDecorationSet(state, getFlaggedLines());
+},
 
-				// also check if we got new config effect
-				for (let effect of transaction.effects) {
-					if (effect.is(setConfigEffect)) {
-						return self.buildDecorationSet(transaction.state, getFlaggedLines());
-					}
-				}
+update(deco, transaction) {
+if (transaction.docChanged) {
+const dirtyLines = self.collectDirtyLineIndices(transaction);
+const mapped = deco.map(transaction.changes);
+return self.buildDecorationSet(
+transaction.state,
+getFlaggedLines,
+mapped,
+dirtyLines,
+transaction
+);
+}
 
-				return deco;
-			},
+for (const effect of transaction.effects) {
+if (effect.is(setConfigEffect)) {
+return self.buildDecorationSet(transaction.state, getFlaggedLines());
+}
+}
+
+return deco;
+},
 	
 			// Let CodeMirror know these are decorations
 			provide: (field) => EditorView.decorations.from(field),
