@@ -313,6 +313,13 @@ function escapeCssIdentifier(value: string): string {
     private cachedTag   = "";          // cache key currently loaded
     private taskCache: Record<string, TaskEntry[]> = {};   // tasks by cache key
     private projectTag: string | null = null;              // current project scope
+    private lastModeSnapshot: {
+      tagMode: boolean;
+      thoughtMode: boolean;
+      activeTag: string;
+      thoughtCacheKey: string | null;
+    } | null = null;
+    private suggestionRefreshScheduled = false;
   
     constructor(app: App, plugin: Plugin,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -364,10 +371,10 @@ function escapeCssIdentifier(value: string): string {
 
     onOpen() {
         super.onOpen?.();                    // (safe even if base is empty)
-      
+
         this.inputEl.value = "#";   // ① prefill “#”
         this.detectMode();          // ② tagMode = true
-        this.updateSuggestions();   // ③ show tags immediately
+        this.scheduleSuggestionRefresh();   // ③ show tags immediately
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -457,6 +464,7 @@ function escapeCssIdentifier(value: string): string {
   
     /* ---------- dynamic mode detection ---------- */
     private detectMode() {
+        const previous = this.lastModeSnapshot;
         const q = this.inputEl.value;
         if (this.autoThoughtGuard && this.autoThoughtGuard !== q) {
           this.autoThoughtGuard = null;
@@ -508,8 +516,34 @@ function escapeCssIdentifier(value: string): string {
 
         this.configureInstructionBar();
 
-        /* 👇 force redraw immediately (fixes space‑switch lag) */
-        this.updateSuggestions();
+        const current = {
+          tagMode: this.tagMode,
+          thoughtMode: this.thoughtMode,
+          activeTag: this.activeTag,
+          thoughtCacheKey: this.thoughtCacheKey
+        };
+        const changed =
+          !previous ||
+          previous.tagMode !== current.tagMode ||
+          previous.thoughtMode !== current.thoughtMode ||
+          previous.activeTag !== current.activeTag ||
+          previous.thoughtCacheKey !== current.thoughtCacheKey;
+        this.lastModeSnapshot = current;
+
+        if (changed) {
+          this.scheduleSuggestionRefresh();
+        }
+    }
+
+    private scheduleSuggestionRefresh(): void {
+        if (this.suggestionRefreshScheduled) {
+          return;
+        }
+        this.suggestionRefreshScheduled = true;
+        window.requestAnimationFrame(() => {
+          this.suggestionRefreshScheduled = false;
+          this.updateSuggestions();
+        });
     }
 
     private parseThoughtQuery(query: string): { baseQuery: string; index: number | null; active: boolean; search: string } {
@@ -1521,7 +1555,7 @@ function escapeCssIdentifier(value: string): string {
             if (!this.allowInsertion) {
                 this.inputEl.value = `${item.tag} `;
                 this.detectMode();
-                this.updateSuggestions();
+                this.scheduleSuggestionRefresh();
                 return;
             }
             this.insertNewTemplate(item.tag);
@@ -1983,7 +2017,7 @@ function escapeCssIdentifier(value: string): string {
 
         /* ②  build lazily if still missing */
         if (!this.taskCache[key]) {
-          collectTasksLazy(tag, this.plugin, () => this.updateSuggestions(), project);
+          collectTasksLazy(tag, this.plugin, () => this.scheduleSuggestionRefresh(), project);
           this.lastTaskSuggestions = [];
           return [];                                         // nothing yet
         }
