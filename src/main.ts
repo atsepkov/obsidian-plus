@@ -1,7 +1,7 @@
 import path from 'path';
 import {
-	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
+        App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
+        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -12,7 +12,7 @@ import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
-import { TaskTagTrigger, TaskTagModal } from './fuzzyFinder';
+import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 
@@ -247,6 +247,24 @@ export default class ObsidianPlus extends Plugin {
                         name: 'Open FuzzyFinder',
                         callback: () => {
                                 new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
+                        }
+                });
+
+                this.addCommand({
+                        id: 'open-tree-of-thought-under-cursor',
+                        name: 'Open Tree of Thought Under Cursor',
+                        checkCallback: (checking: boolean) => {
+                                const context = this.buildTreeOfThoughtContext();
+                                if (!context) {
+                                        return false;
+                                }
+                                if (!checking) {
+                                        new TaskTagModal(this.app, this, null, {
+                                                allowInsertion: false,
+                                                initialThought: context
+                                        }).open();
+                                }
+                                return true;
                         }
                 });
 
@@ -993,11 +1011,11 @@ export default class ObsidianPlus extends Plugin {
 		});
 	}
 
-	private hasBlockBacklinks(blockId: string): boolean {
-		const file = this.app.workspace.getActiveFile();
-		if (!file) {
-				return false;
-		}
+        private hasBlockBacklinks(blockId: string): boolean {
+                const file = this.app.workspace.getActiveFile();
+                if (!file) {
+                                return false;
+                }
 		const backlinks = this.app.metadataCache.getBacklinksForFile(file);
 		if (!backlinks) {
 				return false;
@@ -1010,15 +1028,108 @@ export default class ObsidianPlus extends Plugin {
 								return true;
 						}
 				}
-		}
-		return false;
-	}
+                }
+                return false;
+        }
 
-	private selectMultiLineCode(fullText: string, clickPos: number) {
-		// Find previous ```
-		let start = clickPos;
-		while (start >= 0 && fullText.slice(start, start + 3) !== '```') {
-		  start--;
+        private buildTreeOfThoughtContext(): TreeOfThoughtOpenOptions | null {
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (!view) {
+                        return null;
+                }
+
+                const file = view.file;
+                if (!file) {
+                        return null;
+                }
+
+                const editor = view.editor;
+                const cursor = editor.getCursor();
+                if (!cursor) {
+                        return null;
+                }
+
+                const tagDetails = this.resolveInnermostTagUnderCursor(editor, cursor);
+                if (!tagDetails) {
+                        return null;
+                }
+
+                const context: TreeOfThoughtOpenOptions = {
+                        tag: tagDetails.tag,
+                        taskHint: {
+                                path: file.path,
+                                line: tagDetails.line,
+                                blockId: tagDetails.blockId ?? null,
+                                text: tagDetails.text
+                        }
+                };
+
+                return context;
+        }
+
+        private resolveInnermostTagUnderCursor(editor: Editor, cursor: EditorPosition): { tag: string; line: number; text: string; blockId: string | null } | null {
+                const listPattern = /^\s*[-*+]\s/;
+                const totalLines = editor.lineCount();
+                if (totalLines === 0) {
+                        return null;
+                }
+
+                const startLine = Math.max(0, Math.min(cursor.line, totalLines - 1));
+                let currentIndent = this.getLineIndentation(editor.getLine(startLine));
+
+                for (let line = startLine; line >= 0; line--) {
+                        const rawLine = editor.getLine(line);
+                        if (!rawLine) {
+                                continue;
+                        }
+
+                        const trimmed = rawLine.trim();
+                        if (!trimmed) {
+                                continue;
+                        }
+
+                        const indent = this.getLineIndentation(rawLine);
+                        if (indent > currentIndent) {
+                                continue;
+                        }
+
+                        currentIndent = indent;
+                        if (!listPattern.test(rawLine)) {
+                                continue;
+                        }
+
+                        const tags = trimmed.match(/#[^\s#]+/g);
+                        if (!tags || tags.length === 0) {
+                                continue;
+                        }
+
+                        const tag = tags[tags.length - 1];
+                        const blockMatch = rawLine.match(/\^([A-Za-z0-9-]+)/);
+
+                        return {
+                                tag,
+                                line,
+                                text: trimmed,
+                                blockId: blockMatch?.[1] ?? null
+                        };
+                }
+
+                return null;
+        }
+
+        private getLineIndentation(line: string | undefined): number {
+                if (!line) {
+                        return 0;
+                }
+                const match = line.match(/^\s*/);
+                return match ? match[0].length : 0;
+        }
+
+        private selectMultiLineCode(fullText: string, clickPos: number) {
+                // Find previous ```
+                let start = clickPos;
+                while (start >= 0 && fullText.slice(start, start + 3) !== '```') {
+                  start--;
 		}
 		if (start < 0) return null;
 	  
