@@ -886,15 +886,39 @@ export class TaskManager {
 
     private extractHeadingSectionFromLines(lines: string[], startLine: number, level: number): string {
         const snippet: string[] = [];
+        const startLineValue = lines[startLine] ?? '';
+        let fence = this.detectCodeFence(this.normalizeIndentation(startLineValue));
+        let inCodeFence = Boolean(fence);
+
         for (let i = startLine; i < lines.length; i++) {
-            if (i > startLine) {
-                const headingMatch = lines[i].match(/^(#+)\s+/);
+            const originalLine = lines[i];
+            const normalizedLine = this.normalizeIndentation(originalLine);
+
+            const fenceInfo = this.detectCodeFence(normalizedLine);
+            if (fenceInfo) {
+                snippet.push(originalLine);
+                if (inCodeFence) {
+                    if (fence && fenceInfo.char === fence.char && fenceInfo.length >= fence.length) {
+                        fence = null;
+                        inCodeFence = false;
+                    }
+                } else {
+                    fence = fenceInfo;
+                    inCodeFence = true;
+                }
+                continue;
+            }
+
+            if (i > startLine && !inCodeFence) {
+                const headingMatch = normalizedLine.match(/^(#+)\s+/);
                 if (headingMatch && headingMatch[1].length <= level) {
                     break;
                 }
             }
-            snippet.push(lines[i]);
+
+            snippet.push(originalLine);
         }
+
         return snippet.join('\n');
     }
 
