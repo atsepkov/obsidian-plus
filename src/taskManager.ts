@@ -851,7 +851,16 @@ export class TaskManager {
             }
         }
 
-        return lines.slice(0, 40).join('\n');
+        const limit = 40;
+        const snippetLength = Math.min(lines.length, limit);
+        const snippet = lines.slice(0, snippetLength).join('\n');
+
+        if (!link.anchor && lines.length > limit) {
+            const notice = `\n\n> _Note: preview truncated to the first ${limit} lines._`;
+            return `${snippet}${notice}`;
+        }
+
+        return snippet;
     }
 
     private findHeadingLine(file: TFile, lines: string[], anchor: string): { index: number; level: number } | null {
