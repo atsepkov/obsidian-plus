@@ -292,6 +292,7 @@ async function buildOriginSection(
   let targetAnchor: string | null = blockId ? `^${blockId.replace(/^[#^]/, "")}` : null;
   let targetLine: number | null = null;
   let sourceSnippet: string | undefined;
+  let outlineRootText: string | undefined;
 
   if (startLine != null) {
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
@@ -308,6 +309,7 @@ async function buildOriginSection(
         label = summarizeSegments(parentSegments) || summary.summary;
         tooltip = summary.tooltip;
       }
+      outlineRootText = outline.rootText;
       if (outline.rootAnchor) {
         targetAnchor = outline.rootAnchor;
       }
@@ -339,7 +341,7 @@ async function buildOriginSection(
   }
 
   if (markdown.trim()) {
-    markdown = ensureChildrenOnly(markdown).trimEnd();
+    markdown = ensureChildrenOnly(markdown, outlineRootText).trimEnd();
   }
 
   if (!markdown.trim() && !headerMarkdown) {
@@ -1170,7 +1172,7 @@ function dedentLines(lines: string[]): string[] {
   });
 }
 
-function ensureChildrenOnly(markdown: string): string {
+function ensureChildrenOnly(markdown: string, rootText?: string | null): string {
   const lines = markdown.split(/\r?\n/);
   if (!lines.length) {
     return markdown;
@@ -1181,7 +1183,16 @@ function ensureChildrenOnly(markdown: string): string {
     return "";
   }
 
-  if (!isListItem(lines[firstContentIndex])) {
+  const firstLine = lines[firstContentIndex];
+  if (!isListItem(firstLine)) {
+    return markdown.trimEnd();
+  }
+
+  const normalizedRoot = typeof rootText === "string" ? normalizeSnippet(rootText).trim() : "";
+  const normalizedFirst = stripListMarker(normalizeSnippet(firstLine)).trim();
+
+  const shouldStripFirst = Boolean(normalizedRoot) && normalizedFirst === normalizedRoot;
+  if (!shouldStripFirst) {
     return markdown.trimEnd();
   }
 
