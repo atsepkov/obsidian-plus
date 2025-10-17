@@ -12,7 +12,7 @@ import {
   type TaskContextSnapshot,
   type ThoughtOriginSection
 } from "./treeOfThought";
-import { isActiveStatus, normalizeStatusChar, parseStatusFilter } from "./statusFilters";
+import { ExpandMode, isActiveStatus, normalizeStatusChar, parseExpandFilter, parseStatusFilter } from "./statusFilters";
   
 export interface TaskEntry {
   file:   TFile;
@@ -30,6 +30,16 @@ export interface ThoughtTaskHint {
   line?: number | null;
   blockId?: string | null;
   text?: string | null;
+}
+
+interface SuggestionPreviewMetadata {
+  item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number };
+  lines: string[];
+  matchLine: string | null;
+  matchElement: HTMLElement | null;
+  container: HTMLElement | null;
+  renderedAll: boolean;
+  filePath: string;
 }
 
 export interface TreeOfThoughtOpenOptions {
@@ -371,6 +381,10 @@ function escapeCssIdentifier(value: string): string {
     private initialThoughtRequest: TreeOfThoughtOpenOptions | null;
     private initialThoughtAttempts = 0;
     private initialThoughtTimer: number | null = null;
+    private expandMode: ExpandMode = "none";
+    private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
+    private expandRefreshScheduled = false;
+    private pointerExpandListener: ((evt: Event) => void) | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -446,6 +460,11 @@ function escapeCssIdentifier(value: string): string {
           this.detectMode();          // ② tagMode = true
           this.scheduleSuggestionRefresh();   // ③ show tags immediately
         }
+
+        if (!this.pointerExpandListener) {
+          this.pointerExpandListener = () => this.scheduleExpandRefresh();
+        }
+        this.resultContainerEl?.addEventListener("mouseover", this.pointerExpandListener);
     }
 
     onClose() {
@@ -456,6 +475,10 @@ function escapeCssIdentifier(value: string): string {
         }
         this.initialThoughtRequest = null;
         this.initialThoughtAttempts = 0;
+
+        if (this.pointerExpandListener) {
+          this.resultContainerEl?.removeEventListener("mouseover", this.pointerExpandListener);
+        }
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -504,6 +527,10 @@ function escapeCssIdentifier(value: string): string {
             showIndex: true
           });
           return;
+        }
+
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(evt.key)) {
+          this.scheduleExpandRefresh();
         }
     }
 
@@ -1513,19 +1540,202 @@ function escapeCssIdentifier(value: string): string {
             this.plugin
         );
 
-        if (hit && hit !== task.text) {
-            const div = el.createDiv({ cls: "child-line" });   // style below
-            await MarkdownRenderer.render(this.app, '- ' + hit, div, file?.path ?? filePath ?? "", this.plugin);
+        const normalizedHit = typeof hit === "string" ? hit.trim() : "";
+        const normalizedRoot = (task.text ?? "").trim();
+        const matchLine = normalizedHit && normalizedHit !== normalizedRoot ? normalizedHit : null;
+        const markdownSource = file?.path ?? filePath ?? this.app.workspace.getActiveFile()?.path ?? "";
+
+        let matchElement: HTMLElement | null = null;
+        if (matchLine) {
+          matchElement = el.createDiv({ cls: "child-line" });
+          try {
+            await MarkdownRenderer.render(this.app, `- ${matchLine}`, matchElement, markdownSource, this.plugin);
+          } catch (error) {
+            console.error("Failed to render task preview line", error);
+            matchElement.setText(`- ${matchLine}`);
+          }
+          this.bindInternalLinkHandlers(matchElement, markdownSource);
         }
 
-        el.querySelectorAll("a.internal-link").forEach(a => {
-            a.addEventListener("click", evt => {
-                evt.preventDefault();
-                evt.stopPropagation();
-                const target = (a as HTMLAnchorElement).getAttribute("href")!;
-                this.app.workspace.openLinkText(target, file.path, false);
-                this.close();
-            });
+        const metadata: SuggestionPreviewMetadata = {
+          item,
+          lines: this.collectChildPreviewLines(task),
+          matchLine,
+          matchElement,
+          container: null,
+          renderedAll: false,
+          filePath: markdownSource,
+        };
+
+        this.previewMetadata.set(el, metadata);
+
+        const suggestionIndex = this.resolveSuggestionIndex(item);
+        if (suggestionIndex != null) {
+          el.setAttr("data-suggestion-index", `${suggestionIndex}`);
+        } else {
+          el.removeAttribute("data-suggestion-index");
+        }
+
+        await this.applyExpandModeToElement(el, metadata, suggestionIndex);
+        this.scheduleExpandRefresh();
+        this.bindInternalLinkHandlers(el, markdownSource);
+    }
+
+    private collectChildPreviewLines(task: TaskEntry): string[] {
+        if (!Array.isArray(task.lines) || task.lines.length <= 1) {
+          return [];
+        }
+
+        const seen = new Set<string>();
+        const result: string[] = [];
+
+        task.lines.forEach((line, index) => {
+          if (index === 0) {
+            return;
+          }
+          const trimmed = typeof line === "string" ? line.trim() : "";
+          if (!trimmed.length) {
+            return;
+          }
+          if (seen.has(trimmed)) {
+            return;
+          }
+          seen.add(trimmed);
+          result.push(trimmed);
+        });
+
+        return result;
+    }
+
+    private resolveSuggestionIndex(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }): number | null {
+        const chooser = this.chooser as any;
+        if (chooser?.values) {
+          const idx = chooser.values.indexOf(item);
+          if (idx !== -1) {
+            return idx;
+          }
+        }
+
+        const fallback = this.lastTaskSuggestions.indexOf(item);
+        return fallback !== -1 ? fallback : null;
+    }
+
+    private isMetadataSelected(metadata: SuggestionPreviewMetadata, fallbackIndex: number | null): boolean {
+        const chooser = this.chooser as any;
+        if (!chooser) {
+          return false;
+        }
+
+        const selected = chooser.selectedItem;
+        if (selected == null || selected < 0) {
+          return false;
+        }
+
+        if (Array.isArray(chooser.values) && chooser.values[selected] === metadata.item) {
+          return true;
+        }
+
+        return fallbackIndex != null && selected === fallbackIndex;
+    }
+
+    private async applyExpandModeToElement(
+      el: HTMLElement,
+      metadata: SuggestionPreviewMetadata,
+      fallbackIndex: number | null
+    ): Promise<void> {
+        const shouldExpandAll =
+          this.expandMode === "all" ||
+          (this.expandMode === "focus" && this.isMetadataSelected(metadata, fallbackIndex));
+
+        const showMatchLine = Boolean(metadata.matchLine) && !shouldExpandAll;
+        if (metadata.matchElement) {
+          metadata.matchElement.style.display = showMatchLine ? "" : "none";
+        }
+
+        if (!metadata.lines.length) {
+          if (metadata.container) {
+            metadata.container.style.display = "none";
+          }
+          return;
+        }
+
+        if (!metadata.container) {
+          metadata.container = el.createDiv({ cls: "child-preview" });
+          metadata.container.style.display = "none";
+        }
+
+        if (shouldExpandAll) {
+          if (!metadata.renderedAll) {
+            metadata.container.empty();
+            for (const line of metadata.lines) {
+              const trimmed = line.trim();
+              if (!trimmed.length) {
+                continue;
+              }
+              const child = metadata.container.createDiv({ cls: "child-line" });
+              try {
+                await MarkdownRenderer.render(this.app, `- ${trimmed}`, child, metadata.filePath, this.plugin);
+              } catch (error) {
+                console.error("Failed to render expanded task line", error);
+                child.setText(`- ${trimmed}`);
+              }
+            }
+            metadata.renderedAll = true;
+            this.bindInternalLinkHandlers(metadata.container, metadata.filePath);
+          }
+          metadata.container.style.display = "";
+        } else {
+          metadata.container.style.display = "none";
+        }
+    }
+
+    private scheduleExpandRefresh(): void {
+        if (this.expandRefreshScheduled) {
+          return;
+        }
+        this.expandRefreshScheduled = true;
+        window.requestAnimationFrame(() => {
+          this.expandRefreshScheduled = false;
+          this.refreshExpandState();
+        });
+    }
+
+    private refreshExpandState(): void {
+        if (!this.resultContainerEl) {
+          return;
+        }
+
+        const items = Array.from(this.resultContainerEl.querySelectorAll<HTMLElement>(".suggestion-item"));
+        for (const el of items) {
+          const metadata = this.previewMetadata.get(el);
+          if (!metadata) {
+            continue;
+          }
+
+          const indexAttr = el.getAttribute("data-suggestion-index");
+          const parsedIndex = indexAttr != null && indexAttr.length ? Number(indexAttr) : null;
+          const fallbackIndex = typeof parsedIndex === "number" && Number.isFinite(parsedIndex) ? parsedIndex : null;
+          void this.applyExpandModeToElement(el, metadata, fallbackIndex);
+        }
+    }
+
+    private bindInternalLinkHandlers(root: HTMLElement, sourcePath: string): void {
+        const fallback = sourcePath || this.app.workspace.getActiveFile()?.path || "";
+        root.querySelectorAll<HTMLAnchorElement>("a.internal-link").forEach(link => {
+          if (link.dataset.plusFuzzyBound === "true") {
+            return;
+          }
+          link.dataset.plusFuzzyBound = "true";
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            const target = link.getAttribute("href") ?? "";
+            if (!target) {
+              return;
+            }
+            this.app.workspace.openLinkText(target, fallback, false);
+            this.close();
+          });
         });
     }
 
@@ -2406,6 +2616,7 @@ function escapeCssIdentifier(value: string): string {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
             this.lastTaskSuggestions = [];
+            this.expandMode = "none";
             const tags      = getAllTags(this.app);   // already sorted
             const q         = query.replace(/^#/, "").trim();
 
@@ -2434,6 +2645,9 @@ function escapeCssIdentifier(value: string): string {
         let body  = query.replace(/^#\S+\s/, "");           // user’s filter
         const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(body);
         body = cleanedQuery;
+        const expandResult = parseExpandFilter(body);
+        body = expandResult.cleanedQuery;
+        this.expandMode = expandResult.expandMode;
         if (hadStatusFilter && desiredStatus === null) {
           return [];
         }

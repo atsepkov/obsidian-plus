@@ -288,3 +288,51 @@ export function parseStatusFilter(query: string): StatusFilterParseResult {
     hadStatusFilter: true,
   };
 }
+
+export type ExpandMode = "none" | "focus" | "all";
+
+export interface ExpandFilterParseResult {
+  cleanedQuery: string;
+  expandMode: ExpandMode;
+  hadExpandFilter: boolean;
+}
+
+const EXPAND_REGEX = /\bexpand:\s*([^\s]*)/i;
+
+export function parseExpandFilter(query: string): ExpandFilterParseResult {
+  const match = query.match(EXPAND_REGEX);
+  if (!match) {
+    return {
+      cleanedQuery: query.trim(),
+      expandMode: "none",
+      hadExpandFilter: false,
+    };
+  }
+
+  const raw = (match[1] ?? "").trim();
+  const cleanedQuery = query.replace(match[0], "").replace(/\s+/g, " ").trim();
+
+  if (!raw) {
+    return {
+      cleanedQuery,
+      expandMode: "none",
+      hadExpandFilter: false,
+    };
+  }
+
+  const normalized = raw.toLowerCase();
+  const expandMode: ExpandMode =
+    normalized === "all"
+      ? "all"
+      : normalized === "focus"
+      ? "focus"
+      : normalized === "none"
+      ? "none"
+      : "none";
+
+  return {
+    cleanedQuery,
+    expandMode,
+    hadExpandFilter: true,
+  };
+}
