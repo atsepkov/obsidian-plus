@@ -160,6 +160,25 @@ export function parseStatusCycleConfig(raw: unknown): TaskStatusChar[] | null {
         return;
       }
 
+      if (trimmed.includes(">")) {
+        trimmed
+          .split(">")
+          .map((segment) => segment.trim())
+          .filter(Boolean)
+          .forEach((segment) => pushValue(segment));
+        return;
+      }
+
+      const bracketMatch = trimmed.match(/^\[\s*(.)?\s*\]$/);
+      if (bracketMatch) {
+        const inner = bracketMatch[1] ?? " ";
+        const normalized = normalizeStatusChar(inner);
+        if (!result.includes(normalized)) {
+          result.push(normalized);
+        }
+        return;
+      }
+
       if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
         try {
           const parsed = JSON.parse(trimmed);
