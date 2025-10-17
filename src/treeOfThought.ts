@@ -1,6 +1,8 @@
 import { App, TFile } from "obsidian";
 import type { TaskEntry } from "./fuzzyFinder";
 
+const DOCUMENT_PREVIEW_LINE_LIMIT = 40;
+
 interface TaskContextEntry {
   indent?: number;
   bullet?: string;
@@ -13,7 +15,7 @@ interface ThoughtBacklink {
   snippet?: string;
 }
 
-type ThoughtLinkPreview = string | null | { error?: string };
+export type ThoughtLinkPreview = string | null | { error?: string };
 
 type ParentContextType = "heading" | "list" | "paragraph";
 
@@ -292,6 +294,7 @@ async function buildOriginSection(
   let targetAnchor: string | null = blockId ? `^${blockId.replace(/^[#^]/, "")}` : null;
   let targetLine: number | null = null;
   let sourceSnippet: string | undefined;
+  let outlineRootText: string | undefined;
 
   if (startLine != null) {
     headerMarkdown = normalizeSnippet(lines[startLine]).trimEnd() || undefined;
@@ -308,6 +311,7 @@ async function buildOriginSection(
         label = summarizeSegments(parentSegments) || summary.summary;
         tooltip = summary.tooltip;
       }
+      outlineRootText = outline.rootText;
       if (outline.rootAnchor) {
         targetAnchor = outline.rootAnchor;
       }
@@ -339,7 +343,7 @@ async function buildOriginSection(
   }
 
   if (markdown.trim()) {
-    markdown = ensureChildrenOnly(markdown).trimEnd();
+    markdown = ensureChildrenOnly(markdown, outlineRootText).trimEnd();
   }
 
   if (!markdown.trim() && !headerMarkdown) {
@@ -468,9 +472,12 @@ async function injectInternalLinkSections(
 
   const previewMap = new Map<string, string>();
   if (linkMap) {
-    const entries = Object.entries(linkMap).filter(([, value]) => typeof value === "string" && value.trim());
+    const entries = Object.entries(linkMap);
     for (const [raw, value] of entries) {
-      const trimmed = typeof value === "string" ? value.trim() : "";
+      if (typeof value !== "string") {
+        continue;
+      }
+      const trimmed = value.trim();
       if (!trimmed) {
         continue;
       }
@@ -541,9 +548,12 @@ async function collectInternalLinkSections(
 
     let preview: string | null = previewMap.get(raw) ?? null;
     if (!preview || !preview.trim()) {
-      preview = await resolveThoughtLinkPreview(app, targetFile, parsed);
-      if (preview?.trim()) {
-        previewMap.set(raw, preview);
+      const resolved = await resolveThoughtLinkPreview(app, targetFile, parsed);
+      if (typeof resolved === "string" && resolved.trim()) {
+        preview = resolved;
+        previewMap.set(raw, resolved.trim());
+      } else {
+        preview = null;
       }
     }
 
@@ -574,7 +584,8 @@ async function collectInternalLinkSections(
       segments,
       targetAnchor,
       tooltip: undefined,
-      targetLine: undefined
+      targetLine: undefined,
+      sourceMarkdown: preview
     });
 
     used.add(raw);
@@ -587,7 +598,7 @@ async function resolveThoughtLinkPreview(
   app: App,
   targetFile: TFile,
   parsed: ParsedThoughtLink
-): Promise<string | null> {
+): Promise<ThoughtLinkPreview> {
   const lines = await readFileLines(app, targetFile);
   if (!lines.length) {
     return null;
@@ -606,7 +617,16 @@ async function resolveThoughtLinkPreview(
     }
   }
 
-  return lines.slice(0, Math.min(lines.length, 40)).join("\n");
+  const limit = DOCUMENT_PREVIEW_LINE_LIMIT;
+  const snippetLength = Math.min(lines.length, limit);
+  const snippet = lines.slice(0, snippetLength).join("\n");
+
+  if (!anchor && lines.length > limit) {
+    const notice = `\n\n> _Note: preview truncated to the first ${limit} lines._`;
+    return `${snippet}${notice}`;
+  }
+
+  return snippet;
 }
 
 function extractBlockPreview(lines: string[], anchor: string): string | null {
@@ -1170,7 +1190,7 @@ function dedentLines(lines: string[]): string[] {
   });
 }
 
-function ensureChildrenOnly(markdown: string): string {
+function ensureChildrenOnly(markdown: string, rootText?: string | null): string {
   const lines = markdown.split(/\r?\n/);
   if (!lines.length) {
     return markdown;
@@ -1181,7 +1201,16 @@ function ensureChildrenOnly(markdown: string): string {
     return "";
   }
 
-  if (!isListItem(lines[firstContentIndex])) {
+  const firstLine = lines[firstContentIndex];
+  if (!isListItem(firstLine)) {
+    return markdown.trimEnd();
+  }
+
+  const normalizedRoot = typeof rootText === "string" ? normalizeSnippet(rootText).trim() : "";
+  const normalizedFirst = stripListMarker(normalizeSnippet(firstLine)).trim();
+
+  const shouldStripFirst = Boolean(normalizedRoot) && normalizedFirst === normalizedRoot;
+  if (!shouldStripFirst) {
     return markdown.trimEnd();
   }
 

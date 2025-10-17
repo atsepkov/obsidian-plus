@@ -24,6 +24,24 @@ export interface TaskEntry {
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
 }
 
+export interface ThoughtTaskHint {
+  path?: string | null;
+  line?: number | null;
+  blockId?: string | null;
+  text?: string | null;
+}
+
+export interface TreeOfThoughtOpenOptions {
+  tag: string;
+  taskHint?: ThoughtTaskHint | null;
+  search?: string | null;
+}
+
+export interface TaskTagModalOptions {
+  allowInsertion?: boolean;
+  initialThought?: TreeOfThoughtOpenOptions | null;
+}
+
 interface ThoughtViewState {
   key: string;
   cacheIndex: number;
@@ -296,7 +314,7 @@ function escapeCssIdentifier(value: string): string {
     private plugin: Plugin;
     private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position } | null;
     private readonly allowInsertion: boolean;
-  
+
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
     private activeTag = "#";
@@ -320,16 +338,22 @@ function escapeCssIdentifier(value: string): string {
       thoughtCacheKey: string | null;
     } | null = null;
     private suggestionRefreshScheduled = false;
-  
+    private initialThoughtRequest: TreeOfThoughtOpenOptions | null;
+    private initialThoughtAttempts = 0;
+    private initialThoughtTimer: number | null = null;
+
     constructor(app: App, plugin: Plugin,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
-                options?: { allowInsertion?: boolean }) {
+                options?: TaskTagModalOptions) {
       super(app);
       this.plugin = plugin;
       this.replaceRange = range ?? null;
       this.allowInsertion = options?.allowInsertion ?? true;
+      this.initialThoughtRequest = options?.initialThought
+        ? this.normalizeInitialThought(options.initialThought)
+        : null;
       this.projectTag = this.detectProject();
-  
+
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
       this.setInstructions([
         { command: "↑↓",  purpose: "select" },
@@ -372,9 +396,36 @@ function escapeCssIdentifier(value: string): string {
     onOpen() {
         super.onOpen?.();                    // (safe even if base is empty)
 
-        this.inputEl.value = "#";   // ① prefill “#”
-        this.detectMode();          // ② tagMode = true
-        this.scheduleSuggestionRefresh();   // ③ show tags immediately
+        if (this.initialThoughtRequest) {
+          const baseTag = this.initialThoughtRequest.tag || "#";
+          const normalizedTag = this.normalizeTag(baseTag);
+          const search = (this.initialThoughtRequest.search ?? "").trim();
+          let initialQuery = `${normalizedTag} `;
+          if (search.length) {
+            initialQuery += `${search} `;
+          }
+          if (!initialQuery.endsWith(" ")) {
+            initialQuery += " ";
+          }
+          this.inputEl.value = initialQuery;
+          this.detectMode();
+          this.scheduleSuggestionRefresh();
+          window.setTimeout(() => this.attemptInitialThoughtActivation(), 0);
+        } else {
+          this.inputEl.value = "#";   // ① prefill “#”
+          this.detectMode();          // ② tagMode = true
+          this.scheduleSuggestionRefresh();   // ③ show tags immediately
+        }
+    }
+
+    onClose() {
+        super.onClose?.();
+        if (this.initialThoughtTimer != null) {
+          window.clearTimeout(this.initialThoughtTimer);
+          this.initialThoughtTimer = null;
+        }
+        this.initialThoughtRequest = null;
+        this.initialThoughtAttempts = 0;
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -535,6 +586,185 @@ function escapeCssIdentifier(value: string): string {
         }
     }
 
+    private normalizeTag(tag: string): string {
+        if (!tag) {
+          return "#";
+        }
+        return tag.startsWith("#") ? tag : `#${tag}`;
+    }
+
+    private normalizeInitialThought(input: TreeOfThoughtOpenOptions): TreeOfThoughtOpenOptions {
+        const normalized: TreeOfThoughtOpenOptions = {
+          tag: this.normalizeTag(input.tag),
+          search: input.search ?? null,
+          taskHint: input.taskHint ? { ...input.taskHint } : null
+        };
+        return normalized;
+    }
+
+    private scheduleInitialThoughtRetry(delay = 200): void {
+        if (this.initialThoughtTimer != null) {
+          window.clearTimeout(this.initialThoughtTimer);
+        }
+        this.initialThoughtTimer = window.setTimeout(() => {
+          this.initialThoughtTimer = null;
+          this.attemptInitialThoughtActivation();
+        }, delay);
+    }
+
+    private attemptInitialThoughtActivation(): void {
+        if (!this.initialThoughtRequest) {
+          return;
+        }
+
+        const tag = this.normalizeTag(this.initialThoughtRequest.tag);
+        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
+          ? this.projectTag
+          : null;
+        const key = project ? `${project}|${tag}` : tag;
+
+        if (!this.taskCache[key] && cache[key]?.length) {
+          this.taskCache[key] = cache[key];
+        }
+
+        const tasks = this.taskCache[key];
+        if (!tasks || !tasks.length) {
+          collectTasksLazy(tag, this.plugin, () => this.scheduleSuggestionRefresh(), project ?? undefined);
+          this.scheduleInitialThoughtRetry();
+          return;
+        }
+
+        const hint = this.initialThoughtRequest.taskHint ?? null;
+        const index = this.findTaskIndexForHint(key, hint);
+        if (index == null || index < 0 || index >= tasks.length) {
+          if (this.initialThoughtAttempts >= 8) {
+            this.initialThoughtRequest = null;
+            this.initialThoughtAttempts = 0;
+            return;
+          }
+          this.initialThoughtAttempts++;
+          this.scheduleInitialThoughtRetry();
+          return;
+        }
+
+        const task = tasks[index];
+        this.initialThoughtAttempts = 0;
+        this.enterThoughtMode(key, {
+          displayIndex: index,
+          cacheIndex: index,
+          task,
+          showIndex: false
+        });
+        this.initialThoughtRequest = null;
+    }
+
+    private findTaskIndexForHint(key: string, hint: ThoughtTaskHint | null): number | null {
+        if (!hint) {
+          return null;
+        }
+        const list = this.taskCache[key];
+        if (!list || !list.length) {
+          return null;
+        }
+
+        for (let i = 0; i < list.length; i++) {
+          if (this.matchesTaskHint(list[i], hint)) {
+            return i;
+          }
+        }
+
+        return null;
+    }
+
+    private matchesTaskHint(task: TaskEntry, hint: ThoughtTaskHint): boolean {
+        if (!hint) {
+          return false;
+        }
+
+        const taskPath = this.extractTaskPath(task);
+        if (hint.path && taskPath && hint.path !== taskPath) {
+          return false;
+        }
+
+        const normalizedBlockId = hint.blockId?.trim();
+        if (normalizedBlockId) {
+          const taskBlockId = this.extractTaskBlockId(task);
+          if (taskBlockId && taskBlockId === normalizedBlockId) {
+            if (!hint.path || !taskPath || hint.path === taskPath) {
+              return true;
+            }
+          }
+        }
+
+        if (typeof hint.line === "number" && Number.isFinite(hint.line) && typeof task.line === "number") {
+          if (task.line === hint.line || task.line === hint.line - 1 || task.line === hint.line + 1) {
+            return true;
+          }
+        }
+
+        const normalizedHintText = hint.text ? normalizeTaskLine(hint.text) : "";
+        if (normalizedHintText) {
+          const normalizedTaskText = normalizeTaskLine(task.text ?? "");
+          if (normalizedTaskText && normalizedTaskText === normalizedHintText) {
+            return true;
+          }
+
+          if (Array.isArray(task.lines)) {
+            for (const line of task.lines) {
+              if (normalizeTaskLine(line) === normalizedHintText) {
+                return true;
+              }
+            }
+          }
+        }
+
+        if (normalizedBlockId) {
+          const fallbackBlockId = this.extractTaskBlockId(task);
+          if (fallbackBlockId && fallbackBlockId === normalizedBlockId) {
+            return true;
+          }
+        }
+
+        return false;
+    }
+
+    private extractTaskBlockId(task: TaskEntry): string | null {
+        if (task.id) {
+          return task.id;
+        }
+
+        const sources: string[] = [];
+        if (Array.isArray(task.lines)) {
+          for (const line of task.lines) {
+            if (typeof line === "string") {
+              sources.push(line);
+            }
+          }
+        }
+        if (typeof task.text === "string") {
+          sources.push(task.text);
+        }
+
+        for (const source of sources) {
+          const match = source.match(/\^([A-Za-z0-9-]+)/);
+          if (match && match[1]) {
+            return match[1];
+          }
+        }
+
+        return null;
+    }
+
+    private extractTaskPath(task: TaskEntry): string | null {
+        if (task.path) {
+          return task.path;
+        }
+        if (task.file?.path) {
+          return task.file.path;
+        }
+        return null;
+    }
+
     private scheduleSuggestionRefresh(): void {
         if (this.suggestionRefreshScheduled) {
           return;
@@ -659,7 +889,27 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
 
-        const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
+        const tagForQuery = this.extractTagFromCacheKey(key) ?? (this.activeTag || "#");
+        const baseFromInput = this.parseThoughtQuery(this.inputEl.value).baseQuery.trimEnd();
+        let base = baseFromInput || tagForQuery;
+
+        if (task) {
+          const rawText = (task.text ?? "").trim();
+          const normalizedTag = tagForQuery.trim();
+          let taskPortion = rawText;
+          if (normalizedTag && rawText) {
+            const lowerTag = normalizedTag.toLowerCase();
+            if (rawText.toLowerCase().startsWith(lowerTag)) {
+              taskPortion = rawText.slice(normalizedTag.length).trimStart();
+            }
+          }
+          if (taskPortion) {
+            base = `${normalizedTag} ${taskPortion}`.trimEnd();
+          } else if (!base.trim() && normalizedTag) {
+            base = normalizedTag;
+          }
+        }
+
         const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex + 1})` : "";
         let next = `${base}${indexFragment} > `;
         if (normalizedSearch.length) {
@@ -888,7 +1138,8 @@ function escapeCssIdentifier(value: string): string {
 
         const run = async () => {
           try {
-            let previewBlockId = state.blockId ?? state.task.id ?? "";
+            let previewBlockId = this.resolveThoughtBlockId(state, state.context ?? null);
+            const initialPreviewBlockId = previewBlockId;
 
             const previewChanged = await this.applyThoughtPreview(state, token, previewBlockId, state.context ?? undefined);
             if (!this.isCurrentThoughtState(state, token)) {
@@ -897,12 +1148,6 @@ function escapeCssIdentifier(value: string): string {
             if (previewChanged) {
               this.scheduleThoughtRerender();
             }
-
-            const blockId = await ensureBlockId(this.app, state.task);
-            if (!this.isCurrentThoughtState(state, token)) {
-              return;
-            }
-            state.blockId = blockId;
 
             let context = state.context ?? null;
             const provider = (this.plugin as any)?.getTaskContext;
@@ -920,17 +1165,20 @@ function escapeCssIdentifier(value: string): string {
 
             state.context = context;
 
-            if (blockId && blockId !== previewBlockId) {
-              previewBlockId = blockId;
-            }
+            const blockId = this.resolveThoughtBlockId(state, context);
 
-            const needsRefresh =
+            const originBlockId = this.normalizeBlockId(state.prefetchedOrigin?.targetAnchor ?? null);
+            let needsRefresh =
               !state.prefetchedOrigin ||
               !state.initialSections.length ||
-              (blockId && blockId !== state.prefetchedOrigin?.targetAnchor?.replace(/^\^/, ""));
+              (blockId && blockId !== originBlockId);
+
+            if (blockId && blockId !== initialPreviewBlockId) {
+              needsRefresh = true;
+            }
 
             if (needsRefresh) {
-              const refreshed = await this.applyThoughtPreview(state, token, previewBlockId, context ?? undefined);
+              const refreshed = await this.applyThoughtPreview(state, token, blockId, context ?? undefined);
               if (!this.isCurrentThoughtState(state, token)) {
                 return;
               }
@@ -939,10 +1187,12 @@ function escapeCssIdentifier(value: string): string {
               }
             }
 
+            const finalBlockId = this.resolveThoughtBlockId(state, context);
+
             const thought = await loadTreeOfThought({
               app: this.app,
               task: state.task,
-              blockId,
+              blockId: finalBlockId,
               context,
               prefetchedLines: state.prefetchedLines ?? undefined,
               prefetchedOrigin: state.prefetchedOrigin ?? undefined
@@ -1008,6 +1258,13 @@ function escapeCssIdentifier(value: string): string {
 
           state.prefetchedLines = previewResult.lines ?? null;
           state.prefetchedOrigin = previewResult.origin ?? null;
+
+          if (previewResult.origin?.targetAnchor) {
+            this.captureThoughtBlockId(state, previewResult.origin.targetAnchor);
+          }
+          if (previewResult.section?.targetAnchor) {
+            this.captureThoughtBlockId(state, previewResult.section.targetAnchor);
+          }
 
           let changed = false;
 
@@ -1119,7 +1376,59 @@ function escapeCssIdentifier(value: string): string {
 
         return { sections: filteredSections, references: filteredReferences };
     }
-  
+
+    private resolveThoughtBlockId(
+      state: ThoughtViewState,
+      context?: TaskContextSnapshot | null
+    ): string {
+        const contextBlockId = context?.blockId ?? state.context?.blockId ?? null;
+        const candidates = [
+          state.blockId,
+          contextBlockId,
+          state.prefetchedOrigin?.targetAnchor ?? null,
+          state.task?.id ?? null
+        ];
+
+        for (const candidate of candidates) {
+          const normalized = this.captureThoughtBlockId(state, candidate);
+          if (normalized) {
+            return normalized;
+          }
+        }
+
+        return "";
+    }
+
+    private captureThoughtBlockId(state: ThoughtViewState, value?: string | null): string {
+        const normalized = this.normalizeBlockId(value ?? null);
+        if (!normalized) {
+          return "";
+        }
+
+        if (state.blockId !== normalized) {
+          state.blockId = normalized;
+        }
+
+        if (state.task && state.task.id !== normalized) {
+          state.task.id = normalized;
+        }
+
+        return normalized;
+    }
+
+    private normalizeBlockId(value?: string | null): string {
+        if (!value) {
+          return "";
+        }
+
+        return value
+          .toString()
+          .trim()
+          .replace(/^#/, "")
+          .replace(/^\^/, "")
+          .trim();
+    }
+
     /* ---------- data ---------- */
     getItems() {
       if (this.tagMode) return getAllTags(this.app);
@@ -1434,18 +1743,8 @@ function escapeCssIdentifier(value: string): string {
             body.createEl("pre", { text: section.markdown });
           }
 
-          body.querySelectorAll("a.internal-link").forEach(link => {
-            link.addEventListener("click", evt => {
-              evt.preventDefault();
-              evt.stopPropagation();
-              const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
-              if (!target) {
-                return;
-              }
-              this.app.workspace.openLinkText(target, section.file.path, false);
-              this.close();
-            });
-          });
+          this.attachThoughtSectionLinkHandlers(body, section);
+
         }
 
         if (references.length) {
@@ -1515,6 +1814,29 @@ function escapeCssIdentifier(value: string): string {
             });
           }
         }
+    }
+
+    private attachThoughtSectionLinkHandlers(body: HTMLElement, section: ThoughtSection) {
+        const filePath = section.file?.path ?? "";
+
+        body.querySelectorAll("a.internal-link").forEach(link => {
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+            if (!target) {
+              return;
+            }
+            this.app.workspace.openLinkText(target, filePath, false);
+            this.close();
+          });
+        });
+
+        body.querySelectorAll("a.external-link").forEach(link => {
+          link.addEventListener("click", evt => {
+            evt.stopPropagation();
+          });
+        });
     }
 
     private async renderReferenceSegmentMarkdown(target: HTMLElement, markdown: string, filePath: string) {

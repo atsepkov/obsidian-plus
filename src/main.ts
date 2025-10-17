@@ -1,7 +1,7 @@
 import path from 'path';
 import {
-	App, Editor, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
+        App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
+        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
 import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -12,9 +12,17 @@ import { ConfigLoader } from './configLoader';
 // TODO: remove if no longer in use after refactor
 import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
-import { TaskTagTrigger, TaskTagModal } from './fuzzyFinder';
+import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
+
+type ResolvedTaskSearchContext = {
+        path: string;
+        line: number | null;
+        blockId: string | null;
+        searchText: string;
+        taskText: string;
+};
 
 const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
@@ -247,6 +255,23 @@ export default class ObsidianPlus extends Plugin {
                         name: 'Open FuzzyFinder',
                         callback: () => {
                                 new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
+                        }
+                });
+
+                this.addCommand({
+                        id: 'open-tree-of-thought-under-cursor',
+                        name: 'Open Tree of Thought Under Cursor',
+                        checkCallback: (checking: boolean) => {
+                                const canOpen = this.canOpenTreeOfThoughtUnderCursor();
+                                if (!canOpen) {
+                                        return false;
+                                }
+                                if (!checking) {
+                                        this.openTreeOfThoughtUnderCursor().catch(error => {
+                                                console.error('Failed to open tree of thought under cursor', error);
+                                        });
+                                }
+                                return true;
                         }
                 });
 
@@ -993,11 +1018,11 @@ export default class ObsidianPlus extends Plugin {
 		});
 	}
 
-	private hasBlockBacklinks(blockId: string): boolean {
-		const file = this.app.workspace.getActiveFile();
-		if (!file) {
-				return false;
-		}
+        private hasBlockBacklinks(blockId: string): boolean {
+                const file = this.app.workspace.getActiveFile();
+                if (!file) {
+                                return false;
+                }
 		const backlinks = this.app.metadataCache.getBacklinksForFile(file);
 		if (!backlinks) {
 				return false;
@@ -1010,15 +1035,248 @@ export default class ObsidianPlus extends Plugin {
 								return true;
 						}
 				}
-		}
-		return false;
-	}
+                }
+                return false;
+        }
 
-	private selectMultiLineCode(fullText: string, clickPos: number) {
-		// Find previous ```
-		let start = clickPos;
-		while (start >= 0 && fullText.slice(start, start + 3) !== '```') {
-		  start--;
+        private canOpenTreeOfThoughtUnderCursor(): boolean {
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (!view || !view.file) {
+                        return false;
+                }
+
+                const editor = view.editor;
+                const cursor = editor.getCursor();
+                if (!cursor) {
+                        return false;
+                }
+
+                const tagDetails = this.resolveInnermostTagUnderCursor(editor, cursor);
+                return !!tagDetails;
+        }
+
+        private async openTreeOfThoughtUnderCursor(): Promise<void> {
+                const context = await this.buildTreeOfThoughtContext();
+                if (!context) {
+                        return;
+                }
+
+                new TaskTagModal(this.app, this, null, {
+                        allowInsertion: false,
+                        initialThought: context
+                }).open();
+        }
+
+        private async buildTreeOfThoughtContext(): Promise<TreeOfThoughtOpenOptions | null> {
+                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+                if (!view) {
+                        return null;
+                }
+
+                const file = view.file;
+                if (!file) {
+                        return null;
+                }
+
+                const editor = view.editor;
+                const cursor = editor.getCursor();
+                if (!cursor) {
+                        return null;
+                }
+
+                const tagDetails = this.resolveInnermostTagUnderCursor(editor, cursor);
+                if (!tagDetails) {
+                        return null;
+                }
+
+                const resolved = await this.resolveTaskSearchContext(file, editor, tagDetails);
+                const searchSource = resolved?.searchText ?? tagDetails.text;
+                const search = this.deriveInitialThoughtSearch(searchSource, tagDetails.tag);
+
+                const context: TreeOfThoughtOpenOptions = {
+                        tag: tagDetails.tag,
+                        taskHint: {
+                                path: resolved?.path ?? file.path,
+                                line: resolved?.line ?? tagDetails.line,
+                                blockId: resolved?.blockId ?? tagDetails.blockId ?? null,
+                                text: resolved?.taskText ?? tagDetails.text
+                        },
+                        search: search ?? null
+                };
+
+                return context;
+        }
+
+        private resolveInnermostTagUnderCursor(editor: Editor, cursor: EditorPosition): { tag: string; line: number; text: string; blockId: string | null } | null {
+                const listPattern = /^\s*[-*+]\s/;
+                const totalLines = editor.lineCount();
+                if (totalLines === 0) {
+                        return null;
+                }
+
+                const startLine = Math.max(0, Math.min(cursor.line, totalLines - 1));
+                let currentIndent = this.getLineIndentation(editor.getLine(startLine));
+
+                for (let line = startLine; line >= 0; line--) {
+                        const rawLine = editor.getLine(line);
+                        if (!rawLine) {
+                                continue;
+                        }
+
+                        const trimmed = rawLine.trim();
+                        if (!trimmed) {
+                                continue;
+                        }
+
+                        const indent = this.getLineIndentation(rawLine);
+                        if (indent > currentIndent) {
+                                continue;
+                        }
+
+                        currentIndent = indent;
+                        if (!listPattern.test(rawLine)) {
+                                continue;
+                        }
+
+                        const tags: string[] = [];
+                        const tagPattern = /#[^\s#]+/g;
+                        let match: RegExpExecArray | null;
+                        while ((match = tagPattern.exec(trimmed)) !== null) {
+                                const index = match.index;
+                                if (index === 0 || /\s/.test(trimmed[index - 1])) {
+                                        tags.push(match[0]);
+                                }
+                        }
+
+                        if (tags.length === 0) {
+                                continue;
+                        }
+
+                        const tag = tags[tags.length - 1];
+                        const blockMatch = rawLine.match(/\^([A-Za-z0-9-]+)/);
+
+                        return {
+                                tag,
+                                line,
+                                text: trimmed,
+                                blockId: blockMatch?.[1] ?? null
+                        };
+                }
+
+                return null;
+        }
+
+        private async resolveTaskSearchContext(file: TFile, editor: Editor, tagDetails: { tag: string; line: number; text: string; blockId: string | null }): Promise<ResolvedTaskSearchContext> {
+                const baseText = tagDetails.text ?? '';
+                const fallback: ResolvedTaskSearchContext = {
+                        path: file.path,
+                        line: tagDetails.line,
+                        blockId: tagDetails.blockId ?? null,
+                        searchText: baseText,
+                        taskText: baseText
+                };
+
+                const blockLink = this.extractBlockLinkTarget(baseText);
+                if (!blockLink || !blockLink.blockId) {
+                        return fallback;
+                }
+
+                const sourcePath = file.path;
+                const targetFile = this.app.metadataCache.getFirstLinkpathDest(blockLink.path ?? sourcePath, sourcePath);
+                if (!targetFile) {
+                        return fallback;
+                }
+
+                const cache = this.app.metadataCache.getFileCache(targetFile);
+                const blockInfo = cache?.blocks?.[blockLink.blockId];
+                if (!blockInfo) {
+                        return fallback;
+                }
+
+                let lineText = '';
+                if (targetFile.path === file.path) {
+                        lineText = editor.getLine(blockInfo.position.start.line) ?? '';
+                } else {
+                        try {
+                                const contents = await this.app.vault.cachedRead(targetFile);
+                                const lines = contents.split(/\r?\n/);
+                                lineText = lines[blockInfo.position.start.line] ?? '';
+                        } catch (error) {
+                                console.error('Failed to resolve block reference for tree of thought search', {
+                                        error,
+                                        targetPath: targetFile.path,
+                                        blockId: blockLink.blockId
+                                });
+                                return fallback;
+                        }
+                }
+
+                const trimmedLine = lineText.trim();
+
+                return {
+                        path: targetFile.path,
+                        line: blockInfo.position.start.line,
+                        blockId: blockLink.blockId,
+                        searchText: trimmedLine || fallback.searchText,
+                        taskText: trimmedLine || fallback.taskText
+                };
+        }
+
+        private extractBlockLinkTarget(line: string): { path: string | null; blockId: string | null } | null {
+                const blockLinkMatch = line.match(/\[\[([^\]|#]*?)(?:#\^([^\]|]+))?(?:\|[^\]]*)?\]\]/);
+                if (!blockLinkMatch) {
+                        return null;
+                }
+
+                const linkPath = blockLinkMatch[1] ?? '';
+                const blockId = blockLinkMatch[2] ?? null;
+                if (!blockId) {
+                        return null;
+                }
+
+                return {
+                        path: linkPath || null,
+                        blockId
+                };
+        }
+
+        private deriveInitialThoughtSearch(rawLine: string | undefined, tag: string): string | null {
+                if (!rawLine) {
+                        return null;
+                }
+
+                const withoutBlock = rawLine.replace(/\s*\^[A-Za-z0-9-]+$/, "");
+                const withoutBullet = withoutBlock.replace(/^[-*+]\s*(\[[^\]]*\]\s*)?/, "");
+                const normalized = withoutBullet.trim();
+                if (!normalized) {
+                        return null;
+                }
+
+                const normalizedTag = (tag ?? "").trim();
+                if (!normalizedTag) {
+                        return normalized || null;
+                }
+
+                const tokens = normalized.split(/\s+/);
+                const lowerTag = normalizedTag.toLowerCase();
+                const filtered = tokens.filter(token => token.toLowerCase() !== lowerTag);
+                const result = filtered.join(" ").trim();
+                return result || null;
+        }
+
+        private getLineIndentation(line: string | undefined): number {
+                if (!line) {
+                        return 0;
+                }
+                const match = line.match(/^\s*/);
+                return match ? match[0].length : 0;
+        }
+
+        private selectMultiLineCode(fullText: string, clickPos: number) {
+                // Find previous ```
+                let start = clickPos;
+                while (start >= 0 && fullText.slice(start, start + 3) !== '```') {
+                  start--;
 		}
 		if (start < 0) return null;
 	  
