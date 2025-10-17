@@ -15,6 +15,7 @@ import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirr
 import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
+import { advanceStatus, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
 
 type ResolvedTaskSearchContext = {
         path: string;
@@ -32,12 +33,13 @@ const dimLineDecoration = Decoration.line({
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 interface ObsidianPlusSettings {
-	tagListFilePath: string;
-	tagColors: string[];
-	taskTags: string[];
-	webTags: { [key: string]: string };
-	tagDescriptions: { [key: string]: string };
-	subscribe: Record<string,{ connector:TagConnector; interval:number }>;
+        tagListFilePath: string;
+        tagColors: string[];
+        taskTags: string[];
+        webTags: { [key: string]: string };
+        tagDescriptions: { [key: string]: string };
+        subscribe: Record<string,{ connector:TagConnector; interval:number }>;
+        statusCycles: Record<string, TaskStatusChar[]>;
 	
         /** tags representing projects (root bullets) */
         projects: string[];
@@ -49,12 +51,13 @@ interface ObsidianPlusSettings {
 }
 
 const DEFAULT_SETTINGS: ObsidianPlusSettings = {
-	tagListFilePath: "TaskTags.md",
-	tagColors: [],
-	taskTags: [],
-	webTags: {},
-	tagDescriptions: {},
-	subscribe: {},
+        tagListFilePath: "TaskTags.md",
+        tagColors: [],
+        taskTags: [],
+        webTags: {},
+        tagDescriptions: {},
+        subscribe: {},
+        statusCycles: {},
 
 	projects: [],
 	projectTags: [],
@@ -419,29 +422,41 @@ export default class ObsidianPlus extends Plugin {
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
-		this.registerDomEvent(document, 'click', (evt: MouseEvent) => {
-			// 1. Handle Dataview clicks first
-			const target = evt.target as HTMLElement;
-			if (target.matches('.op-toggle-task')) {
-				// id=i${id}
-				const taskId = target.id.slice(1);
-				if (this.taskManager) {
-					// this.taskManager.toggleTask(taskId);
-					if (evt.shiftKey) {
-                        // --- SHIFT + CLICK ---
-                        console.log(`Shift+Click detected for task ID: ${taskId}. Cancelling.`);
-                        this.taskManager.cancelTask(taskId); // Call the new cancel method
-                    } else {
-                        // --- REGULAR CLICK ---
-                        console.log(`Click detected for task ID: ${taskId}. Toggling.`);
-                        this.taskManager.toggleTask(taskId); // Call the existing toggle method
-                    }
-				} else {
-					console.warn('TaskManager not ready for click event');
-					new Notice('TaskManager not available');
-				}
-				return;
-			}
+                this.registerDomEvent(document, 'click', async (evt: MouseEvent) => {
+                        // 1. Handle Dataview clicks first
+                        const target = evt.target as HTMLElement;
+                        if (target.matches('.op-toggle-task')) {
+                                evt.preventDefault();
+                                evt.stopPropagation();
+                                const taskId = target.id.slice(1);
+                                const checkbox = target as HTMLInputElement;
+
+                                if (!this.taskManager) {
+                                        console.warn('TaskManager not ready for click event');
+                                        new Notice('TaskManager not available');
+                                        return;
+                                }
+
+                                checkbox.disabled = true;
+                                try {
+                                        if (evt.shiftKey) {
+                                                console.log(`Shift+Click detected for task ID: ${taskId}. Cancelling.`);
+                                                await this.taskManager.cancelTask(taskId);
+                                                this.applyStatusToCheckbox(checkbox, '-');
+                                        } else {
+                                                console.log(`Click detected for task ID: ${taskId}. Toggling.`);
+                                                const status = await this.taskManager.toggleTask(taskId);
+                                                if (status) {
+                                                        this.applyStatusToCheckbox(checkbox, status);
+                                                }
+                                        }
+                                } catch (error) {
+                                        console.error('Failed to update task status from Dataview checkbox', error);
+                                } finally {
+                                        checkbox.disabled = false;
+                                }
+                                return;
+                        }
 			// tasks expand to show child bullets on click
 			expandIfNeeded(evt);
 
@@ -1359,9 +1374,10 @@ export default class ObsidianPlus extends Plugin {
 		this.settings.aiConnector = null;
 		this.settings.taskTags = []; // Always derived from the config file
 		this.settings.tagDescriptions = {};
-		this.settings.subscribe = {};
-		this.settings.projects = [];
-		this.settings.projectTags = [];
+                this.settings.subscribe = {};
+                this.settings.statusCycles = {};
+                this.settings.projects = [];
+                this.settings.projectTags = [];
  
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
@@ -1381,9 +1397,10 @@ export default class ObsidianPlus extends Plugin {
 		delete settingsToSave.webTags;
 		delete settingsToSave.aiConnector;
 		// taskTags are derived by ConfigLoader, no need to save them
-		delete settingsToSave.taskTags;
-		delete settingsToSave.projects;
-		delete settingsToSave.projectTags;
+                delete settingsToSave.taskTags;
+                delete settingsToSave.projects;
+                delete settingsToSave.projectTags;
+                delete settingsToSave.statusCycles;
 
 		// Save only the serializable parts
 		await this.saveData(settingsToSave);
@@ -1396,11 +1413,11 @@ export default class ObsidianPlus extends Plugin {
 		
 	}
 
-	generateTagCSS(): string {
-		return this.settings.tagColors.map((tagColor) => {
-			const tag = tagColor.tag.startsWith('#') ? tagColor.tag : `#${tagColor.tag}`;
-			const textColor = tagColor.textColor;
-			const color = tagColor.color;
+        generateTagCSS(): string {
+                return this.settings.tagColors.map((tagColor) => {
+                        const tag = tagColor.tag.startsWith('#') ? tagColor.tag : `#${tagColor.tag}`;
+                        const textColor = tagColor.textColor;
+                        const color = tagColor.color;
 			return `.tag[href="${tag}"], .colored-tag-${tag.substring(1)}, .cm-tag-${tag.substring(1)} {
 				color: ${textColor} !important;
 				background: ${color} !important;
@@ -1408,22 +1425,58 @@ export default class ObsidianPlus extends Plugin {
 		}).join('\n');
 	}
 
-	updateTagStyles(): void {
-		const styleElementId = 'custom-tag-styles';
-		let styleElement = document.getElementById(styleElementId) as HTMLStyleElement;
-	  
-		if (!styleElement) {
-			styleElement = document.createElement('style');
-			styleElement.id = styleElementId;
-			document.head.appendChild(styleElement);
-		}
-	  
-		styleElement.textContent = this.generateTagCSS();
-	}
+        updateTagStyles(): void {
+                const styleElementId = 'custom-tag-styles';
+                let styleElement = document.getElementById(styleElementId) as HTMLStyleElement;
 
-	async changeTaskStatus(task: Task, status: string): void {
-		await this.taskManager.changeDvTaskStatus(task, status);
-	}
+                if (!styleElement) {
+                        styleElement = document.createElement('style');
+                        styleElement.id = styleElementId;
+                        document.head.appendChild(styleElement);
+                }
+
+                styleElement.textContent = this.generateTagCSS();
+        }
+
+        normalizeTag(tag?: string | null): string | null {
+                if (!tag) return null;
+                const trimmed = tag.trim();
+                if (!trimmed.length) return null;
+                const withHash = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+                const singleHash = withHash.replace(/^#+/, '#');
+                const cleaned = singleHash.replace(/[)\],.;:!?]+$/u, '').trim();
+                if (!cleaned.length || cleaned === '#') return null;
+                return cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
+        }
+
+        getStatusCycle(tag?: string | null): TaskStatusChar[] {
+                const normalized = this.normalizeTag(tag);
+                if (normalized) {
+                        const configured = this.settings.statusCycles?.[normalized];
+                        if (Array.isArray(configured) && configured.length) {
+                                return configured;
+                        }
+                }
+                return DEFAULT_STATUS_CYCLE;
+        }
+
+        getNextStatus(current: string | null | undefined, tag?: string | null): TaskStatusChar {
+                return advanceStatus(current, this.getStatusCycle(tag));
+        }
+
+        applyStatusToCheckbox(element: HTMLInputElement, status: TaskStatusChar): void {
+                if (!element) return;
+                element.dataset.task = status;
+                element.setAttribute('data-task', status);
+                element.checked = status === 'x';
+                element.indeterminate = status === '/';
+                const aria = status === 'x' ? 'true' : status === '/' ? 'mixed' : 'false';
+                element.setAttribute('aria-checked', aria);
+        }
+
+        async changeTaskStatus(task: Task, status: string): void {
+                await this.taskManager.changeDvTaskStatus(task, status);
+        }
 	async updateTask(task: Task, options: UpdateTaskOptions): void {
 		await this.taskManager.updateDvTask(task, options);
 	}

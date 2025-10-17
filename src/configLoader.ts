@@ -4,6 +4,7 @@ import { MIN_INTERVAL, alignedNextDue, parseISODuration, normalizeInterval } fro
 import { createConnector } from './connectorFactory';
 import AiConnector from './connectors/aiConnector';
 // import WebConnector from './connectors/webConnector'; // Uncomment if used
+import { parseStatusCycleConfig } from "./statusFilters";
 
 // Define ConnectorConfig interface locally for now
 interface ConnectorConfig {
@@ -102,6 +103,46 @@ export class ConfigLoader {
         return config;
     }
 
+    private applyStatusCycle(tag: string, config: ConnectorConfig): void {
+        if (!config) return;
+        const normalized = this.plugin.normalizeTag(tag);
+        if (!normalized) return;
+
+        const cycle = parseStatusCycleConfig((config as any)?.statusCycle);
+        if (cycle && cycle.length) {
+            this.plugin.settings.statusCycles[normalized] = cycle;
+        }
+    }
+
+    private async resolveConfigForLine(tag: string, line: any): Promise<ConnectorConfig> {
+        let config: ConnectorConfig = {};
+        for (const prop of line.children || []) {
+            const cleanText = normalizeConfigVal(prop.text, false);
+            if (cleanText === 'config:') {
+                config = this.parseChildren(prop);
+                break;
+            } else if (typeof cleanText === 'string' && cleanText.startsWith('config:')) {
+                const [keyPart, ...rest] = cleanText.split(':');
+                const configPath = normalizeConfigVal(rest.join(':').trim());
+                if (typeof configPath === 'string' && configPath.length) {
+                    try {
+                        const configFile = this.app.vault.getAbstractFileByPath(configPath);
+                        if (configFile instanceof TFile) {
+                            const content = await this.app.vault.read(configFile);
+                            config = JSON.parse(content);
+                            break;
+                        } else {
+                            console.error(`Config file not found or not a TFile: "${configPath}" for tag "${tag}"`);
+                        }
+                    } catch (err) {
+                        console.error(`Error loading or parsing config file "${configPath}" for tag "${tag}":`, err);
+                    }
+                }
+            }
+        }
+        return config;
+    }
+
     // Moved from main.ts
     public async loadTaskTagsFromFile(): Promise<void> {
         const path = this.plugin.settings.tagListFilePath;
@@ -113,6 +154,7 @@ export class ConfigLoader {
         this.plugin.settings.aiConnector = null;
         this.plugin.settings.projects = [];
         this.plugin.settings.projectTags = [];
+        this.plugin.settings.statusCycles = {};
 
         if (!path) {
             console.log("No tag list file specified, reset tags to empty");
@@ -193,7 +235,10 @@ export class ConfigLoader {
                 // Process Basic Tags (just add the first tag from each line)
                 for (const line of basicTags) {
                     if (line.tags && line.tags.length > 0) {
-                        addTaskTag(line.tags[0]);
+                        const tag = line.tags[0];
+                        addTaskTag(tag);
+                        const config = await this.resolveConfigForLine(tag, line);
+                        this.applyStatusCycle(tag, config);
                     }
                 }
 
@@ -216,34 +261,8 @@ export class ConfigLoader {
                 for (const line of autoTags) {
                     if (!line.tags || line.tags.length === 0) continue;
                     const tag = line.tags[0];
-                    let config: ConnectorConfig = {};
-
-                    for (const prop of line.children || []) {
-                        const cleanText = normalizeConfigVal(prop.text, false); // Keep internal underscores in keys like 'config:'
-                        if (cleanText === 'config:') {
-                            // Found 'config:' bullet, parse its children
-                            config = this.parseChildren(prop);
-                            break; // Assume only one config block per tag
-                        } else if (typeof cleanText === 'string' && cleanText.startsWith('config:')) {
-                            // Found 'config: path/to/file.json'
-                            const [keyPart, ...rest] = cleanText.split(':');
-                            const configPath = normalizeConfigVal(rest.join(':').trim());
-                            if (typeof configPath === 'string') {
-                                try {
-                                    const configFile = this.app.vault.getAbstractFileByPath(configPath);
-                                    if (configFile instanceof TFile) {
-                                        const content = await this.app.vault.read(configFile);
-                                        config = JSON.parse(content);
-                                        break; // Loaded from file, stop parsing children
-                                    } else {
-                                         console.error(`Config file not found or not a TFile: "${configPath}" for tag "${tag}"`);
-                                    }
-                                } catch (err) {
-                                    console.error(`Error loading or parsing config file "${configPath}" for tag "${tag}":`, err);
-                                }
-                            }
-                        }
-                    }
+                    const config = await this.resolveConfigForLine(tag, line);
+                    this.applyStatusCycle(tag, config);
 
                     // Create connector using the factory method (buildTagConnector)
                     // This method now updates plugin.settings directly
@@ -267,17 +286,8 @@ export class ConfigLoader {
 
                     const active = isTaskChecked(line);
                     const tag = line.tags[0];
-                    let config: ConnectorConfig = {};
-
-                    // identical child-parsing algo you already call
-                    for (const prop of line.children || []) {
-                        const clean = normalizeConfigVal(prop.text, false);
-                        if (clean === 'config:') {
-                            config = this.parseChildren(prop);
-                            break;
-                        }
-                        // (config: path/to/file.json) branch unchanged …
-                    }
+                    const config = await this.resolveConfigForLine(tag, line);
+                    this.applyStatusCycle(tag, config);
 
                     const connector = createConnector(tag, config, this.plugin);
                     if (connector) {
@@ -298,7 +308,10 @@ export class ConfigLoader {
                 // Process Recurring Tags (just add to taskTags)
                 for (const line of recurringTags) {
                      if (line.tags && line.tags.length > 0) {
-                        addTaskTag(line.tags[0]);
+                        const tag = line.tags[0];
+                        addTaskTag(tag);
+                        const config = await this.resolveConfigForLine(tag, line);
+                        this.applyStatusCycle(tag, config);
                     }
                 }
 

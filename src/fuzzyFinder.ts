@@ -1,7 +1,8 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-    prepareFuzzySearch, FuzzyMatch, Plugin, TFile
-  } from "obsidian";
+  prepareFuzzySearch, FuzzyMatch, Plugin, TFile
+} from "obsidian";
+import type ObsidianPlus from "./main";
 import {
   loadTreeOfThought,
   collectThoughtPreview,
@@ -11,7 +12,7 @@ import {
   type TaskContextSnapshot,
   type ThoughtOriginSection
 } from "./treeOfThought";
-import { isActiveStatus, parseStatusFilter } from "./statusFilters";
+import { isActiveStatus, normalizeStatusChar, parseStatusFilter } from "./statusFilters";
   
 export interface TaskEntry {
   file:   TFile;
@@ -207,6 +208,35 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(set).filter(Boolean);
     }
 
+    function collectTaskTags(entry: TaskEntry): string[] {
+        const set = new Set<string>();
+        const gather = (text: string | undefined | null) => {
+            if (!text) return;
+            const matches = text.match(/#[^\s#]+/g) ?? [];
+            for (const tag of matches) {
+                const trimmed = tag.trim();
+                if (trimmed) {
+                    const normalized = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+                    set.add(normalized);
+                }
+            }
+        };
+
+        gather(entry.text);
+        if (Array.isArray(entry.lines)) {
+            for (const line of entry.lines) {
+                gather(line);
+            }
+        }
+        if (Array.isArray(entry.searchLines)) {
+            for (const line of entry.searchLines) {
+                gather(line);
+            }
+        }
+
+        return Array.from(set);
+    }
+
     function normalizeTaskLine(value: string): string {
         return value
             .replace(/\^\w+\b/, "")
@@ -242,7 +272,7 @@ function escapeCssIdentifier(value: string): string {
 
     function collectTasksLazy(
         tag: string,
-        plugin: Plugin,
+        plugin: ObsidianPlus,
         onReady: () => void,
         project?: string
       ): TaskEntry[] {
@@ -311,7 +341,7 @@ function escapeCssIdentifier(value: string): string {
   /* ------------------------------------------------------------------ */
   
   export class TaskTagModal extends FuzzySuggestModal<string | TaskEntry> {
-    private plugin: Plugin;
+    private plugin: ObsidianPlus;
     private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position } | null;
     private readonly allowInsertion: boolean;
 
@@ -342,7 +372,7 @@ function escapeCssIdentifier(value: string): string {
     private initialThoughtAttempts = 0;
     private initialThoughtTimer: number | null = null;
 
-    constructor(app: App, plugin: Plugin,
+    constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
                 options?: TaskTagModalOptions) {
       super(app);
@@ -1519,6 +1549,104 @@ function escapeCssIdentifier(value: string): string {
         });
     }
 
+    private attachThoughtCheckboxHandlers(container: HTMLElement, state: ThoughtViewState, headerSource: string): void {
+        const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+        if (!inputs.length) {
+            return;
+        }
+
+        for (const input of inputs) {
+            const initial = input.getAttribute('data-task') ?? (input.checked ? 'x' : ' ');
+            this.plugin.applyStatusToCheckbox(input, normalizeStatusChar(initial));
+            input.addEventListener('click', evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                void this.handleThoughtCheckboxToggle(input, state, headerSource);
+            });
+        }
+    }
+
+    private async handleThoughtCheckboxToggle(input: HTMLInputElement, state: ThoughtViewState, headerSource: string): Promise<void> {
+        const manager = this.plugin.taskManager;
+        if (!manager) {
+            console.warn('TaskManager not available for thought checkbox toggle');
+            return;
+        }
+
+        const task = state.task;
+        if (!task) {
+            return;
+        }
+
+        const file = state.file ?? this.resolveTaskFile(task);
+        const path = file?.path ?? task.path ?? task.file?.path ?? headerSource;
+        if (!path) {
+            console.warn('Unable to resolve task path for thought checkbox toggle', { task, headerSource });
+            return;
+        }
+
+        let lineIndex = typeof task.line === 'number' ? task.line : null;
+        if (lineIndex == null) {
+            try {
+                const fileToRead = file ?? this.app.vault.getAbstractFileByPath(path);
+                if (fileToRead instanceof TFile) {
+                    const contents = await this.app.vault.read(fileToRead);
+                    const lines = contents.split(/\r?\n/);
+                    const resolved = resolveTaskLineIndex(task, lines);
+                    if (resolved != null) {
+                        lineIndex = resolved;
+                        task.line = resolved;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to resolve task line for thought checkbox toggle', error);
+            }
+        }
+
+        if (lineIndex == null) {
+            console.warn('Unable to determine task line for thought checkbox toggle', task);
+            return;
+        }
+
+        input.disabled = true;
+        try {
+            const tags = collectTaskTags(task)
+                .map(tag => this.plugin.normalizeTag(tag) ?? tag)
+                .filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
+            const result = await manager.cycleTaskLine({
+                file: file ?? undefined,
+                path,
+                lineNumber: lineIndex,
+                tagHint: this.plugin.normalizeTag(state.tagHint ?? this.activeTag) ?? state.tagHint ?? this.activeTag,
+                extraTags: tags,
+            });
+
+            if (!result) {
+                return;
+            }
+
+            this.plugin.applyStatusToCheckbox(input, result.status);
+            task.status = result.status;
+            task.line = lineIndex;
+            if (result.lineText) {
+                if (Array.isArray(task.lines) && task.lines.length) {
+                    task.lines[0] = result.lineText;
+                } else {
+                    task.lines = [result.lineText];
+                }
+            }
+            state.headerMarkdown = this.buildThoughtHeaderMarkdown(task, state.tagHint);
+            if (state.fullResult?.headerMarkdown) {
+                state.fullResult.headerMarkdown = state.headerMarkdown;
+            }
+            this.scheduleThoughtRerender();
+        } catch (error) {
+            console.error('Failed to toggle task status from thought header', error);
+        } finally {
+            input.disabled = false;
+        }
+    }
+
     private async renderThoughtPane(host?: HTMLElement) {
         const container = host ?? (this.resultContainerEl?.querySelector<HTMLElement>(".tree-of-thought__container") ?? null);
         if (!container) {
@@ -1590,6 +1718,8 @@ function escapeCssIdentifier(value: string): string {
             this.close();
           });
         });
+
+        this.attachThoughtCheckboxHandlers(headerLine, state, headerSource);
 
         if (headerFile) {
           const linktext = this.app.metadataCache.fileToLinktext(headerFile, "");
@@ -2438,7 +2568,7 @@ function escapeCssIdentifier(value: string): string {
   export class TaskTagTrigger extends EditorSuggest<null> {
     private lastPromptKey: string | null = null;
 
-    constructor(app: App, private plugin: Plugin) { super(app); }
+    constructor(app: App, private plugin: ObsidianPlus) { super(app); }
 
     /**
      * Clear the cached prompt signature so the suggester can trigger again on
