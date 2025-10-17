@@ -1753,6 +1753,16 @@ function escapeCssIdentifier(value: string): string {
             this.close();
           });
         });
+
+        root.querySelectorAll<HTMLAnchorElement>("a.external-link").forEach(link => {
+          if (link.dataset.plusFuzzyExternalBound === "true") {
+            return;
+          }
+          link.dataset.plusFuzzyExternalBound = "true";
+          link.addEventListener("click", evt => {
+            evt.stopPropagation();
+          });
+        });
     }
 
     private attachThoughtCheckboxHandlers(container: HTMLElement, state: ThoughtViewState, headerSource: string): void {
