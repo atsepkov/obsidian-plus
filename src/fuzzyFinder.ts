@@ -1620,7 +1620,11 @@ function escapeCssIdentifier(value: string): string {
         return fallback !== -1 ? fallback : null;
     }
 
-    private isMetadataSelected(metadata: SuggestionPreviewMetadata, fallbackIndex: number | null): boolean {
+    private isSuggestionSelected(el: HTMLElement, metadata: SuggestionPreviewMetadata, fallbackIndex: number | null): boolean {
+        if (el.classList.contains("is-selected")) {
+          return true;
+        }
+
         const chooser = this.chooser as any;
         if (!chooser) {
           return false;
@@ -1645,7 +1649,7 @@ function escapeCssIdentifier(value: string): string {
     ): Promise<void> {
         const shouldExpandAll =
           this.expandMode === "all" ||
-          (this.expandMode === "focus" && this.isMetadataSelected(metadata, fallbackIndex));
+          (this.expandMode === "focus" && this.isSuggestionSelected(el, metadata, fallbackIndex));
 
         const showMatchLine = Boolean(metadata.matchLine) && !shouldExpandAll;
         if (metadata.matchElement) {
