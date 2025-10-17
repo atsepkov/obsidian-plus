@@ -463,44 +463,22 @@ function escapeCssIdentifier(value: string): string {
         const item  = list?.values?.[list.selectedItem];
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
 
-        if (evt.key === "Tab") {
-          if (this.tagMode && typeof chosen === "object" && "tag" in chosen) {
-            evt.preventDefault();
-            this.inputEl.value = chosen.tag + " ";  // autocomplete
-            this.detectMode();                      // switches to task mode
-            return;
-          }
+        const isTabLike = evt.key === "Tab" || evt.key === ">";
+        const isSpace = evt.key === " " || evt.key === "Space" || evt.key === "Spacebar";
 
-          if (!this.tagMode && !this.thoughtMode) {
-            evt.preventDefault();
-            const key = this.getTaskCacheKey();
-            if (!key) {
-              return;
-            }
-            const selectedIndex = list?.selectedItem ?? 0;
-            const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
-            const suggestion = this.lastTaskSuggestions[displayIndex];
-            if (!suggestion) {
-              return;
-            }
-            const task = suggestion.item as TaskEntry;
-            const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, task);
-            if (cacheIndex == null) {
-              return;
-            }
-            this.inputEl.value = `${this.activeTag} ${task.text}`.trimEnd() + " ";
-            this.detectMode();
-            this.enterThoughtMode(key, {
-              displayIndex,
-              cacheIndex,
-              task,
-              showIndex: true
-            });
-            return;
-          }
+        if (
+          this.tagMode &&
+          typeof chosen === "object" &&
+          "tag" in chosen &&
+          (isTabLike || isSpace)
+        ) {
+          evt.preventDefault();
+          this.inputEl.value = this.normalizeTag(chosen.tag) + " ";  // autocomplete
+          this.detectMode();                                        // switches to task mode
+          return;
         }
 
-        if (!this.tagMode && !this.thoughtMode && evt.key === ">") {
+        if (!this.tagMode && !this.thoughtMode && isTabLike) {
           evt.preventDefault();
           const key = this.getTaskCacheKey();
           if (!key) {
@@ -512,13 +490,20 @@ function escapeCssIdentifier(value: string): string {
           if (!suggestion) {
             return;
           }
-          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, suggestion.item as TaskEntry);
+          const task = suggestion.item as TaskEntry;
+          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, task);
+          if (cacheIndex == null) {
+            return;
+          }
+          this.inputEl.value = `${this.activeTag} ${task.text}`.trimEnd() + " ";
+          this.detectMode();
           this.enterThoughtMode(key, {
             displayIndex,
-            cacheIndex: cacheIndex ?? null,
-            task: suggestion.item as TaskEntry,
+            cacheIndex,
+            task,
             showIndex: true
           });
+          return;
         }
     }
 
@@ -833,8 +818,7 @@ function escapeCssIdentifier(value: string): string {
           } else {
             instructions.push({ command: "⏎", purpose: "select tag" });
           }
-          instructions.push({ command: "␠", purpose: "view tag tasks" });
-          instructions.push({ command: "Tab", purpose: "autocomplete tag" });
+          instructions.push({ command: "Tab / ␠ / >", purpose: "autocomplete tag" });
         } else if (this.thoughtMode) {
           instructions.push({ command: "Esc", purpose: "return to results" });
           instructions.push({ command: "Type", purpose: "search within thought" });
@@ -847,12 +831,8 @@ function escapeCssIdentifier(value: string): string {
           } else {
             instructions.push({ command: "⏎", purpose: "open task" });
           }
-          instructions.push({ command: ">", purpose: "expand into thought tree" });
+          instructions.push({ command: "Tab / >", purpose: "expand into thought tree" });
           instructions.push({ command: "Esc", purpose: "back to tags" });
-        }
-
-        if (!this.tagMode && !this.thoughtMode) {
-          instructions.push({ command: "Tab", purpose: "—" });
         }
 
         if (!instructions.find(inst => inst.command === "Esc")) {
