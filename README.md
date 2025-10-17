@@ -83,7 +83,7 @@ Quick starting guide for new plugin devs:
 The fuzzy finder accepts lightweight search flags to narrow or expand task previews as you type:
 
 - Use `status:<value>` to show only tasks whose checkbox matches the requested status character or alias (for example, `status:/` to focus on in-progress items). Values mirror the status cycle you configure for each tag.
-- Use `expand:<mode>` to control how much child context renders inline with each task suggestion. `expand:none` keeps the default behavior of showing only the matching child line, `expand:focus` reveals the full outline for the currently highlighted suggestion, and `expand:all` expands every result at once.
+- Use `expand:<mode>` to control how much child context renders inline with each task suggestion. `expand:none` keeps the default behavior of showing only the matching child line, `expand:focus` (aliases: `expand:current`, `expand:selected`) reveals the full outline for the currently highlighted suggestion, and `expand:all` expands every result at once.
 
 You can combine these flags with regular keywords, and the fuzzy finder will trim them from the query before ranking results.
 

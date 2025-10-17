@@ -299,6 +299,21 @@ export interface ExpandFilterParseResult {
 
 const EXPAND_REGEX = /\bexpand:\s*([^\s]*)/i;
 
+const EXPAND_ALIASES: Record<string, ExpandMode> = {
+  none: "none",
+  collapse: "none",
+  collapsed: "none",
+  hide: "none",
+  hidden: "none",
+  all: "all",
+  everything: "all",
+  full: "all",
+  focus: "focus",
+  focused: "focus",
+  current: "focus",
+  selected: "focus",
+};
+
 export function parseExpandFilter(query: string): ExpandFilterParseResult {
   const match = query.match(EXPAND_REGEX);
   if (!match) {
@@ -321,14 +336,7 @@ export function parseExpandFilter(query: string): ExpandFilterParseResult {
   }
 
   const normalized = raw.toLowerCase();
-  const expandMode: ExpandMode =
-    normalized === "all"
-      ? "all"
-      : normalized === "focus"
-      ? "focus"
-      : normalized === "none"
-      ? "none"
-      : "none";
+  const expandMode = EXPAND_ALIASES[normalized] ?? "none";
 
   return {
     cleanedQuery,

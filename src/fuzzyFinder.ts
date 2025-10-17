@@ -412,6 +412,7 @@ function escapeCssIdentifier(value: string): string {
         this.detectMode();
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
+      this.inputEl.addEventListener("keyup", evt => this.handleKeyup(evt));
       this.detectMode(); // initial
     }
 
@@ -529,6 +530,12 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
 
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(evt.key)) {
+          this.scheduleExpandRefresh();
+        }
+    }
+
+    private handleKeyup(evt: KeyboardEvent) {
         if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(evt.key)) {
           this.scheduleExpandRefresh();
         }
@@ -1621,6 +1628,11 @@ function escapeCssIdentifier(value: string): string {
     }
 
     private isSuggestionSelected(el: HTMLElement, metadata: SuggestionPreviewMetadata, fallbackIndex: number | null): boolean {
+        const selectedElement = this.resultContainerEl?.querySelector<HTMLElement>(".suggestion-item.is-selected");
+        if (selectedElement && (selectedElement === el || selectedElement.contains(el))) {
+          return true;
+        }
+
         if (el.classList.contains("is-selected")) {
           return true;
         }
