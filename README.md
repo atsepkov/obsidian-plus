@@ -80,8 +80,8 @@ Quick starting guide for new plugin devs:
 
 ### Launching the task fuzzy finder from the editor
 
-- Type `[[?]]` anywhere in a note (including inline with other text) to open the tree-of-thought fuzzy finder and replace the placeholder link with the selected task reference.
-- Starting a bullet with `- [[?]]` triggers the same modal and, after you pick a task, expands it into the formatted parent/child bullet pair the plugin previously generated for the `- ?` shortcut.
+- Type `??` anywhere in a note (including inline with other text) to open the tree-of-thought fuzzy finder and replace the placeholder token with the selected task reference.
+- Starting a bullet with `- ?` triggers the same modal and, after you pick a task, expands it into the formatted parent/child bullet pair the plugin generates for captured tasks.
 
 ### Task search filters
 

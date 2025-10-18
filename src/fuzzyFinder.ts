@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  prepareFuzzySearch, FuzzyMatch, Plugin, TFile
+  prepareFuzzySearch, FuzzyMatch, TFile
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -2274,8 +2274,7 @@ function escapeCssIdentifier(value: string): string {
 
         const insertion = `${link} ${this.activeTag} *${text.trim()}*`;
 
-        const fullPrompt = curLine.trim();
-        const isWholeLinePrompt = /^[-*+]\s+\[\[\?\]\]\s*$/.test(fullPrompt);
+        const isWholeLinePrompt = /^\s*[-*+] \?\s*$/.test(curLine);
 
         if (isWholeLinePrompt) {
           const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
@@ -2802,7 +2801,7 @@ function escapeCssIdentifier(value: string): string {
 
     /**
      * Clear the cached prompt signature so the suggester can trigger again on
-     * the next freshly typed `[[?]]` prompt.
+     * the next freshly typed `- ?` or `??` prompt.
      */
     public resetPromptGuard(): void {
       this.lastPromptKey = null;
@@ -2812,44 +2811,54 @@ function escapeCssIdentifier(value: string): string {
         const line = editor.getLine(cursor.line);
         if (!line) return null;
 
-        const beforeCursor = line.slice(0, cursor.ch);
-        const openIndex = beforeCursor.lastIndexOf("[[");
-        if (openIndex === -1) {
-          return null;
-        }
-
-        const closeIndex = line.indexOf("]]", openIndex + 2);
-        if (closeIndex !== -1 && cursor.ch > closeIndex + 2) {
-          return null;
-        }
-        const sliceEnd = closeIndex !== -1 ? closeIndex : cursor.ch;
-        if (sliceEnd < openIndex + 2) {
-          return null;
-        }
-
-        const inside = line.slice(openIndex + 2, sliceEnd);
-        const [rawTarget, rawAlias = ""] = inside.split("|", 2);
-        if (rawTarget.trim() !== "?") {
-          return null;
-        }
-        if (rawAlias.trim().length > 0) {
-          return null;
-        }
-
-        // When the closing brackets haven't been typed yet, accept the
-        // currently typed span so we can replace "[[?" immediately.
-        const rangeEnd = closeIndex === -1 ? cursor.ch : closeIndex + 2;
-
         const file = this.app.workspace.getActiveFile();
-        const promptKey = `${file?.path ?? ""}:${cursor.line}:${openIndex}-${rangeEnd}:${line}`;
+
+        /* Inline `??` trigger ------------------------------------------------ */
+        const inlineStart = cursor.ch - 2;
+        if (inlineStart >= 0) {
+          const inlineSlice = line.slice(inlineStart, cursor.ch);
+          if (inlineSlice === "??") {
+            const prevChar = inlineStart > 0 ? line[inlineStart - 1] : "";
+            const nextChar = cursor.ch < line.length ? line[cursor.ch] : "";
+            const prevOk = !prevChar || /[^\w?]/.test(prevChar);
+            const nextOk = !nextChar || /[^\w]/.test(nextChar);
+
+            if (prevChar !== "?" && prevOk && nextOk) {
+              const promptKey = `${file?.path ?? ""}:${cursor.line}:${inlineStart}-${cursor.ch}:${line}`;
+              if (this.lastPromptKey === promptKey) {
+                return null;
+              }
+              this.lastPromptKey = promptKey;
+
+              new TaskTagModal(this.app, this.plugin, {
+                from: { line: cursor.line, ch: inlineStart },
+                to:   { line: cursor.line, ch: cursor.ch }
+              }).open();
+
+              return null;
+            }
+          }
+        }
+
+        /* Whole-line `- ?` trigger ----------------------------------------- */
+        const atEOL = cursor.ch === line.length;
+        if (!atEOL) {
+          return null;
+        }
+
+        if (!/^\s*[-*+] \?\s*$/.test(line)) {
+          return null;
+        }
+
+        const promptKey = `${file?.path ?? ""}:${cursor.line}:${line}`;
         if (this.lastPromptKey === promptKey) {
           return null;
         }
         this.lastPromptKey = promptKey;
 
         new TaskTagModal(this.app, this.plugin, {
-          from: { line: cursor.line, ch: openIndex },
-          to:   { line: cursor.line, ch: rangeEnd }
+          from: { line: cursor.line, ch: 0 },
+          to:   { line: cursor.line, ch: line.length }
         }).open();
 
         return null; // never show inline suggest
