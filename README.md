@@ -78,6 +78,11 @@ Quick starting guide for new plugin devs:
 - `npm i` or `yarn` to install dependencies.
 - `npm run dev` to start compilation in watch mode.
 
+### Launching the task fuzzy finder from the editor
+
+- Type `[[?]]` anywhere in a note (including inline with other text) to open the tree-of-thought fuzzy finder and replace the placeholder link with the selected task reference.
+- Starting a bullet with `- [[?]]` triggers the same modal and, after you pick a task, expands it into the formatted parent/child bullet pair the plugin previously generated for the `- ?` shortcut.
+
 ### Task search filters
 
 The fuzzy finder accepts lightweight search flags to narrow or expand task previews as you type:

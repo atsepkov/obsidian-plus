@@ -2268,34 +2268,44 @@ function escapeCssIdentifier(value: string): string {
         const ln        = this.replaceRange.from.line;
         const curLine   = ed.getLine(ln);
 
-        /* leading whitespace + parent bullet (“- ” or “* ”) */
-        const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
-        const leadWS    = mIndent[1];          // spaces / tabs before bullet (if any)
-        const bullet    = mIndent[2] || "- ";  // reuse parent bullet or default "- "
-
-        /* parent line to insert ----------------------------------------------- */
+        /* parent task text cleanup */
         let text = task.text;
-        // strip off the prefix bullet/task and tag
-        // if (text.match(/#.*$/)) text = text.replace(/^.*?#[^\s]+/, "");
-        // strip blockid, if present
         if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
-        const parentTxt = `${leadWS}${bullet}${link} ${this.activeTag} *${text.trim()}*`;
 
-        /* child bullet one level deeper --------------------------------------- */
-        const childIndent  = `${leadWS}    ${bullet}`;   // 4 spaces deeper
-        const newBlock     = `${parentTxt}\n${childIndent}`;
+        const insertion = `${link} ${this.activeTag} *${text.trim()}*`;
 
-        /* replace the original trigger line */
-        ed.replaceRange(
+        const fullPrompt = curLine.trim();
+        const isWholeLinePrompt = /^[-*+]\s+\[\[\?\]\]\s*$/.test(fullPrompt);
+
+        if (isWholeLinePrompt) {
+          const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
+          const leadWS    = mIndent[1];
+          const bullet    = mIndent[2] || "- ";
+          const parentTxt = `${leadWS}${bullet}${insertion}`;
+          const childIndent  = `${leadWS}    ${bullet}`;
+          const newBlock     = `${parentTxt}\n${childIndent}`;
+
+          ed.replaceRange(
             newBlock,
-            { line: ln,     ch: 0 },
-            { line: ln,     ch: curLine.length }
-        );
+            { line: ln, ch: 0 },
+            { line: ln, ch: curLine.length }
+          );
 
-        /* move cursor AFTER the modal has closed & editor regains focus -------- */
-        setTimeout(() => {
+          setTimeout(() => {
             ed.setCursor({ line: ln + 1, ch: childIndent.length });
-        }, 0);
+          }, 0);
+        } else {
+          ed.replaceRange(
+            insertion,
+            this.replaceRange.from,
+            this.replaceRange.to
+          );
+
+          const ch = this.replaceRange.from.ch + insertion.length;
+          setTimeout(() => {
+            ed.setCursor({ line: ln, ch });
+          }, 0);
+        }
 
         this.close();
     }
@@ -2792,38 +2802,48 @@ function escapeCssIdentifier(value: string): string {
 
     /**
      * Clear the cached prompt signature so the suggester can trigger again on
-     * the next freshly typed `- ?` sequence.
+     * the next freshly typed `[[?]]` prompt.
      */
     public resetPromptGuard(): void {
       this.lastPromptKey = null;
     }
 
     onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
-        /* inside TaskTagTrigger.onTrigger() – tighten the regex */
-        const before = editor.getLine(cursor.line).slice(0, cursor.ch);
-        const line   = editor.getLine(cursor.line);      // full current line
-        const atEOL  = cursor.ch === line.length;        // cursor at end‑of‑line
+        const line = editor.getLine(cursor.line);
+        if (!line) return null;
 
-        /*  New, stricter pattern:
-            - optional leading spaces / tabs
-            - a list bullet  (- or * or +) followed by one space
-            - a single question‑mark
-            - nothing else                              */
-        const isExactPrompt = /^\s*[-*+] \?\s*$/.test(line);
+        const beforeCursor = line.slice(0, cursor.ch);
+        const openIndex = beforeCursor.lastIndexOf("[[");
+        if (openIndex === -1) {
+          return null;
+        }
 
-        if (!atEOL || !isExactPrompt) return null;       // 🚫 don’t trigger
+        const closeIndex = line.indexOf("]]", openIndex + 2);
+        if (closeIndex === -1 || cursor.ch > closeIndex + 2) {
+          return null;
+        }
+
+        const inside = line.slice(openIndex + 2, closeIndex);
+        const [rawTarget, rawAlias = ""] = inside.split("|", 2);
+        if (rawTarget.trim() !== "?") {
+          return null;
+        }
+        if (rawAlias.trim().length > 0) {
+          return null;
+        }
 
         const file = this.app.workspace.getActiveFile();
-        const promptKey = `${file?.path ?? ""}:${cursor.line}:${line}`;
-
-        if (this.lastPromptKey === promptKey) return null;  // already handled
+        const promptKey = `${file?.path ?? ""}:${cursor.line}:${openIndex}-${closeIndex}:${line}`;
+        if (this.lastPromptKey === promptKey) {
+          return null;
+        }
         this.lastPromptKey = promptKey;
 
         new TaskTagModal(this.app, this.plugin, {
-            from: { line: cursor.line, ch: before.length - 2 }, // start of "- ?"
-            to:   { line: cursor.line, ch: cursor.ch }
+          from: { line: cursor.line, ch: openIndex },
+          to:   { line: cursor.line, ch: closeIndex + 2 }
         }).open();
-    
+
         return null; // never show inline suggest
     }
 
