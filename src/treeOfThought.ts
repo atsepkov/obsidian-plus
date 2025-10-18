@@ -1430,6 +1430,17 @@ function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | nu
     }
   }
 
+  if (!segments.length) {
+    const fallback = cleanReferenceText(outline.rootText) || cleanReferenceText(outline.snippet);
+    if (fallback) {
+      segments.push({
+        text: fallback,
+        anchor: outline.rootAnchor ?? undefined,
+        type: outline.parentChain?.length ? outline.parentChain[outline.parentChain.length - 1]?.type : undefined
+      });
+    }
+  }
+
   const summary = segments.map(segment => segment.text).join(" > ").trim();
   if (!summary) {
     return null;

@@ -1,4 +1,4 @@
-export type TaskStatusChar = "x" | "-" | "!" | " " | "/";
+export type TaskStatusChar = "x" | "-" | "!" | " " | "/" | "?";
 export type ActiveTaskStatusChar = " " | "/";
 
 /** Map of common status keywords to their checkbox character equivalent. */
@@ -50,6 +50,10 @@ export const STATUS_ALIASES: Record<string, TaskStatusChar> = {
   failed: "!",
   bugged: "!",
   needshelp: "!",
+  unsure: "?",
+  maybe: "?",
+  question: "?",
+  clarify: "?",
   // open / todo / pending
   todo: " ",
   pending: " ",
@@ -88,6 +92,133 @@ export const STATUS_ALIASES: Record<string, TaskStatusChar> = {
   advancing: "/",
 };
 
+export const DEFAULT_STATUS_CYCLE: TaskStatusChar[] = [" ", "/", "x", "-", "?", "!"];
+
+const STATUS_CHAR_SET = new Set<TaskStatusChar>(DEFAULT_STATUS_CYCLE);
+
+export function normalizeStatusChar(input: string | null | undefined): TaskStatusChar {
+  if (input == null) {
+    return " ";
+  }
+
+  const str = String(input);
+  if (!str.length) {
+    return " ";
+  }
+
+  const trimmed = str.trim();
+  const candidate = trimmed.length ? trimmed : str;
+  const first = candidate[0];
+  const lowered = first === " " ? first : first.toLowerCase();
+
+  if (STATUS_CHAR_SET.has(lowered as TaskStatusChar)) {
+    return lowered as TaskStatusChar;
+  }
+
+  if (candidate === "?") {
+    return "?";
+  }
+
+  const alias = resolveStatusAlias(candidate);
+  return alias ?? " ";
+}
+
+export function advanceStatus(
+  current: string | null | undefined,
+  cycle: TaskStatusChar[] = DEFAULT_STATUS_CYCLE
+): TaskStatusChar {
+  const normalizedCycle = Array.isArray(cycle) && cycle.length ? cycle : DEFAULT_STATUS_CYCLE;
+  const normalizedCurrent = normalizeStatusChar(current);
+  const index = normalizedCycle.indexOf(normalizedCurrent);
+
+  if (index === -1) {
+    return normalizedCycle[0];
+  }
+
+  const nextIndex = (index + 1) % normalizedCycle.length;
+  return normalizedCycle[nextIndex];
+}
+
+export function parseStatusCycleConfig(raw: unknown): TaskStatusChar[] | null {
+  if (raw == null) {
+    return null;
+  }
+
+  const result: TaskStatusChar[] = [];
+
+  const pushValue = (value: unknown) => {
+    if (value == null) {
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(pushValue);
+      return;
+    }
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (!trimmed.length && value !== " ") {
+        return;
+      }
+
+      if (trimmed.includes(">")) {
+        trimmed
+          .split(">")
+          .map((segment) => segment.trim())
+          .filter(Boolean)
+          .forEach((segment) => pushValue(segment));
+        return;
+      }
+
+      const bracketMatch = trimmed.match(/^\[\s*(.)?\s*\]$/);
+      if (bracketMatch) {
+        const inner = bracketMatch[1] ?? " ";
+        const normalized = normalizeStatusChar(inner);
+        if (!result.includes(normalized)) {
+          result.push(normalized);
+        }
+        return;
+      }
+
+      if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+        try {
+          const parsed = JSON.parse(trimmed);
+          if (Array.isArray(parsed)) {
+            parsed.forEach(pushValue);
+            return;
+          }
+        } catch (error) {
+          console.warn("Failed to parse statusCycle JSON", error);
+        }
+      }
+
+      if (trimmed.includes(",")) {
+        trimmed.split(",").forEach(segment => pushValue(segment));
+        return;
+      }
+
+      if (/\s+/.test(trimmed) && trimmed !== "?") {
+        trimmed.split(/\s+/).forEach(segment => pushValue(segment));
+        return;
+      }
+
+      const normalized = normalizeStatusChar(value);
+      if (!result.includes(normalized)) {
+        result.push(normalized);
+      }
+      return;
+    }
+
+    const normalized = normalizeStatusChar(String(value));
+    if (!result.includes(normalized)) {
+      result.push(normalized);
+    }
+  };
+
+  pushValue(raw);
+
+  return result.length ? result : null;
+}
+
 /**
  * Resolve a `status:` query token to the canonical checkbox character.
  * Returns `null` when the token cannot be mapped to a known status.
@@ -96,7 +227,7 @@ export function resolveStatusAlias(raw: string): TaskStatusChar | null {
   const filter = raw.trim().toLowerCase();
   if (!filter) return null;
 
-  if (filter.length === 1 && ["x", "-", "!", "/"].includes(filter)) {
+  if (filter.length === 1 && ["x", "-", "!", "/", "?"].includes(filter)) {
     return filter as TaskStatusChar;
   }
 
@@ -155,5 +286,61 @@ export function parseStatusFilter(query: string): StatusFilterParseResult {
     cleanedQuery,
     statusChar,
     hadStatusFilter: true,
+  };
+}
+
+export type ExpandMode = "none" | "focus" | "all";
+
+export interface ExpandFilterParseResult {
+  cleanedQuery: string;
+  expandMode: ExpandMode;
+  hadExpandFilter: boolean;
+}
+
+const EXPAND_REGEX = /\bexpand:\s*([^\s]*)/i;
+
+const EXPAND_ALIASES: Record<string, ExpandMode> = {
+  none: "none",
+  collapse: "none",
+  collapsed: "none",
+  hide: "none",
+  hidden: "none",
+  all: "all",
+  everything: "all",
+  full: "all",
+  focus: "focus",
+  focused: "focus",
+  current: "focus",
+  selected: "focus",
+};
+
+export function parseExpandFilter(query: string): ExpandFilterParseResult {
+  const match = query.match(EXPAND_REGEX);
+  if (!match) {
+    return {
+      cleanedQuery: query.trim(),
+      expandMode: "none",
+      hadExpandFilter: false,
+    };
+  }
+
+  const raw = (match[1] ?? "").trim();
+  const cleanedQuery = query.replace(match[0], "").replace(/\s+/g, " ").trim();
+
+  if (!raw) {
+    return {
+      cleanedQuery,
+      expandMode: "none",
+      hadExpandFilter: false,
+    };
+  }
+
+  const normalized = raw.toLowerCase();
+  const expandMode = EXPAND_ALIASES[normalized] ?? "none";
+
+  return {
+    cleanedQuery,
+    expandMode,
+    hadExpandFilter: true,
   };
 }

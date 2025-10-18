@@ -1,7 +1,8 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-    prepareFuzzySearch, FuzzyMatch, Plugin, TFile
-  } from "obsidian";
+  prepareFuzzySearch, FuzzyMatch, TFile
+} from "obsidian";
+import type ObsidianPlus from "./main";
 import {
   loadTreeOfThought,
   collectThoughtPreview,
@@ -11,7 +12,7 @@ import {
   type TaskContextSnapshot,
   type ThoughtOriginSection
 } from "./treeOfThought";
-import { isActiveStatus, parseStatusFilter } from "./statusFilters";
+import { ExpandMode, isActiveStatus, normalizeStatusChar, parseExpandFilter, parseStatusFilter } from "./statusFilters";
   
 export interface TaskEntry {
   file:   TFile;
@@ -22,6 +23,7 @@ export interface TaskEntry {
   lines:  string[];
   searchLines: string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
+  childLines?: string[];
 }
 
 export interface ThoughtTaskHint {
@@ -29,6 +31,16 @@ export interface ThoughtTaskHint {
   line?: number | null;
   blockId?: string | null;
   text?: string | null;
+}
+
+interface SuggestionPreviewMetadata {
+  item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number };
+  lines: string[];
+  matchLine: string | null;
+  matchElement: HTMLElement | null;
+  container: HTMLElement | null;
+  renderedAll: boolean;
+  filePath: string;
 }
 
 export interface TreeOfThoughtOpenOptions {
@@ -207,6 +219,35 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(set).filter(Boolean);
     }
 
+    function collectTaskTags(entry: TaskEntry): string[] {
+        const set = new Set<string>();
+        const gather = (text: string | undefined | null) => {
+            if (!text) return;
+            const matches = text.match(/#[^\s#]+/g) ?? [];
+            for (const tag of matches) {
+                const trimmed = tag.trim();
+                if (trimmed) {
+                    const normalized = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
+                    set.add(normalized);
+                }
+            }
+        };
+
+        gather(entry.text);
+        if (Array.isArray(entry.lines)) {
+            for (const line of entry.lines) {
+                gather(line);
+            }
+        }
+        if (Array.isArray(entry.searchLines)) {
+            for (const line of entry.searchLines) {
+                gather(line);
+            }
+        }
+
+        return Array.from(set);
+    }
+
     function normalizeTaskLine(value: string): string {
         return value
             .replace(/\^\w+\b/, "")
@@ -222,14 +263,19 @@ function escapeCssIdentifier(value: string): string {
     const pending: Record<string, boolean> = {};       // tag -> scan in‑progress
     const cache:   Record<string, TaskEntry[]> = {};   // tag -> tasks[]
 
-    function explodeLines(row: any): string[] {
-      const out = [row.text];
-      row.children?.forEach((c: any) => out.push(...explodeLines(c)));
-      return out;
-    }
-
     function toTaskEntry(row: any): TaskEntry {
+      const explodeLines = (current: any): string[] => {
+        const out = [current.text];
+        current.children?.forEach((c: any) => out.push(...explodeLines(c)));
+        return out;
+      };
+
       const lines = explodeLines(row).map((s: string) => s.trim()).filter(Boolean);
+      const childLines = Array.isArray(row.children)
+        ? row.children
+            .map((child: any) => (typeof child?.text === "string" ? child.text.trim() : ""))
+            .filter((text: string) => text.length > 0)
+        : [];
       const searchLines = lines.map(line => line.toLowerCase());
       return {
         ...row,
@@ -237,12 +283,13 @@ function escapeCssIdentifier(value: string): string {
         lines,
         searchLines,
         status: (row as any).status,
+        childLines,
       } as TaskEntry;
     }
 
     function collectTasksLazy(
         tag: string,
-        plugin: Plugin,
+        plugin: ObsidianPlus,
         onReady: () => void,
         project?: string
       ): TaskEntry[] {
@@ -311,7 +358,7 @@ function escapeCssIdentifier(value: string): string {
   /* ------------------------------------------------------------------ */
   
   export class TaskTagModal extends FuzzySuggestModal<string | TaskEntry> {
-    private plugin: Plugin;
+    private plugin: ObsidianPlus;
     private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position } | null;
     private readonly allowInsertion: boolean;
 
@@ -341,8 +388,12 @@ function escapeCssIdentifier(value: string): string {
     private initialThoughtRequest: TreeOfThoughtOpenOptions | null;
     private initialThoughtAttempts = 0;
     private initialThoughtTimer: number | null = null;
+    private expandMode: ExpandMode = "none";
+    private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
+    private expandRefreshScheduled = false;
+    private pointerExpandListener: ((evt: Event) => void) | null = null;
 
-    constructor(app: App, plugin: Plugin,
+    constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
                 options?: TaskTagModalOptions) {
       super(app);
@@ -368,6 +419,7 @@ function escapeCssIdentifier(value: string): string {
         this.detectMode();
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
+      this.inputEl.addEventListener("keyup", evt => this.handleKeyup(evt));
       this.detectMode(); // initial
     }
 
@@ -416,6 +468,11 @@ function escapeCssIdentifier(value: string): string {
           this.detectMode();          // ② tagMode = true
           this.scheduleSuggestionRefresh();   // ③ show tags immediately
         }
+
+        if (!this.pointerExpandListener) {
+          this.pointerExpandListener = () => this.scheduleExpandRefresh();
+        }
+        this.resultContainerEl?.addEventListener("mouseover", this.pointerExpandListener);
     }
 
     onClose() {
@@ -426,6 +483,10 @@ function escapeCssIdentifier(value: string): string {
         }
         this.initialThoughtRequest = null;
         this.initialThoughtAttempts = 0;
+
+        if (this.pointerExpandListener) {
+          this.resultContainerEl?.removeEventListener("mouseover", this.pointerExpandListener);
+        }
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -433,44 +494,22 @@ function escapeCssIdentifier(value: string): string {
         const item  = list?.values?.[list.selectedItem];
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
 
-        if (evt.key === "Tab") {
-          if (this.tagMode && typeof chosen === "object" && "tag" in chosen) {
-            evt.preventDefault();
-            this.inputEl.value = chosen.tag + " ";  // autocomplete
-            this.detectMode();                      // switches to task mode
-            return;
-          }
+        const isTabLike = evt.key === "Tab" || evt.key === ">";
+        const isSpace = evt.key === " " || evt.key === "Space" || evt.key === "Spacebar";
 
-          if (!this.tagMode && !this.thoughtMode) {
-            evt.preventDefault();
-            const key = this.getTaskCacheKey();
-            if (!key) {
-              return;
-            }
-            const selectedIndex = list?.selectedItem ?? 0;
-            const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
-            const suggestion = this.lastTaskSuggestions[displayIndex];
-            if (!suggestion) {
-              return;
-            }
-            const task = suggestion.item as TaskEntry;
-            const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, task);
-            if (cacheIndex == null) {
-              return;
-            }
-            this.inputEl.value = `${this.activeTag} ${task.text}`.trimEnd() + " ";
-            this.detectMode();
-            this.enterThoughtMode(key, {
-              displayIndex,
-              cacheIndex,
-              task,
-              showIndex: true
-            });
-            return;
-          }
+        if (
+          this.tagMode &&
+          typeof chosen === "object" &&
+          "tag" in chosen &&
+          (isTabLike || isSpace)
+        ) {
+          evt.preventDefault();
+          this.inputEl.value = this.normalizeTag(chosen.tag) + " ";  // autocomplete
+          this.detectMode();                                        // switches to task mode
+          return;
         }
 
-        if (!this.tagMode && !this.thoughtMode && evt.key === ">") {
+        if (!this.tagMode && !this.thoughtMode && isTabLike) {
           evt.preventDefault();
           const key = this.getTaskCacheKey();
           if (!key) {
@@ -482,13 +521,30 @@ function escapeCssIdentifier(value: string): string {
           if (!suggestion) {
             return;
           }
-          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, suggestion.item as TaskEntry);
+          const task = suggestion.item as TaskEntry;
+          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, task);
+          if (cacheIndex == null) {
+            return;
+          }
+          this.inputEl.value = `${this.activeTag} ${task.text}`.trimEnd() + " ";
+          this.detectMode();
           this.enterThoughtMode(key, {
             displayIndex,
-            cacheIndex: cacheIndex ?? null,
-            task: suggestion.item as TaskEntry,
+            cacheIndex,
+            task,
             showIndex: true
           });
+          return;
+        }
+
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(evt.key)) {
+          this.scheduleExpandRefresh();
+        }
+    }
+
+    private handleKeyup(evt: KeyboardEvent) {
+        if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(evt.key)) {
+          this.scheduleExpandRefresh();
         }
     }
 
@@ -803,8 +859,7 @@ function escapeCssIdentifier(value: string): string {
           } else {
             instructions.push({ command: "⏎", purpose: "select tag" });
           }
-          instructions.push({ command: "␠", purpose: "view tag tasks" });
-          instructions.push({ command: "Tab", purpose: "autocomplete tag" });
+          instructions.push({ command: "Tab / ␠ / >", purpose: "autocomplete tag" });
         } else if (this.thoughtMode) {
           instructions.push({ command: "Esc", purpose: "return to results" });
           instructions.push({ command: "Type", purpose: "search within thought" });
@@ -817,12 +872,8 @@ function escapeCssIdentifier(value: string): string {
           } else {
             instructions.push({ command: "⏎", purpose: "open task" });
           }
-          instructions.push({ command: ">", purpose: "expand into thought tree" });
+          instructions.push({ command: "Tab / >", purpose: "expand into thought tree" });
           instructions.push({ command: "Esc", purpose: "back to tags" });
-        }
-
-        if (!this.tagMode && !this.thoughtMode) {
-          instructions.push({ command: "Tab", purpose: "—" });
         }
 
         if (!instructions.find(inst => inst.command === "Esc")) {
@@ -1503,20 +1554,323 @@ function escapeCssIdentifier(value: string): string {
             this.plugin
         );
 
-        if (hit && hit !== task.text) {
-            const div = el.createDiv({ cls: "child-line" });   // style below
-            await MarkdownRenderer.render(this.app, '- ' + hit, div, file?.path ?? filePath ?? "", this.plugin);
+        const normalizedHit = typeof hit === "string" ? hit.trim() : "";
+        const normalizedRoot = (task.text ?? "").trim();
+        const matchLine = normalizedHit && normalizedHit !== normalizedRoot ? normalizedHit : null;
+        const markdownSource = file?.path ?? filePath ?? this.app.workspace.getActiveFile()?.path ?? "";
+
+        let matchElement: HTMLElement | null = null;
+        if (matchLine) {
+          matchElement = el.createDiv({ cls: "child-line" });
+          try {
+            await MarkdownRenderer.render(this.app, `- ${matchLine}`, matchElement, markdownSource, this.plugin);
+          } catch (error) {
+            console.error("Failed to render task preview line", error);
+            matchElement.setText(`- ${matchLine}`);
+          }
+          this.bindInternalLinkHandlers(matchElement, markdownSource);
         }
 
-        el.querySelectorAll("a.internal-link").forEach(a => {
-            a.addEventListener("click", evt => {
+        const metadata: SuggestionPreviewMetadata = {
+          item,
+          lines: this.collectChildPreviewLines(task),
+          matchLine,
+          matchElement,
+          container: null,
+          renderedAll: false,
+          filePath: markdownSource,
+        };
+
+        this.previewMetadata.set(el, metadata);
+
+        const suggestionIndex = this.resolveSuggestionIndex(item);
+        if (suggestionIndex != null) {
+          el.setAttr("data-suggestion-index", `${suggestionIndex}`);
+        } else {
+          el.removeAttribute("data-suggestion-index");
+        }
+
+        await this.applyExpandModeToElement(el, metadata, suggestionIndex);
+        this.scheduleExpandRefresh();
+        this.bindInternalLinkHandlers(el, markdownSource);
+    }
+
+    private collectChildPreviewLines(task: TaskEntry): string[] {
+        const primary = Array.isArray(task.childLines) && task.childLines.length
+          ? task.childLines
+          : Array.isArray(task.lines)
+            ? task.lines.slice(1)
+            : [];
+
+        if (!primary.length) {
+          return [];
+        }
+
+        const seen = new Set<string>();
+        const result: string[] = [];
+
+        primary.forEach(line => {
+          const trimmed = typeof line === "string" ? line.trim() : "";
+          if (!trimmed.length) {
+            return;
+          }
+          if (seen.has(trimmed)) {
+            return;
+          }
+          seen.add(trimmed);
+          result.push(trimmed);
+        });
+
+        return result;
+    }
+
+    private resolveSuggestionIndex(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }): number | null {
+        const chooser = this.chooser as any;
+        if (chooser?.values) {
+          const idx = chooser.values.indexOf(item);
+          if (idx !== -1) {
+            return idx;
+          }
+        }
+
+        const fallback = this.lastTaskSuggestions.indexOf(item);
+        return fallback !== -1 ? fallback : null;
+    }
+
+    private isSuggestionSelected(el: HTMLElement, metadata: SuggestionPreviewMetadata, fallbackIndex: number | null): boolean {
+        const selectedElement = this.resultContainerEl?.querySelector<HTMLElement>(".suggestion-item.is-selected");
+        if (selectedElement && (selectedElement === el || selectedElement.contains(el))) {
+          return true;
+        }
+
+        if (el.classList.contains("is-selected")) {
+          return true;
+        }
+
+        const chooser = this.chooser as any;
+        if (!chooser) {
+          return false;
+        }
+
+        const selected = chooser.selectedItem;
+        if (selected == null || selected < 0) {
+          return false;
+        }
+
+        if (Array.isArray(chooser.values) && chooser.values[selected] === metadata.item) {
+          return true;
+        }
+
+        return fallbackIndex != null && selected === fallbackIndex;
+    }
+
+    private async applyExpandModeToElement(
+      el: HTMLElement,
+      metadata: SuggestionPreviewMetadata,
+      fallbackIndex: number | null
+    ): Promise<void> {
+        const shouldExpandAll =
+          this.expandMode === "all" ||
+          (this.expandMode === "focus" && this.isSuggestionSelected(el, metadata, fallbackIndex));
+
+        const showMatchLine = Boolean(metadata.matchLine) && !shouldExpandAll;
+        if (metadata.matchElement) {
+          metadata.matchElement.style.display = showMatchLine ? "" : "none";
+        }
+
+        if (!metadata.lines.length) {
+          if (metadata.container) {
+            metadata.container.style.display = "none";
+          }
+          return;
+        }
+
+        if (!metadata.container) {
+          metadata.container = el.createDiv({ cls: "child-preview" });
+          metadata.container.style.display = "none";
+        }
+
+        if (shouldExpandAll) {
+          if (!metadata.renderedAll) {
+            metadata.container.empty();
+            for (const line of metadata.lines) {
+              const trimmed = line.trim();
+              if (!trimmed.length) {
+                continue;
+              }
+              const child = metadata.container.createDiv({ cls: "child-line" });
+              try {
+                await MarkdownRenderer.render(this.app, `- ${trimmed}`, child, metadata.filePath, this.plugin);
+              } catch (error) {
+                console.error("Failed to render expanded task line", error);
+                child.setText(`- ${trimmed}`);
+              }
+            }
+            metadata.renderedAll = true;
+            this.bindInternalLinkHandlers(metadata.container, metadata.filePath);
+          }
+          metadata.container.style.display = "";
+        } else {
+          metadata.container.style.display = "none";
+        }
+    }
+
+    private scheduleExpandRefresh(): void {
+        if (this.expandRefreshScheduled) {
+          return;
+        }
+        this.expandRefreshScheduled = true;
+        window.requestAnimationFrame(() => {
+          this.expandRefreshScheduled = false;
+          this.refreshExpandState();
+        });
+    }
+
+    private refreshExpandState(): void {
+        if (!this.resultContainerEl) {
+          return;
+        }
+
+        const items = Array.from(this.resultContainerEl.querySelectorAll<HTMLElement>(".suggestion-item"));
+        for (const el of items) {
+          const metadata = this.previewMetadata.get(el);
+          if (!metadata) {
+            continue;
+          }
+
+          const indexAttr = el.getAttribute("data-suggestion-index");
+          const parsedIndex = indexAttr != null && indexAttr.length ? Number(indexAttr) : null;
+          const fallbackIndex = typeof parsedIndex === "number" && Number.isFinite(parsedIndex) ? parsedIndex : null;
+          void this.applyExpandModeToElement(el, metadata, fallbackIndex);
+        }
+    }
+
+    private bindInternalLinkHandlers(root: HTMLElement, sourcePath: string): void {
+        const fallback = sourcePath || this.app.workspace.getActiveFile()?.path || "";
+        root.querySelectorAll<HTMLAnchorElement>("a.internal-link").forEach(link => {
+          if (link.dataset.plusFuzzyBound === "true") {
+            return;
+          }
+          link.dataset.plusFuzzyBound = "true";
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            const target = link.getAttribute("href") ?? "";
+            if (!target) {
+              return;
+            }
+            this.app.workspace.openLinkText(target, fallback, false);
+            this.close();
+          });
+        });
+
+        root.querySelectorAll<HTMLAnchorElement>("a.external-link").forEach(link => {
+          if (link.dataset.plusFuzzyExternalBound === "true") {
+            return;
+          }
+          link.dataset.plusFuzzyExternalBound = "true";
+          link.addEventListener("click", evt => {
+            evt.stopPropagation();
+          });
+        });
+    }
+
+    private attachThoughtCheckboxHandlers(container: HTMLElement, state: ThoughtViewState, headerSource: string): void {
+        const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="checkbox"]'));
+        if (!inputs.length) {
+            return;
+        }
+
+        for (const input of inputs) {
+            const initial = input.getAttribute('data-task') ?? (input.checked ? 'x' : ' ');
+            this.plugin.applyStatusToCheckbox(input, normalizeStatusChar(initial));
+            input.addEventListener('click', evt => {
                 evt.preventDefault();
                 evt.stopPropagation();
-                const target = (a as HTMLAnchorElement).getAttribute("href")!;
-                this.app.workspace.openLinkText(target, file.path, false);
-                this.close();
+                void this.handleThoughtCheckboxToggle(input, state, headerSource);
             });
-        });
+        }
+    }
+
+    private async handleThoughtCheckboxToggle(input: HTMLInputElement, state: ThoughtViewState, headerSource: string): Promise<void> {
+        const manager = this.plugin.taskManager;
+        if (!manager) {
+            console.warn('TaskManager not available for thought checkbox toggle');
+            return;
+        }
+
+        const task = state.task;
+        if (!task) {
+            return;
+        }
+
+        const file = state.file ?? this.resolveTaskFile(task);
+        const path = file?.path ?? task.path ?? task.file?.path ?? headerSource;
+        if (!path) {
+            console.warn('Unable to resolve task path for thought checkbox toggle', { task, headerSource });
+            return;
+        }
+
+        let lineIndex = typeof task.line === 'number' ? task.line : null;
+        if (lineIndex == null) {
+            try {
+                const fileToRead = file ?? this.app.vault.getAbstractFileByPath(path);
+                if (fileToRead instanceof TFile) {
+                    const contents = await this.app.vault.read(fileToRead);
+                    const lines = contents.split(/\r?\n/);
+                    const resolved = resolveTaskLineIndex(task, lines);
+                    if (resolved != null) {
+                        lineIndex = resolved;
+                        task.line = resolved;
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to resolve task line for thought checkbox toggle', error);
+            }
+        }
+
+        if (lineIndex == null) {
+            console.warn('Unable to determine task line for thought checkbox toggle', task);
+            return;
+        }
+
+        input.disabled = true;
+        try {
+            const tags = collectTaskTags(task)
+                .map(tag => this.plugin.normalizeTag(tag) ?? tag)
+                .filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
+            const result = await manager.cycleTaskLine({
+                file: file ?? undefined,
+                path,
+                lineNumber: lineIndex,
+                tagHint: this.plugin.normalizeTag(state.tagHint ?? this.activeTag) ?? state.tagHint ?? this.activeTag,
+                extraTags: tags,
+            });
+
+            if (!result) {
+                return;
+            }
+
+            this.plugin.applyStatusToCheckbox(input, result.status);
+            task.status = result.status;
+            task.line = lineIndex;
+            if (result.lineText) {
+                if (Array.isArray(task.lines) && task.lines.length) {
+                    task.lines[0] = result.lineText;
+                } else {
+                    task.lines = [result.lineText];
+                }
+            }
+            state.headerMarkdown = this.buildThoughtHeaderMarkdown(task, state.tagHint);
+            if (state.fullResult?.headerMarkdown) {
+                state.fullResult.headerMarkdown = state.headerMarkdown;
+            }
+            this.scheduleThoughtRerender();
+        } catch (error) {
+            console.error('Failed to toggle task status from thought header', error);
+        } finally {
+            input.disabled = false;
+        }
     }
 
     private async renderThoughtPane(host?: HTMLElement) {
@@ -1590,6 +1944,8 @@ function escapeCssIdentifier(value: string): string {
             this.close();
           });
         });
+
+        this.attachThoughtCheckboxHandlers(headerLine, state, headerSource);
 
         if (headerFile) {
           const linktext = this.app.metadataCache.fileToLinktext(headerFile, "");
@@ -1922,34 +2278,43 @@ function escapeCssIdentifier(value: string): string {
         const ln        = this.replaceRange.from.line;
         const curLine   = ed.getLine(ln);
 
-        /* leading whitespace + parent bullet (“- ” or “* ”) */
-        const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
-        const leadWS    = mIndent[1];          // spaces / tabs before bullet (if any)
-        const bullet    = mIndent[2] || "- ";  // reuse parent bullet or default "- "
-
-        /* parent line to insert ----------------------------------------------- */
+        /* parent task text cleanup */
         let text = task.text;
-        // strip off the prefix bullet/task and tag
-        // if (text.match(/#.*$/)) text = text.replace(/^.*?#[^\s]+/, "");
-        // strip blockid, if present
         if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
-        const parentTxt = `${leadWS}${bullet}${link} ${this.activeTag} *${text.trim()}*`;
 
-        /* child bullet one level deeper --------------------------------------- */
-        const childIndent  = `${leadWS}    ${bullet}`;   // 4 spaces deeper
-        const newBlock     = `${parentTxt}\n${childIndent}`;
+        const insertion = `${link} ${this.activeTag} *${text.trim()}*`;
 
-        /* replace the original trigger line */
-        ed.replaceRange(
+        const isWholeLinePrompt = /^\s*[-*+] \?\s*$/.test(curLine);
+
+        if (isWholeLinePrompt) {
+          const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
+          const leadWS    = mIndent[1];
+          const bullet    = mIndent[2] || "- ";
+          const parentTxt = `${leadWS}${bullet}${insertion}`;
+          const childIndent  = `${leadWS}    ${bullet}`;
+          const newBlock     = `${parentTxt}\n${childIndent}`;
+
+          ed.replaceRange(
             newBlock,
-            { line: ln,     ch: 0 },
-            { line: ln,     ch: curLine.length }
-        );
+            { line: ln, ch: 0 },
+            { line: ln, ch: curLine.length }
+          );
 
-        /* move cursor AFTER the modal has closed & editor regains focus -------- */
-        setTimeout(() => {
+          setTimeout(() => {
             ed.setCursor({ line: ln + 1, ch: childIndent.length });
-        }, 0);
+          }, 0);
+        } else {
+          ed.replaceRange(
+            insertion,
+            this.replaceRange.from,
+            this.replaceRange.to
+          );
+
+          const ch = this.replaceRange.from.ch + insertion.length;
+          setTimeout(() => {
+            ed.setCursor({ line: ln, ch });
+          }, 0);
+        }
 
         this.close();
     }
@@ -2296,6 +2661,7 @@ function escapeCssIdentifier(value: string): string {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
             this.lastTaskSuggestions = [];
+            this.expandMode = "none";
             const tags      = getAllTags(this.app);   // already sorted
             const q         = query.replace(/^#/, "").trim();
 
@@ -2324,6 +2690,9 @@ function escapeCssIdentifier(value: string): string {
         let body  = query.replace(/^#\S+\s/, "");           // user’s filter
         const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(body);
         body = cleanedQuery;
+        const expandResult = parseExpandFilter(body);
+        body = expandResult.cleanedQuery;
+        this.expandMode = expandResult.expandMode;
         if (hadStatusFilter && desiredStatus === null) {
           return [];
         }
@@ -2438,44 +2807,151 @@ function escapeCssIdentifier(value: string): string {
   export class TaskTagTrigger extends EditorSuggest<null> {
     private lastPromptKey: string | null = null;
 
-    constructor(app: App, private plugin: Plugin) { super(app); }
+    constructor(app: App, private plugin: ObsidianPlus) { super(app); }
 
     /**
      * Clear the cached prompt signature so the suggester can trigger again on
-     * the next freshly typed `- ?` sequence.
+     * the next freshly typed `- ?` or `??` prompt.
      */
     public resetPromptGuard(): void {
       this.lastPromptKey = null;
     }
 
     onTrigger(cursor: EditorPosition, editor: Editor): EditorSuggestTriggerInfo | null {
-        /* inside TaskTagTrigger.onTrigger() – tighten the regex */
-        const before = editor.getLine(cursor.line).slice(0, cursor.ch);
-        const line   = editor.getLine(cursor.line);      // full current line
-        const atEOL  = cursor.ch === line.length;        // cursor at end‑of‑line
+        const line = editor.getLine(cursor.line);
+        if (!line) return null;
 
-        /*  New, stricter pattern:
-            - optional leading spaces / tabs
-            - a list bullet  (- or * or +) followed by one space
-            - a single question‑mark
-            - nothing else                              */
-        const isExactPrompt = /^\s*[-*+] \?\s*$/.test(line);
-
-        if (!atEOL || !isExactPrompt) return null;       // 🚫 don’t trigger
+        if (this.isInsideCodeFence(editor, cursor.line)) {
+          return null;
+        }
 
         const file = this.app.workspace.getActiveFile();
-        const promptKey = `${file?.path ?? ""}:${cursor.line}:${line}`;
 
-        if (this.lastPromptKey === promptKey) return null;  // already handled
+        /* Inline `??` trigger ------------------------------------------------ */
+        const inlineStart = cursor.ch - 2;
+        if (inlineStart >= 0) {
+          const inlineSlice = line.slice(inlineStart, cursor.ch);
+          if (inlineSlice === "??") {
+            if (this.isInsideInlineCode(line, inlineStart)) {
+              return null;
+            }
+            const prevChar = inlineStart > 0 ? line[inlineStart - 1] : "";
+            const nextChar = cursor.ch < line.length ? line[cursor.ch] : "";
+            const prevOk = !prevChar || /[^\w?]/.test(prevChar);
+            const nextOk = !nextChar || /[^\w]/.test(nextChar);
+
+            if (prevChar !== "?" && prevOk && nextOk) {
+              const promptKey = `${file?.path ?? ""}:${cursor.line}:${inlineStart}-${cursor.ch}:${line}`;
+              if (this.lastPromptKey === promptKey) {
+                return null;
+              }
+              this.lastPromptKey = promptKey;
+
+              new TaskTagModal(this.app, this.plugin, {
+                from: { line: cursor.line, ch: inlineStart },
+                to:   { line: cursor.line, ch: cursor.ch }
+              }).open();
+
+              return null;
+            }
+          }
+        }
+
+        /* Whole-line `- ?` trigger ----------------------------------------- */
+        const atEOL = cursor.ch === line.length;
+        if (!atEOL) {
+          return null;
+        }
+
+        if (!/^\s*[-*+] \?\s*$/.test(line)) {
+          return null;
+        }
+
+        const promptKey = `${file?.path ?? ""}:${cursor.line}:${line}`;
+        if (this.lastPromptKey === promptKey) {
+          return null;
+        }
         this.lastPromptKey = promptKey;
 
         new TaskTagModal(this.app, this.plugin, {
-            from: { line: cursor.line, ch: before.length - 2 }, // start of "- ?"
-            to:   { line: cursor.line, ch: cursor.ch }
+          from: { line: cursor.line, ch: 0 },
+          to:   { line: cursor.line, ch: line.length }
         }).open();
-    
+
         return null; // never show inline suggest
     }
 
     getSuggestions() { return []; }   // required stub
+  
+    private isInsideCodeFence(editor: Editor, lineNumber: number): boolean {
+      let activeFence: { char: "`" | "~"; length: number } | null = null;
+
+      for (let i = 0; i < lineNumber; i++) {
+        const text = editor.getLine(i);
+        if (!text) continue;
+
+        const trimmed = text.trimStart();
+        const match = trimmed.match(/^(`{3,}|~{3,})/);
+        if (!match) continue;
+
+        const char = match[0][0] as "`" | "~";
+        const length = match[0].length;
+
+        if (!activeFence) {
+          activeFence = { char, length };
+          continue;
+        }
+
+        if (activeFence.char === char && length >= activeFence.length) {
+          activeFence = null;
+        }
+      }
+
+      if (!activeFence) {
+        return false;
+      }
+
+      const current = editor.getLine(lineNumber);
+      if (current) {
+        const trimmedCurrent = current.trimStart();
+        const match = trimmedCurrent.match(/^(`{3,}|~{3,})/);
+        if (match) {
+          const char = match[0][0] as "`" | "~";
+          const length = match[0].length;
+          if (activeFence.char === char && length >= activeFence.length) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }
+
+    private isInsideInlineCode(line: string, ch: number): boolean {
+      let index = 0;
+      const stack: number[] = [];
+
+      while (index < ch) {
+        if (line[index] === "`") {
+          let end = index;
+          while (end < line.length && line[end] === "`") {
+            end++;
+          }
+
+          const runLength = end - index;
+          if (stack.length && stack[stack.length - 1] === runLength) {
+            stack.pop();
+          } else {
+            stack.push(runLength);
+          }
+
+          index = end;
+          continue;
+        }
+
+        index++;
+      }
+
+      return stack.length > 0;
+    }
   }

@@ -78,6 +78,20 @@ Quick starting guide for new plugin devs:
 - `npm i` or `yarn` to install dependencies.
 - `npm run dev` to start compilation in watch mode.
 
+### Launching the task fuzzy finder from the editor
+
+- Type `??` anywhere in a note (including inline with other text) to open the tree-of-thought fuzzy finder and replace the placeholder token with the selected task reference.
+- Starting a bullet with `- ?` triggers the same modal and, after you pick a task, expands it into the formatted parent/child bullet pair the plugin generates for captured tasks.
+
+### Task search filters
+
+The fuzzy finder accepts lightweight search flags to narrow or expand task previews as you type:
+
+- Use `status:<value>` to show only tasks whose checkbox matches the requested status character or alias (for example, `status:/` to focus on in-progress items). Values mirror the status cycle you configure for each tag.
+- Use `expand:<mode>` to control how much child context renders inline with each task suggestion. `expand:none` keeps the default behavior of showing only the matching child line, `expand:focus` (aliases: `expand:current`, `expand:selected`) reveals the full outline for the currently highlighted suggestion, and `expand:all` expands every result at once.
+
+You can combine these flags with regular keywords, and the fuzzy finder will trim them from the query before ranking results.
+
 ## Manually installing the plugin
 
 - Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.

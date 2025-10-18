@@ -4,7 +4,8 @@ import { DataviewApi, Task } from 'obsidian-dataview'; // Assuming Task type exi
 
 // Import helpers - fetchExternalLinkContent will be moved into this class
 import { generateId } from './utilities';
-import { isActiveStatus } from './statusFilters';
+import ObsidianPlus from './main';
+import { advanceStatus, normalizeStatusChar, type TaskStatusChar } from './statusFilters';
 import type { ThoughtLinkPreview } from './treeOfThought';
 
 // Define TaskInfo structure used by findDvTask
@@ -98,6 +99,142 @@ export class TaskManager {
         return id;
     }
 
+    private getTasksApi(): any {
+        return (this.app.plugins.plugins["obsidian-tasks-plugin"] as any)?.apiV1;
+    }
+
+    private extractStatusCharFromLine(line: string): TaskStatusChar {
+        const match = line?.match(/\[([^\]])\]/);
+        return normalizeStatusChar(match ? match[1] : " ");
+    }
+
+    private replaceStatusMarker(line: string, status: TaskStatusChar): string {
+        if (!line) {
+            return line;
+        }
+        if (/^(\s*[-*+]\s*)\[[^\]]*\]/.test(line)) {
+            return line.replace(/^(\s*[-*+]\s*)\[[^\]]*\]/, `$1[${status}]`);
+        }
+        if (/\[[^\]]\]/.test(line)) {
+            return line.replace(/\[[^\]]\]/, `[${status}]`);
+        }
+        return line;
+    }
+
+    private collectTagsFromText(text?: string): string[] {
+        if (typeof text !== 'string') {
+            return [];
+        }
+        const matches = text.match(/#[^\s#]+/g) ?? [];
+        const tags: string[] = [];
+        for (const tag of matches) {
+            const normalized = this.obsidianPlus.normalizeTag(tag);
+            if (normalized && !tags.includes(normalized)) {
+                tags.push(normalized);
+            }
+        }
+        return tags;
+    }
+
+    private collectTagsFromTask(task: Task): string[] {
+        const tags = new Set<string>();
+        const taskTags = (task as any)?.tags;
+        if (Array.isArray(taskTags)) {
+            for (const raw of taskTags) {
+                if (typeof raw !== 'string') continue;
+                const normalized = this.obsidianPlus.normalizeTag(raw);
+                if (normalized) {
+                    tags.add(normalized);
+                }
+            }
+        }
+        if (typeof task.text === 'string') {
+            for (const tag of this.collectTagsFromText(task.text)) {
+                tags.add(tag);
+            }
+        }
+        return Array.from(tags);
+    }
+
+    private resolveStatusCycle(tagHint?: string | null, tags: string[] = []): TaskStatusChar[] {
+        if (tagHint) {
+            const normalized = this.obsidianPlus.normalizeTag(tagHint);
+            if (normalized) {
+                const configured = this.obsidianPlus.getStatusCycle(normalized);
+                if (configured?.length) {
+                    return configured;
+                }
+            }
+        }
+        for (const tag of tags) {
+            const normalized = this.obsidianPlus.normalizeTag(tag);
+            if (!normalized) continue;
+            const configured = this.obsidianPlus.getStatusCycle(normalized);
+            if (configured?.length) {
+                return configured;
+            }
+        }
+        return this.obsidianPlus.getStatusCycle();
+    }
+
+    public async cycleTaskLine(options: {
+        file?: TFile | null;
+        path?: string | null;
+        lineNumber: number;
+        tagHint?: string | null;
+        extraTags?: string[];
+    }): Promise<{ status: TaskStatusChar; lineText: string } | null> {
+        const path = options.path ?? options.file?.path ?? null;
+        if (!path) {
+            console.warn('cycleTaskLine called without a path', options);
+            return null;
+        }
+
+        const file = options.file ?? this.app.vault.getAbstractFileByPath(path);
+        if (!(file instanceof TFile)) {
+            console.error(`Could not resolve task file for path: ${path}`);
+            return null;
+        }
+
+        const lines = await this.getFileLines(file.path);
+        const index = options.lineNumber;
+        if (index == null || index < 0 || index >= lines.length) {
+            console.error(`Task line number ${index} out of bounds for file ${file.path}`);
+            return null;
+        }
+
+        const originalLine = lines[index];
+        const tagCandidates = options.extraTags && options.extraTags.length
+            ? options.extraTags
+            : this.collectTagsFromText(originalLine);
+        const cycle = this.resolveStatusCycle(options.tagHint, tagCandidates);
+        const currentStatus = this.extractStatusCharFromLine(originalLine);
+        const nextStatus = advanceStatus(currentStatus, cycle);
+
+        const tasksApi = this.getTasksApi();
+        let updatedLine = this.replaceStatusMarker(originalLine, nextStatus);
+
+        if (tasksApi && (nextStatus === 'x' || nextStatus === ' ')) {
+            try {
+                const result = tasksApi.executeToggleTaskDoneCommand(originalLine, path);
+                if (typeof result === 'string') {
+                    const toggledStatus = this.extractStatusCharFromLine(result);
+                    if (toggledStatus === nextStatus) {
+                        updatedLine = result;
+                    } else {
+                        updatedLine = this.replaceStatusMarker(result, nextStatus);
+                    }
+                }
+            } catch (error) {
+                console.error('Error using Tasks API toggle command:', error);
+            }
+        }
+
+        lines[index] = updatedLine;
+        await this.saveFileLines(file.path, lines);
+        return { status: nextStatus, lineText: updatedLine };
+    }
+
     // --- Task Finding & Manipulation ---
 
     public findDvTask(taskInfo: TaskInfo): Task | undefined {
@@ -117,69 +254,39 @@ export class TaskManager {
     }
 
     public async changeDvTaskStatus(dvTask: Task, status: string): Promise<void> {
-        const newStatusMarker = status === "error" ? "!" : status === "done" ? "x" : status; // Handle 'error' alias
         const lines = await this.getFileLines(dvTask.path);
         if (dvTask.line >= lines.length) {
             console.error(`Task line number ${dvTask.line} out of bounds for file ${dvTask.path}`);
             return;
         }
-        let line = lines[dvTask.line];
-        // Regex to replace the status marker, handling potential variations
-        line = line.replace(/^(\s*[-*+]\s*)\[.?\]/, `$1[${newStatusMarker}]`);
-        lines[dvTask.line] = line;
+        const normalized = normalizeStatusChar(status);
+        lines[dvTask.line] = this.replaceStatusMarker(lines[dvTask.line], normalized);
         await this.saveFileLines(dvTask.path, lines);
+        (dvTask as any).status = normalized;
     }
 
-    public async toggleTask(taskId: string): Promise<void> {
+    public async toggleTask(taskId: string): Promise<TaskStatusChar | null> {
         const task = this.taskCache[taskId];
         if (!task) {
             console.warn(`Task with ID ${taskId} not found in cache.`);
-            return;
+            return null;
         }
 
-        const file = this.app.metadataCache.getFirstLinkpathDest(task.path, "");
-        if (!file || !(file instanceof TFile)) {
-            console.error(`Could not find file for task path: ${task.path}`);
-            return;
+        const tags = this.collectTagsFromTask(task);
+        const tagHint = tags.length ? tags[0] : undefined;
+        const result = await this.cycleTaskLine({
+            path: task.path,
+            lineNumber: task.line,
+            tagHint,
+            extraTags: tags,
+        });
+
+        if (!result) {
+            return null;
         }
 
-        const lines = await this.getFileLines(file.path);
-        if (task.line >= lines.length) {
-            console.error(`Task line number ${task.line} out of bounds for file ${file.path}`);
-            return;
-        }
-
-        let success = false;
-        const tasksApi = (this.app.plugins.plugins["obsidian-tasks-plugin"] as any)?.apiV1;
-        if (tasksApi) {
-            try {
-                const originalLineText = lines[task.line];
-                const result = tasksApi.executeToggleTaskDoneCommand(originalLineText, task.path);
-                if (result) {
-                    lines[task.line] = result;
-                    await this.saveFileLines(file.path, lines);
-                    success = true;
-                } else {
-                    console.warn("Tasks API toggle command returned no result.");
-                }
-            } catch (error) {
-                console.error("Error using Tasks API toggle command:", error);
-            }
-        }
-
-        if (!success) {
-            let line = lines[task.line];
-            const currentStatusMatch = line.match(/\[(.)\]/);
-            if (currentStatusMatch) {
-                const currentStatus = currentStatusMatch[1];
-                const newStatus = (currentStatus === "!" || isActiveStatus(currentStatus)) ? "x" : " ";
-                line = line.replace(/\[.\]/, `[${newStatus}]`);
-                lines[task.line] = line;
-                await this.saveFileLines(file.path, lines);
-            } else {
-                console.error(`Could not find status marker "[ ]" or "[x]" on line ${task.line} for task: ${task.text}`);
-            }
-        }
+        (task as any).status = result.status;
+        return result.status;
     }
 
     public async cancelTask(taskId: string): Promise<void> {
@@ -241,6 +348,7 @@ export class TaskManager {
                 lines[task.line] = modifiedLine; // No .trim() here!
 
                 await this.saveFileLines(file.path, lines);
+                (task as any).status = '-';
                 new Notice(`Task cancelled: ${task.text}`);
             } else {
                 console.error(`Could not find status marker on line ${task.line} for task: ${task.text}`);

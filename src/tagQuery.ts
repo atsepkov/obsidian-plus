@@ -4,7 +4,7 @@ import { App, TFile, MarkdownRenderer } from 'obsidian';
 import { DataviewApi, ListItem } from 'obsidian-dataview'; // Use ListItem or specific DV types
 import { TaskManager } from './taskManager'; // Import TaskManager
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities'; // Import necessary basic utils
-import { isActiveStatus, parseStatusFilter } from './statusFilters';
+import { isActiveStatus, normalizeStatusChar, parseStatusFilter } from './statusFilters';
 
 // Define structure for child/parent entries (if needed internally, or import if defined elsewhere)
 interface TaskEntry {
@@ -465,7 +465,10 @@ export class TagQuery {
 
         if (includeCheckboxes && item.task) {
             const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
-            text = `<input type="checkbox" ${item.status === "-" ? "data-task=\"-\"" : ""} class="task-list-item-checkbox op-toggle-task" id="i${id}" ${item.status === "x" ? "checked" : ""}>` +
+            const statusChar = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
+            const ariaChecked = statusChar === "/" ? "mixed" : statusChar === "x" ? "true" : "false";
+            const checkedAttr = statusChar === "x" ? "checked" : "";
+            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${statusChar}" ${checkedAttr} aria-checked="${ariaChecked}">` +
                    `<span>${text}</span>`;
         }
 
