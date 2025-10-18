@@ -2811,6 +2811,10 @@ function escapeCssIdentifier(value: string): string {
         const line = editor.getLine(cursor.line);
         if (!line) return null;
 
+        if (this.isInsideCodeFence(editor, cursor.line)) {
+          return null;
+        }
+
         const file = this.app.workspace.getActiveFile();
 
         /* Inline `??` trigger ------------------------------------------------ */
@@ -2818,6 +2822,9 @@ function escapeCssIdentifier(value: string): string {
         if (inlineStart >= 0) {
           const inlineSlice = line.slice(inlineStart, cursor.ch);
           if (inlineSlice === "??") {
+            if (this.isInsideInlineCode(line, inlineStart)) {
+              return null;
+            }
             const prevChar = inlineStart > 0 ? line[inlineStart - 1] : "";
             const nextChar = cursor.ch < line.length ? line[cursor.ch] : "";
             const prevOk = !prevChar || /[^\w?]/.test(prevChar);
@@ -2865,4 +2872,76 @@ function escapeCssIdentifier(value: string): string {
     }
 
     getSuggestions() { return []; }   // required stub
+  
+    private isInsideCodeFence(editor: Editor, lineNumber: number): boolean {
+      let activeFence: { char: "`" | "~"; length: number } | null = null;
+
+      for (let i = 0; i < lineNumber; i++) {
+        const text = editor.getLine(i);
+        if (!text) continue;
+
+        const trimmed = text.trimStart();
+        const match = trimmed.match(/^(`{3,}|~{3,})/);
+        if (!match) continue;
+
+        const char = match[0][0] as "`" | "~";
+        const length = match[0].length;
+
+        if (!activeFence) {
+          activeFence = { char, length };
+          continue;
+        }
+
+        if (activeFence.char === char && length >= activeFence.length) {
+          activeFence = null;
+        }
+      }
+
+      if (!activeFence) {
+        return false;
+      }
+
+      const current = editor.getLine(lineNumber);
+      if (current) {
+        const trimmedCurrent = current.trimStart();
+        const match = trimmedCurrent.match(/^(`{3,}|~{3,})/);
+        if (match) {
+          const char = match[0][0] as "`" | "~";
+          const length = match[0].length;
+          if (activeFence.char === char && length >= activeFence.length) {
+            return false;
+          }
+        }
+      }
+
+      return true;
+    }
+
+    private isInsideInlineCode(line: string, ch: number): boolean {
+      let index = 0;
+      const stack: number[] = [];
+
+      while (index < ch) {
+        if (line[index] === "`") {
+          let end = index;
+          while (end < line.length && line[end] === "`") {
+            end++;
+          }
+
+          const runLength = end - index;
+          if (stack.length && stack[stack.length - 1] === runLength) {
+            stack.pop();
+          } else {
+            stack.push(runLength);
+          }
+
+          index = end;
+          continue;
+        }
+
+        index++;
+      }
+
+      return stack.length > 0;
+    }
   }
