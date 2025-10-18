@@ -867,11 +867,12 @@ export default class ObsidianPlus extends Plugin {
 
                         let tagForStack: string | null = null;
                         if (isBullet) {
-                                for (const tag of normalizedTags) {
-                                        const resolvedColor = this.resolveTagColor(tag, configuredTagColorMap);
+                                const leadingTag = this.extractLeadingTagForListItem(line, bulletMatch);
+                                if (leadingTag) {
+                                        const normalizedLeadingTag = leadingTag.toLowerCase();
+                                        const resolvedColor = this.resolveTagColor(normalizedLeadingTag, configuredTagColorMap);
                                         if (resolvedColor) {
-                                                tagForStack = tag;
-                                                break;
+                                                tagForStack = normalizedLeadingTag;
                                         }
                                 }
                         }
@@ -1529,6 +1530,43 @@ export default class ObsidianPlus extends Plugin {
                 const cleaned = singleHash.replace(/[)\],.;:!?]+$/u, '').trim();
                 if (!cleaned.length || cleaned === '#') return null;
                 return cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
+        }
+
+        private extractLeadingTagForListItem(line: string, bulletMatch: RegExpMatchArray | null): string | null {
+                let remainder = line;
+                if (bulletMatch?.[0]) {
+                        remainder = remainder.slice(bulletMatch[0].length);
+                }
+
+                const trimStart = () => {
+                        remainder = remainder.replace(/^\s+/, '');
+                };
+
+                trimStart();
+
+                const checkboxMatch = remainder.match(/^\[(?:\s|x|X|-)\]\s*/);
+                if (checkboxMatch) {
+                        remainder = remainder.slice(checkboxMatch[0].length);
+                        trimStart();
+                }
+
+                while (true) {
+                        const wikiMatch = remainder.match(/^(?:!\[\[[^\]]+\]\]|\[\[[^\]]+\]\])\s*/);
+                        if (!wikiMatch) {
+                                break;
+                        }
+                        remainder = remainder.slice(wikiMatch[0].length);
+                        trimStart();
+                }
+
+                trimStart();
+
+                const tagMatch = remainder.match(/^#([^\s#]+)/);
+                if (!tagMatch) {
+                        return null;
+                }
+
+                return this.normalizeTag(tagMatch[0]);
         }
 
         private clearTagColorCache(): void {
