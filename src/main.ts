@@ -784,19 +784,26 @@ export default class ObsidianPlus extends Plugin {
 	// --- End Additions for Sticky Header ---
 
 	// Called to mark/color-code lines based on type/error for user's attention
-	private buildDecorationSet(state: EditorState): DecorationSet {
-		// console.log('STATE', state, this)
-		const activeFile = this.app.workspace.getActiveFile();
-		if (activeFile?.path === this.settings.tagListFilePath) {
-				return Decoration.none;
-		}
+        private buildDecorationSet(state: EditorState): DecorationSet {
+                // console.log('STATE', state, this)
+                const activeFile = this.app.workspace.getActiveFile();
+                if (activeFile?.path === this.settings.tagListFilePath) {
+                                return Decoration.none;
+                }
+
+                const tagColorMap = new Map<string, { color?: string | null; textColor?: string | null }>();
+                for (const tagColor of this.settings.tagColors ?? []) {
+                        const normalized = this.normalizeTag(tagColor?.tag);
+                        if (!normalized) continue;
+                        tagColorMap.set(normalized, tagColor);
+                }
 
                 const lines = state.doc.toString().split("\n");
                 const decorations: Range<Decoration>[] = [];
                 const taskTagSet = new Set(this.settings.taskTags ?? []);
                 const projectTagSet = new Set(this.settings.projectTags ?? []);
                 const projectRootSet = new Set(this.settings.projects ?? []);
-                const contextStack: { indent: number; inProject: boolean }[] = [];
+                const contextStack: { indent: number; inProject: boolean; tag: string | null }[] = [];
                 const bulletRegex = /^(\s*)([-*+])\s+/;
                 const tagRegex = /#[^\s#]+/g;
 
@@ -806,6 +813,7 @@ export default class ObsidianPlus extends Plugin {
                         const cleanLine = line.trim();
 
                         const leadingWhitespace = (line.match(/^\s*/) ?? [""])[0];
+                        const hasIndentation = leadingWhitespace.length > 0;
                         let indent = leadingWhitespace.replace(/\t/g, "    ").length;
                         const bulletMatch = line.match(bulletRegex);
                         let isBullet = false;
@@ -814,17 +822,52 @@ export default class ObsidianPlus extends Plugin {
                                 const indentSource = bulletMatch[1] ?? "";
                                 indent = indentSource.replace(/\t/g, "    ").length;
                         }
-                        if (isBullet || cleanLine.length > 0) {
-                                while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
-                                        contextStack.pop();
+
+                        if (cleanLine.length > 0) {
+                                if (isBullet) {
+                                        while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
+                                                contextStack.pop();
+                                        }
+                                } else {
+                                        while (contextStack.length && indent < contextStack[contextStack.length - 1].indent) {
+                                                contextStack.pop();
+                                        }
                                 }
                         }
 
                         const parentInProject = contextStack.length ? contextStack[contextStack.length - 1].inProject : false;
                         const tagMatches = line.match(tagRegex) ?? [];
                         const tags = Array.from(new Set(tagMatches));
-                        const isProjectLine = tags.some(tag => projectRootSet.has(tag));
+                        const normalizedTags = tags
+                                .map((tag) => this.normalizeTag(tag))
+                                .filter((tag): tag is string => !!tag);
+                        const isProjectLine = normalizedTags.some(tag => projectRootSet.has(tag));
                         const lineInProject = isProjectLine || parentInProject;
+
+                        const lineTagEntries = contextStack.map((entry) => {
+                                if (!entry.tag) return null;
+                                const colorEntry = tagColorMap.get(entry.tag);
+                                return colorEntry?.color ?? null;
+                        });
+                        if (hasIndentation || contextStack.length > 0) {
+                                const styleParts: string[] = [];
+                                for (let level = 0; level < lineTagEntries.length; level++) {
+                                        const color = lineTagEntries[level];
+                                        if (color) {
+                                                styleParts.push(`--op-indent-color-${level + 1}: ${color}`);
+                                        }
+                                }
+                                const cmLine = state.doc.line(i + 1);
+                                const decorationConfig: { class: string; attributes?: Record<string, string> } = {
+                                        class: 'op-indent-colored-line',
+                                };
+                                if (styleParts.length) {
+                                        decorationConfig.attributes = { style: styleParts.join('; ') };
+                                }
+                                decorations.push(
+                                        Decoration.line(decorationConfig).range(cmLine.from)
+                                );
+                        }
 
                         let shouldFlag = false;
                         for (const tag of tags) {
@@ -859,7 +902,22 @@ export default class ObsidianPlus extends Plugin {
                         }
 
                         if (isBullet) {
-                                contextStack.push({ indent, inProject: lineInProject });
+                                let preferredTag: string | null = null;
+                                let fallbackTag: string | null = null;
+                                for (const tag of normalizedTags) {
+                                        if (!fallbackTag) {
+                                                fallbackTag = tag;
+                                        }
+                                        if (!preferredTag) {
+                                                const colorEntry = tagColorMap.get(tag);
+                                                if (colorEntry?.color) {
+                                                        preferredTag = tag;
+                                                }
+                                        }
+                                        if (preferredTag) break;
+                                }
+                                const tagForStack = preferredTag ?? fallbackTag;
+                                contextStack.push({ indent, inProject: lineInProject, tag: tagForStack ?? null });
                         }
 
                         // TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
