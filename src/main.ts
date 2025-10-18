@@ -3,14 +3,12 @@ import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
         Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
-import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
-// TODO: remove if no longer in use after refactor
-import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
@@ -132,10 +130,11 @@ export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	private _suggester: TaskTagTrigger;
-	public configLoader: ConfigLoader;
-	public taskManager: TaskManager;
-	public tagQuery: TagQuery;
-	public dv: any;
+        public configLoader: ConfigLoader;
+        public taskManager: TaskManager;
+        public tagQuery: TagQuery;
+        public dv: any;
+        private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
 
 	async onload() {
 		await this.loadSettings();
@@ -148,10 +147,20 @@ export default class ObsidianPlus extends Plugin {
 		const cssText = await (await fetch(cssPath)).text();
 	
 		/* 2 · inject once and register for cleanup */
-		const styleEl = document.createElement("style");
-		styleEl.textContent = cssText;
-		document.head.appendChild(styleEl);
-		this.register(() => styleEl.remove());
+                const styleEl = document.createElement("style");
+                styleEl.textContent = cssText;
+                document.head.appendChild(styleEl);
+                this.register(() => styleEl.remove());
+
+                this.registerEvent(
+                        this.app.workspace.on('css-change', () => {
+                                this.clearTagColorCache();
+                                const activeFile = this.app.workspace.getActiveFile();
+                                if (activeFile) {
+                                        this.updateFlaggedLines(activeFile);
+                                }
+                        })
+                );
 
 		// render outline icon next to block IDs in both editor and preview
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
@@ -791,11 +800,14 @@ export default class ObsidianPlus extends Plugin {
                                 return Decoration.none;
                 }
 
-                const tagColorMap = new Map<string, { color?: string | null; textColor?: string | null }>();
+                const configuredTagColorMap = new Map<string, string>();
                 for (const tagColor of this.settings.tagColors ?? []) {
                         const normalized = this.normalizeTag(tagColor?.tag);
                         if (!normalized) continue;
-                        tagColorMap.set(normalized.toLowerCase(), tagColor);
+                        const colorValue = typeof tagColor?.color === 'string' ? tagColor.color : null;
+                        if (colorValue) {
+                                configuredTagColorMap.set(normalized.toLowerCase(), colorValue);
+                        }
                 }
 
                 const lines = state.doc.toString().split("\n");
@@ -855,21 +867,13 @@ export default class ObsidianPlus extends Plugin {
 
                         let tagForStack: string | null = null;
                         if (isBullet) {
-                                let preferredTag: string | null = null;
-                                let fallbackTag: string | null = null;
                                 for (const tag of normalizedTags) {
-                                        if (!fallbackTag) {
-                                                fallbackTag = tag;
+                                        const resolvedColor = this.resolveTagColor(tag, configuredTagColorMap);
+                                        if (resolvedColor) {
+                                                tagForStack = tag;
+                                                break;
                                         }
-                                        if (!preferredTag) {
-                                                const colorEntry = tagColorMap.get(tag);
-                                                if (colorEntry?.color) {
-                                                        preferredTag = tag;
-                                                }
-                                        }
-                                        if (preferredTag) break;
                                 }
-                                tagForStack = preferredTag ?? fallbackTag ?? null;
                         }
 
                         const lineTagEntries: (string | null)[] = [];
@@ -879,8 +883,8 @@ export default class ObsidianPlus extends Plugin {
                                         lineTagEntries.push(null);
                                         continue;
                                 }
-                                const colorEntry = tagColorMap.get(entry.tag);
-                                lineTagEntries.push(colorEntry?.color ?? null);
+                                const resolved = this.resolveTagColor(entry.tag, configuredTagColorMap);
+                                lineTagEntries.push(resolved);
                         }
                         if (hasIndentation || contextStack.length > 0) {
                                 const styleParts: string[] = [];
@@ -1513,6 +1517,7 @@ export default class ObsidianPlus extends Plugin {
                 }
 
                 styleElement.textContent = this.generateTagCSS();
+                this.clearTagColorCache();
         }
 
         normalizeTag(tag?: string | null): string | null {
@@ -1524,6 +1529,132 @@ export default class ObsidianPlus extends Plugin {
                 const cleaned = singleHash.replace(/[)\],.;:!?]+$/u, '').trim();
                 if (!cleaned.length || cleaned === '#') return null;
                 return cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
+        }
+
+        private clearTagColorCache(): void {
+                this.tagColorCache.clear();
+        }
+
+        private resolveTagColor(tag: string | null | undefined, configuredTagColorMap?: Map<string, string>): string | null {
+                const normalized = this.normalizeTag(tag);
+                if (!normalized) {
+                        return null;
+                }
+
+                const lower = normalized.toLowerCase();
+                const configuredColor = configuredTagColorMap?.get(lower);
+                if (configuredColor) {
+                        return configuredColor;
+                }
+
+                const themeKey = document.body?.classList?.contains('theme-dark') ? 'dark' : 'light';
+                const cached = this.tagColorCache.get(lower);
+                if (cached && themeKey in cached) {
+                        return cached[themeKey] ?? null;
+                }
+
+                let resolved: string | null = null;
+                const coloredTagsPlugin = (this.app.plugins.plugins?.['colored-tags'] as any) ?? null;
+                const tagWithoutHash = normalized.slice(1);
+
+                if (coloredTagsPlugin?.getColors && coloredTagsPlugin?.palettes) {
+                        try {
+                                const palette = coloredTagsPlugin.palettes?.[themeKey];
+                                if (Array.isArray(palette) && palette.length) {
+                                        const settings = coloredTagsPlugin.settings ?? {};
+                                        const colors = coloredTagsPlugin.getColors(
+                                                tagWithoutHash,
+                                                palette,
+                                                settings?.mixColors ?? false,
+                                                settings?.transition ?? false,
+                                                settings?.accessibility?.highTextContrast ?? false,
+                                        );
+                                        if (colors?.background && typeof colors.background === 'string') {
+                                                resolved = colors.background;
+                                        }
+                                }
+                        } catch (error) {
+                                console.debug('Obsidian Plus: unable to read colored-tags palette for', normalized, error);
+                        }
+                }
+
+                if (!resolved) {
+                        resolved = this.sampleTagColorFromDom(normalized);
+                }
+
+                if (resolved) {
+                        let cacheEntry = this.tagColorCache.get(lower);
+                        if (!cacheEntry) {
+                                cacheEntry = {};
+                                this.tagColorCache.set(lower, cacheEntry);
+                        }
+                        cacheEntry[themeKey] = resolved;
+                }
+
+                return resolved;
+        }
+
+        private sampleTagColorFromDom(tag: string): string | null {
+                if (typeof document === 'undefined') {
+                        return null;
+                }
+
+                const normalized = this.normalizeTag(tag);
+                if (!normalized) {
+                        return null;
+                }
+
+                const tagName = normalized.slice(1);
+                const slug = tagName.toLowerCase();
+
+                const container = document.createElement('div');
+                container.style.position = 'absolute';
+                container.style.width = '0';
+                container.style.height = '0';
+                container.style.overflow = 'hidden';
+                container.style.pointerEvents = 'none';
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+
+                const cmRoot = document.createElement('div');
+                cmRoot.className = 'cm-s-obsidian';
+                container.appendChild(cmRoot);
+
+                const cmLine = document.createElement('span');
+                cmLine.className = 'cm-line';
+                cmRoot.appendChild(cmLine);
+
+                const tagSpan = document.createElement('span');
+                tagSpan.className = `cm-hashtag colored-tag-${slug}`;
+                tagSpan.textContent = normalized;
+                cmLine.appendChild(tagSpan);
+
+                const anchor = document.createElement('a');
+                anchor.className = 'tag';
+                anchor.setAttribute('href', `#${tagName}`);
+                anchor.textContent = normalized;
+                container.appendChild(anchor);
+
+                document.body.appendChild(container);
+
+                const spanStyles = window.getComputedStyle(tagSpan);
+                let color = spanStyles.backgroundColor;
+
+                if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+                        const anchorStyles = window.getComputedStyle(anchor);
+                        color = anchorStyles.backgroundColor;
+                        if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+                                color = spanStyles.color;
+                        }
+                }
+
+                container.remove();
+
+                if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+                        return null;
+                }
+
+                return color;
         }
 
         getStatusCycle(tag?: string | null): TaskStatusChar[] {
