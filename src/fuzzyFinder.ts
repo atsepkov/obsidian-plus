@@ -2819,11 +2819,15 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const closeIndex = line.indexOf("]]", openIndex + 2);
-        if (closeIndex === -1 || cursor.ch > closeIndex + 2) {
+        if (closeIndex !== -1 && cursor.ch > closeIndex + 2) {
+          return null;
+        }
+        const sliceEnd = closeIndex !== -1 ? closeIndex : cursor.ch;
+        if (sliceEnd < openIndex + 2) {
           return null;
         }
 
-        const inside = line.slice(openIndex + 2, closeIndex);
+        const inside = line.slice(openIndex + 2, sliceEnd);
         const [rawTarget, rawAlias = ""] = inside.split("|", 2);
         if (rawTarget.trim() !== "?") {
           return null;
@@ -2832,8 +2836,12 @@ function escapeCssIdentifier(value: string): string {
           return null;
         }
 
+        // When the closing brackets haven't been typed yet, accept the
+        // currently typed span so we can replace "[[?" immediately.
+        const rangeEnd = closeIndex === -1 ? cursor.ch : closeIndex + 2;
+
         const file = this.app.workspace.getActiveFile();
-        const promptKey = `${file?.path ?? ""}:${cursor.line}:${openIndex}-${closeIndex}:${line}`;
+        const promptKey = `${file?.path ?? ""}:${cursor.line}:${openIndex}-${rangeEnd}:${line}`;
         if (this.lastPromptKey === promptKey) {
           return null;
         }
@@ -2841,7 +2849,7 @@ function escapeCssIdentifier(value: string): string {
 
         new TaskTagModal(this.app, this.plugin, {
           from: { line: cursor.line, ch: openIndex },
-          to:   { line: cursor.line, ch: closeIndex + 2 }
+          to:   { line: cursor.line, ch: rangeEnd }
         }).open();
 
         return null; // never show inline suggest
