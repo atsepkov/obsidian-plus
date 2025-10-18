@@ -844,11 +844,18 @@ export default class ObsidianPlus extends Plugin {
                         const isProjectLine = normalizedTags.some(tag => projectRootSet.has(tag));
                         const lineInProject = isProjectLine || parentInProject;
 
-                        const lineTagEntries = contextStack.map((entry) => {
-                                if (!entry.tag) return null;
-                                const colorEntry = tagColorMap.get(entry.tag);
-                                return colorEntry?.color ?? null;
-                        });
+                        const lineTagEntries: (string | null)[] = [];
+                        let inheritedColor: string | null = null;
+                        for (let level = 0; level < contextStack.length; level++) {
+                                const entry = contextStack[level];
+                                if (entry.tag) {
+                                        const colorEntry = tagColorMap.get(entry.tag);
+                                        if (colorEntry?.color) {
+                                                inheritedColor = colorEntry.color;
+                                        }
+                                }
+                                lineTagEntries.push(inheritedColor);
+                        }
                         if (hasIndentation || contextStack.length > 0) {
                                 const styleParts: string[] = [];
                                 for (let level = 0; level < lineTagEntries.length; level++) {

@@ -49,7 +49,6 @@ Obsidian Plus Theme
 
 /* Multi-level indentation guides */
 .markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent {
-    position: relative;
     box-shadow: none;
     --op-indent-color-current: var(--indentation-guide-color);
 }
