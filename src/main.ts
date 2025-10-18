@@ -129,13 +129,14 @@ function updateStickyHeaderText(rootText: string, parentText: string, parentInde
 }
 
 export default class ObsidianPlus extends Plugin {
-	settings: ObsidianPlusSettings;
-	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
-	private _suggester: TaskTagTrigger;
-	public configLoader: ConfigLoader;
-	public taskManager: TaskManager;
-	public tagQuery: TagQuery;
-	public dv: any;
+        settings: ObsidianPlusSettings;
+        private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
+        private _suggester: TaskTagTrigger;
+        private fileModifyTimers: Map<string, ReturnType<typeof window.setTimeout>> = new Map();
+        public configLoader: ConfigLoader;
+        public taskManager: TaskManager;
+        public tagQuery: TagQuery;
+        public dv: any;
 
 	async onload() {
 		await this.loadSettings();
@@ -288,119 +289,34 @@ export default class ObsidianPlus extends Plugin {
 		}
 		console.log("Loaded tags:", this.settings.taskTags);
 		
-		// Listen for changes to tags config file and checked off tasks in current file
-		this.registerEvent(
-			this.app.vault.on("modify", async (file) => {
-				// Listen for changes to tags config file in the vault
-				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
-					await this.configLoader.loadTaskTagsFromFile();
-					this.pollingManager.reload();
-				}
-
-				// Listen for changes to tasks in the current file (if task was marked completed)
-				if (file instanceof TFile && file.extension === "md") {
-					if (!this.taskManager) {
-						console.warn("TaskManager not ready.");
-						return;
-					}
-					let newTasks = await this.extractTaskLines(file);
-					const oldTasks = taskCache.get(file.path) ?? [];
-			  
-					// Compare old vs. new tasks
-					const changed = compareTaskLines(oldTasks, newTasks);
-					if (changed.length === 1) {
-						console.log(`Task changed in ${file.path}:`, changed[0]);
-					  	// console.log(`Tasks changed in ${file.path}:`, changed);
-						for (const task of changed) {
-							if (task.oldText && task.newText) {
-								// for task status to change, it has to exist in both old and new
-								// console.log(`Task changed from "${task.oldText}" to "${task.newText}"`);
-								const oldTaskStatus = task.oldText.match(/\[([ xX!])\]/)[1];
-								const taskStatus = task.newText.match(/\[([ xX!])\]/)[1];
-								if (oldTaskStatus === taskStatus) {
-									continue; // only fire when task changes
-								}
-
-								const oldTaskTag = task.oldText.match(/#[\w/-]+/)[0];
-								const taskTag = task.newText.match(/#[\w/-]+/)[0];
-								if (oldTaskTag !== taskTag) {
-									continue; // user editing the line, not checking off a task
-								}
-
-								const oldTagPosition = task.oldText.indexOf(oldTaskTag);
-								const tagPosition = task.newText.indexOf(taskTag);
-								if (oldTagPosition !== tagPosition) {
-									continue; // tag misalignment implies user editing the line
-								}
-
-								const taskText = task.oldText.slice(oldTagPosition).trim();
-								// set the text to common text between old and new
-								// let taskText = '';
-								// for (let i = oldTagPosition; i < task.oldText.length; i++) {
-								// 	if (task.oldText[i] === task.newText[i]) {
-								// 		taskText += task.oldText[i];
-								// 	} else {
-								// 		break;
-								// 	}
-								// }
-
-								console.log(`Task ${taskStatus === 'x' ? 'completed' : 'incomplete'}: ${taskTag}`, task);
-								if (this.settings.webTags[taskTag]) {
-									const tagConnector = this.settings.webTags[taskTag];
-									const dataview = this.app.plugins.getPlugin("dataview");
-									if (!dataview) {
-										throw new Error("Dataview plugin not found");
-									}
-									const dvTask = this.taskManager.findDvTask({ ...task, file, taskText, tag: {
-										pos: tagPosition,
-										name: taskTag,
-									}});
-									if (!dvTask) {
-										console.error(`Could not find task in dataview for ${taskTag}`, task);
-										continue;
-									}
-									if (taskStatus === ' ') {
-										// reset trigger
-										await tagConnector.onReset(dvTask);
-										// if reset updated the task, we need to sync our cache
-										newTasks = await this.extractTaskLines(file);
-									} else if (taskStatus === 'x' && !dvTask.completed) {
-										// trigger the tag
-										try {
-											await this.changeTaskStatus(dvTask, '/');
-											const response = await tagConnector.onTrigger(dvTask);
-											await tagConnector.onSuccess(dvTask, response);
-        									await this.changeTaskStatus(dvTask, 'x');
-											// if success updated the task, we need to sync our cache
-											newTasks = await this.extractTaskLines(file);
-										} catch (e) {
-											console.error(e);
-											await tagConnector.onError(dvTask, e);
-        									await this.changeTaskStatus(dvTask, '!');
-											// if error updated the task, we need to sync our cache
-											newTasks = await this.extractTaskLines(file);
-										}
-									}
-								}
-							}
-						}
-					}
-			  
-					// Update the cache
-					taskCache.set(file.path, newTasks);
-				}
-			})
-		);
-
+                // Listen for changes to tags config file and checked off tasks in current file
                 this.registerEvent(
-                this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
-                        this._suggester?.resetPromptGuard();
-                        if (info instanceof MarkdownView) {
-                                this.handleBulletPreference(editor); // Keep this line
-                                this.autoConvertTagToTask(editor);
-                                this.applyTaskTagEnterBehavior(editor);
-                        }
-                })
+                        this.app.vault.on("modify", async (file) => {
+                                if (!(file instanceof TFile)) {
+                                        return;
+                                }
+
+                                if (file.path === this.settings.tagListFilePath && this.configLoader) {
+                                        await this.configLoader.loadTaskTagsFromFile();
+                                        this.pollingManager?.reload();
+                                }
+
+                                if (file.extension !== "md") {
+                                        return;
+                                }
+
+                                this.scheduleTaskFileProcessing(file);
+                        })
+                );
+                this.registerEvent(
+                        this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
+                                this._suggester?.resetPromptGuard();
+                                if (info instanceof MarkdownView) {
+                                        this.handleBulletPreference(editor); // Keep this line
+                                        this.autoConvertTagToTask(editor);
+                                        this.applyTaskTagEnterBehavior(editor);
+                                }
+                        })
                 );
 
 		function expandIfNeeded(evt: MouseEvent) {
@@ -1332,19 +1248,129 @@ export default class ObsidianPlus extends Plugin {
 		};
 	}
 
-	// Helper to extract lines that contain a checkbox
-	private async extractTaskLines(file: string): TaskLineInfo[] {
-		const content = await this.app.vault.read(file);
-		const lines = content.split("\n");
-		const tasks: TaskLineInfo[] = [];
-		const taskRegex = /^\s*[-*+]\s+\[(x| )\]\s+/;
-		for (let i = 0; i < lines.length; i++) {
-			if (taskRegex.test(lines[i])) {
-				tasks.push({ lineNumber: i, text: lines[i] });
-			}
-		}
-		return tasks;
-	}
+        // Helper to debounce processing of frequently modified files
+        private scheduleTaskFileProcessing(file: TFile): void {
+                const existing = this.fileModifyTimers.get(file.path);
+                if (existing) {
+                        window.clearTimeout(existing);
+                }
+
+                const timer = window.setTimeout(() => {
+                        this.fileModifyTimers.delete(file.path);
+                        void this.handleTaskFileModify(file);
+                }, 300);
+
+                this.fileModifyTimers.set(file.path, timer);
+        }
+
+        private async handleTaskFileModify(file: TFile): Promise<void> {
+                if (!this.taskManager) {
+                        console.warn("TaskManager not ready.");
+                        return;
+                }
+
+                let newTasks = await this.extractTaskLines(file);
+                const oldTasks = taskCache.get(file.path) ?? [];
+
+                // Compare old vs. new tasks
+                const changed = compareTaskLines(oldTasks, newTasks);
+                if (changed.length === 1) {
+                        console.log(`Task changed in ${file.path}:`, changed[0]);
+                        for (const task of changed) {
+                                if (task.oldText && task.newText) {
+                                        // for task status to change, it has to exist in both old and new
+                                        const oldTaskStatus = task.oldText.match(/\[([ xX!])\]/)[1];
+                                        const taskStatus = task.newText.match(/\[([ xX!])\]/)[1];
+                                        if (oldTaskStatus === taskStatus) {
+                                                continue; // only fire when task changes
+                                        }
+
+                                        const oldTaskTag = task.oldText.match(/#[\w/-]+/)[0];
+                                        const taskTag = task.newText.match(/#[\w/-]+/)[0];
+                                        if (oldTaskTag !== taskTag) {
+                                                continue; // user editing the line, not checking off a task
+                                        }
+
+                                        const oldTagPosition = task.oldText.indexOf(oldTaskTag);
+                                        const tagPosition = task.newText.indexOf(taskTag);
+                                        if (oldTagPosition !== tagPosition) {
+                                                continue; // tag misalignment implies user editing the line
+                                        }
+
+                                        const taskText = task.oldText.slice(oldTagPosition).trim();
+
+                                        console.log(`Task ${taskStatus === 'x' ? 'completed' : 'incomplete'}: ${taskTag}`, task);
+                                        if (this.settings.webTags[taskTag]) {
+                                                const tagConnector = this.settings.webTags[taskTag];
+                                                const dataview = this.app.plugins.getPlugin("dataview");
+                                                if (!dataview) {
+                                                        throw new Error("Dataview plugin not found");
+                                                }
+                                                const dvTask = this.taskManager.findDvTask({ ...task, file, taskText, tag: {
+                                                        pos: tagPosition,
+                                                        name: taskTag,
+                                                }});
+                                                if (!dvTask) {
+                                                        console.error(`Could not find task in dataview for ${taskTag}`, task);
+                                                        continue;
+                                                }
+                                                if (taskStatus === ' ') {
+                                                        // reset trigger
+                                                        await tagConnector.onReset(dvTask);
+                                                        // if reset updated the task, we need to sync our cache
+                                                        newTasks = await this.extractTaskLines(file);
+                                                } else if (taskStatus === 'x' && !dvTask.completed) {
+                                                        // trigger the tag
+                                                        try {
+                                                                await this.changeTaskStatus(dvTask, '/');
+                                                                const response = await tagConnector.onTrigger(dvTask);
+                                                                await tagConnector.onSuccess(dvTask, response);
+                                                                await this.changeTaskStatus(dvTask, 'x');
+                                                                // if success updated the task, we need to sync our cache
+                                                                newTasks = await this.extractTaskLines(file);
+                                                        } catch (e) {
+                                                                console.error(e);
+                                                                await tagConnector.onError(dvTask, e);
+                                                                await this.changeTaskStatus(dvTask, '!');
+                                                                // if error updated the task, we need to sync our cache
+                                                                newTasks = await this.extractTaskLines(file);
+                                                        }
+                                                }
+                                        }
+                                }
+                        }
+                }
+
+                // Update the cache
+                taskCache.set(file.path, newTasks);
+        }
+
+        // Helper to extract lines that contain a checkbox
+        private async extractTaskLines(file: TFile): Promise<TaskLineInfo[]> {
+                const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                let content: string | null = null;
+
+                if (activeView?.file?.path === file.path) {
+                        const editor = activeView.editor;
+                        if (editor) {
+                                content = editor.getValue();
+                        }
+                }
+
+                if (content === null) {
+                        content = await this.app.vault.cachedRead(file);
+                }
+
+                const lines = content.split("\n");
+                const tasks: TaskLineInfo[] = [];
+                const taskRegex = /^\s*[-*+]\s+\[(x| )\]\s+/;
+                for (let i = 0; i < lines.length; i++) {
+                        if (taskRegex.test(lines[i])) {
+                                tasks.push({ lineNumber: i, text: lines[i] });
+                        }
+                }
+                return tasks;
+        }
 
 	onunload() {
 		console.log('Unloading Obsidian Plus');
