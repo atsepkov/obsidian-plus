@@ -795,14 +795,20 @@ export default class ObsidianPlus extends Plugin {
                 for (const tagColor of this.settings.tagColors ?? []) {
                         const normalized = this.normalizeTag(tagColor?.tag);
                         if (!normalized) continue;
-                        tagColorMap.set(normalized, tagColor);
+                        tagColorMap.set(normalized.toLowerCase(), tagColor);
                 }
 
                 const lines = state.doc.toString().split("\n");
                 const decorations: Range<Decoration>[] = [];
-                const taskTagSet = new Set(this.settings.taskTags ?? []);
-                const projectTagSet = new Set(this.settings.projectTags ?? []);
-                const projectRootSet = new Set(this.settings.projects ?? []);
+                const taskTagSet = new Set((this.settings.taskTags ?? [])
+                        .map((tag) => this.normalizeTag(tag)?.toLowerCase())
+                        .filter((tag): tag is string => !!tag));
+                const projectTagSet = new Set((this.settings.projectTags ?? [])
+                        .map((tag) => this.normalizeTag(tag)?.toLowerCase())
+                        .filter((tag): tag is string => !!tag));
+                const projectRootSet = new Set((this.settings.projects ?? [])
+                        .map((tag) => this.normalizeTag(tag)?.toLowerCase())
+                        .filter((tag): tag is string => !!tag));
                 const contextStack: { indent: number; inProject: boolean; tag: string | null }[] = [];
                 const bulletRegex = /^(\s*)([-*+])\s+/;
                 const tagRegex = /#[^\s#]+/g;
@@ -839,22 +845,42 @@ export default class ObsidianPlus extends Plugin {
                         const tagMatches = line.match(tagRegex) ?? [];
                         const tags = Array.from(new Set(tagMatches));
                         const normalizedTags = tags
-                                .map((tag) => this.normalizeTag(tag))
+                                .map((tag) => {
+                                        const normalized = this.normalizeTag(tag);
+                                        return normalized ? normalized.toLowerCase() : null;
+                                })
                                 .filter((tag): tag is string => !!tag);
                         const isProjectLine = normalizedTags.some(tag => projectRootSet.has(tag));
                         const lineInProject = isProjectLine || parentInProject;
 
+                        let tagForStack: string | null = null;
+                        if (isBullet) {
+                                let preferredTag: string | null = null;
+                                let fallbackTag: string | null = null;
+                                for (const tag of normalizedTags) {
+                                        if (!fallbackTag) {
+                                                fallbackTag = tag;
+                                        }
+                                        if (!preferredTag) {
+                                                const colorEntry = tagColorMap.get(tag);
+                                                if (colorEntry?.color) {
+                                                        preferredTag = tag;
+                                                }
+                                        }
+                                        if (preferredTag) break;
+                                }
+                                tagForStack = preferredTag ?? fallbackTag ?? null;
+                        }
+
                         const lineTagEntries: (string | null)[] = [];
-                        let inheritedColor: string | null = null;
                         for (let level = 0; level < contextStack.length; level++) {
                                 const entry = contextStack[level];
-                                if (entry.tag) {
-                                        const colorEntry = tagColorMap.get(entry.tag);
-                                        if (colorEntry?.color) {
-                                                inheritedColor = colorEntry.color;
-                                        }
+                                if (!entry.tag) {
+                                        lineTagEntries.push(null);
+                                        continue;
                                 }
-                                lineTagEntries.push(inheritedColor);
+                                const colorEntry = tagColorMap.get(entry.tag);
+                                lineTagEntries.push(colorEntry?.color ?? null);
                         }
                         if (hasIndentation || contextStack.length > 0) {
                                 const styleParts: string[] = [];
@@ -878,7 +904,8 @@ export default class ObsidianPlus extends Plugin {
 
                         let shouldFlag = false;
                         for (const tag of tags) {
-                                if (!shouldFlag && taskTagSet.has(tag)) {
+                                const normalizedTag = this.normalizeTag(tag)?.toLowerCase();
+                                if (!shouldFlag && normalizedTag && taskTagSet.has(normalizedTag)) {
                                         const trimmed = cleanLine;
                                         const bulletPrefix = trimmed.match(/^[-*+]\s+/);
                                         if (bulletPrefix) {
@@ -894,7 +921,7 @@ export default class ObsidianPlus extends Plugin {
                                         }
                                 }
 
-                                if (!shouldFlag && projectTagSet.has(tag) && !lineInProject) {
+                                if (!shouldFlag && normalizedTag && projectTagSet.has(normalizedTag) && !lineInProject) {
                                         shouldFlag = true;
                                 }
 
@@ -909,22 +936,7 @@ export default class ObsidianPlus extends Plugin {
                         }
 
                         if (isBullet) {
-                                let preferredTag: string | null = null;
-                                let fallbackTag: string | null = null;
-                                for (const tag of normalizedTags) {
-                                        if (!fallbackTag) {
-                                                fallbackTag = tag;
-                                        }
-                                        if (!preferredTag) {
-                                                const colorEntry = tagColorMap.get(tag);
-                                                if (colorEntry?.color) {
-                                                        preferredTag = tag;
-                                                }
-                                        }
-                                        if (preferredTag) break;
-                                }
-                                const tagForStack = preferredTag ?? fallbackTag;
-                                contextStack.push({ indent, inProject: lineInProject, tag: tagForStack ?? null });
+                                contextStack.push({ indent, inProject: lineInProject, tag: tagForStack });
                         }
 
                         // TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
