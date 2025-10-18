@@ -23,6 +23,7 @@ export interface TaskEntry {
   lines:  string[];
   searchLines: string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
+  childLines?: string[];
 }
 
 export interface ThoughtTaskHint {
@@ -262,14 +263,19 @@ function escapeCssIdentifier(value: string): string {
     const pending: Record<string, boolean> = {};       // tag -> scan in‑progress
     const cache:   Record<string, TaskEntry[]> = {};   // tag -> tasks[]
 
-    function explodeLines(row: any): string[] {
-      const out = [row.text];
-      row.children?.forEach((c: any) => out.push(...explodeLines(c)));
-      return out;
-    }
-
     function toTaskEntry(row: any): TaskEntry {
+      const explodeLines = (current: any): string[] => {
+        const out = [current.text];
+        current.children?.forEach((c: any) => out.push(...explodeLines(c)));
+        return out;
+      };
+
       const lines = explodeLines(row).map((s: string) => s.trim()).filter(Boolean);
+      const childLines = Array.isArray(row.children)
+        ? row.children
+            .map((child: any) => (typeof child?.text === "string" ? child.text.trim() : ""))
+            .filter((text: string) => text.length > 0)
+        : [];
       const searchLines = lines.map(line => line.toLowerCase());
       return {
         ...row,
@@ -277,6 +283,7 @@ function escapeCssIdentifier(value: string): string {
         lines,
         searchLines,
         status: (row as any).status,
+        childLines,
       } as TaskEntry;
     }
 
@@ -1589,17 +1596,20 @@ function escapeCssIdentifier(value: string): string {
     }
 
     private collectChildPreviewLines(task: TaskEntry): string[] {
-        if (!Array.isArray(task.lines) || task.lines.length <= 1) {
+        const primary = Array.isArray(task.childLines) && task.childLines.length
+          ? task.childLines
+          : Array.isArray(task.lines)
+            ? task.lines.slice(1)
+            : [];
+
+        if (!primary.length) {
           return [];
         }
 
         const seen = new Set<string>();
         const result: string[] = [];
 
-        task.lines.forEach((line, index) => {
-          if (index === 0) {
-            return;
-          }
+        primary.forEach(line => {
           const trimmed = typeof line === "string" ? line.trim() : "";
           if (!trimmed.length) {
             return;
