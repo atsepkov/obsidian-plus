@@ -48,69 +48,61 @@ Obsidian Plus Theme
 }
 
 /* Multi-level indentation guides */
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent {
     position: relative;
     box-shadow: none;
     --op-indent-color-current: var(--indentation-guide-color);
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent::after {
-    content: "";
-    position: absolute;
-    top: 0;
-    bottom: 0;
-    left: calc(var(--indentation-guide-width, 1px) / 2);
-    transform: translateX(-50%);
-    border-left: var(--indentation-guide-width, 1px) solid var(--op-indent-color-current, var(--indentation-guide-color));
-    opacity: var(--indentation-guide-opacity, 0.5);
-    pointer-events: none;
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent::before {
+    border-inline-end-color: var(--op-indent-color-current, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(1) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(1) {
     --op-indent-color-current: var(--op-indent-color-1, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(2) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(2) {
     --op-indent-color-current: var(--op-indent-color-2, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(3) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(3) {
     --op-indent-color-current: var(--op-indent-color-3, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(4) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(4) {
     --op-indent-color-current: var(--op-indent-color-4, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(5) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(5) {
     --op-indent-color-current: var(--op-indent-color-5, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(6) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(6) {
     --op-indent-color-current: var(--op-indent-color-6, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(7) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(7) {
     --op-indent-color-current: var(--op-indent-color-7, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(8) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(8) {
     --op-indent-color-current: var(--op-indent-color-8, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(9) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(9) {
     --op-indent-color-current: var(--op-indent-color-9, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(10) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(10) {
     --op-indent-color-current: var(--op-indent-color-10, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(11) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(11) {
     --op-indent-color-current: var(--op-indent-color-11, var(--indentation-guide-color));
 }
 
-.cm-editor .cm-line.op-indent-colored-line > span.cm-indent:nth-of-type(12) {
+.markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent:nth-of-type(12) {
     --op-indent-color-current: var(--op-indent-color-12, var(--indentation-guide-color));
 }
 
