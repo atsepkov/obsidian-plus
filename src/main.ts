@@ -154,13 +154,22 @@ export default class ObsidianPlus extends Plugin {
 
                 this.registerEvent(
                         this.app.workspace.on('css-change', () => {
-                                this.clearTagColorCache();
-                                const activeFile = this.app.workspace.getActiveFile();
-                                if (activeFile) {
-                                        this.updateFlaggedLines(activeFile);
-                                }
+                                this.scheduleTagColorRefresh();
                         })
                 );
+
+                this.scheduleTagColorRefresh();
+
+                const pluginManager: any = this.app.plugins;
+                if (pluginManager?.on) {
+                        this.registerEvent(
+                                pluginManager.on('plugin-enabled', (pluginId: string) => {
+                                        if (pluginId === 'colored-tags') {
+                                                this.scheduleTagColorRefresh();
+                                        }
+                                })
+                        );
+                }
 
 		// render outline icon next to block IDs in both editor and preview
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
@@ -1518,7 +1527,7 @@ export default class ObsidianPlus extends Plugin {
                 }
 
                 styleElement.textContent = this.generateTagCSS();
-                this.clearTagColorCache();
+                this.scheduleTagColorRefresh();
         }
 
         normalizeTag(tag?: string | null): string | null {
@@ -1567,6 +1576,41 @@ export default class ObsidianPlus extends Plugin {
                 }
 
                 return this.normalizeTag(tagMatch[0]);
+        }
+
+        private scheduleTagColorRefresh(delays: number[] = [0, 250, 750, 2000]): void {
+                if (typeof window === 'undefined') {
+                        return;
+                }
+
+                const trigger = () => {
+                        this.clearTagColorCache();
+                        const activeFile = this.app.workspace.getActiveFile();
+                        if (activeFile) {
+                                this.updateFlaggedLines(activeFile);
+                        }
+                };
+
+                const run = () => {
+                        const handles: number[] = [];
+                        for (const delay of delays) {
+                                const handle = window.setTimeout(() => {
+                                        trigger();
+                                }, delay);
+                                handles.push(handle);
+                        }
+                        this.register(() => {
+                                for (const handle of handles) {
+                                        window.clearTimeout(handle);
+                                }
+                        });
+                };
+
+                if ((this.app.workspace as any)?.layoutReady) {
+                        run();
+                } else {
+                        this.app.workspace.onLayoutReady(run);
+                }
         }
 
         private clearTagColorCache(): void {
