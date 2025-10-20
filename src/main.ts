@@ -3,14 +3,12 @@ import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
         Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
-import { EditorView, Decoration, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
-// TODO: remove if no longer in use after refactor
-import { EditorView, Decoration } from "@codemirror/view";
 import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
 import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
@@ -132,10 +130,11 @@ export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	private _suggester: TaskTagTrigger;
-	public configLoader: ConfigLoader;
-	public taskManager: TaskManager;
-	public tagQuery: TagQuery;
-	public dv: any;
+        public configLoader: ConfigLoader;
+        public taskManager: TaskManager;
+        public tagQuery: TagQuery;
+        public dv: any;
+        private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
 
 	async onload() {
 		await this.loadSettings();
@@ -148,10 +147,29 @@ export default class ObsidianPlus extends Plugin {
 		const cssText = await (await fetch(cssPath)).text();
 	
 		/* 2 · inject once and register for cleanup */
-		const styleEl = document.createElement("style");
-		styleEl.textContent = cssText;
-		document.head.appendChild(styleEl);
-		this.register(() => styleEl.remove());
+                const styleEl = document.createElement("style");
+                styleEl.textContent = cssText;
+                document.head.appendChild(styleEl);
+                this.register(() => styleEl.remove());
+
+                this.registerEvent(
+                        this.app.workspace.on('css-change', () => {
+                                this.scheduleTagColorRefresh();
+                        })
+                );
+
+                this.scheduleTagColorRefresh();
+
+                const pluginManager: any = this.app.plugins;
+                if (pluginManager?.on) {
+                        this.registerEvent(
+                                pluginManager.on('plugin-enabled', (pluginId: string) => {
+                                        if (pluginId === 'colored-tags') {
+                                                this.scheduleTagColorRefresh();
+                                        }
+                                })
+                        );
+                }
 
 		// render outline icon next to block IDs in both editor and preview
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
@@ -784,19 +802,35 @@ export default class ObsidianPlus extends Plugin {
 	// --- End Additions for Sticky Header ---
 
 	// Called to mark/color-code lines based on type/error for user's attention
-	private buildDecorationSet(state: EditorState): DecorationSet {
-		// console.log('STATE', state, this)
-		const activeFile = this.app.workspace.getActiveFile();
-		if (activeFile?.path === this.settings.tagListFilePath) {
-				return Decoration.none;
-		}
+        private buildDecorationSet(state: EditorState): DecorationSet {
+                // console.log('STATE', state, this)
+                const activeFile = this.app.workspace.getActiveFile();
+                if (activeFile?.path === this.settings.tagListFilePath) {
+                                return Decoration.none;
+                }
+
+                const configuredTagColorMap = new Map<string, string>();
+                for (const tagColor of this.settings.tagColors ?? []) {
+                        const normalized = this.normalizeTag(tagColor?.tag);
+                        if (!normalized) continue;
+                        const colorValue = typeof tagColor?.color === 'string' ? tagColor.color : null;
+                        if (colorValue) {
+                                configuredTagColorMap.set(normalized.toLowerCase(), colorValue);
+                        }
+                }
 
                 const lines = state.doc.toString().split("\n");
                 const decorations: Range<Decoration>[] = [];
-                const taskTagSet = new Set(this.settings.taskTags ?? []);
-                const projectTagSet = new Set(this.settings.projectTags ?? []);
-                const projectRootSet = new Set(this.settings.projects ?? []);
-                const contextStack: { indent: number; inProject: boolean }[] = [];
+                const taskTagSet = new Set((this.settings.taskTags ?? [])
+                        .map((tag) => this.normalizeTag(tag)?.toLowerCase())
+                        .filter((tag): tag is string => !!tag));
+                const projectTagSet = new Set((this.settings.projectTags ?? [])
+                        .map((tag) => this.normalizeTag(tag)?.toLowerCase())
+                        .filter((tag): tag is string => !!tag));
+                const projectRootSet = new Set((this.settings.projects ?? [])
+                        .map((tag) => this.normalizeTag(tag)?.toLowerCase())
+                        .filter((tag): tag is string => !!tag));
+                const contextStack: { indent: number; inProject: boolean; tag: string | null }[] = [];
                 const bulletRegex = /^(\s*)([-*+])\s+/;
                 const tagRegex = /#[^\s#]+/g;
 
@@ -806,6 +840,7 @@ export default class ObsidianPlus extends Plugin {
                         const cleanLine = line.trim();
 
                         const leadingWhitespace = (line.match(/^\s*/) ?? [""])[0];
+                        const hasIndentation = leadingWhitespace.length > 0;
                         let indent = leadingWhitespace.replace(/\t/g, "    ").length;
                         const bulletMatch = line.match(bulletRegex);
                         let isBullet = false;
@@ -814,21 +849,77 @@ export default class ObsidianPlus extends Plugin {
                                 const indentSource = bulletMatch[1] ?? "";
                                 indent = indentSource.replace(/\t/g, "    ").length;
                         }
-                        if (isBullet || cleanLine.length > 0) {
-                                while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
-                                        contextStack.pop();
+
+                        if (cleanLine.length > 0) {
+                                if (isBullet) {
+                                        while (contextStack.length && indent <= contextStack[contextStack.length - 1].indent) {
+                                                contextStack.pop();
+                                        }
+                                } else {
+                                        while (contextStack.length && indent < contextStack[contextStack.length - 1].indent) {
+                                                contextStack.pop();
+                                        }
                                 }
                         }
 
                         const parentInProject = contextStack.length ? contextStack[contextStack.length - 1].inProject : false;
                         const tagMatches = line.match(tagRegex) ?? [];
                         const tags = Array.from(new Set(tagMatches));
-                        const isProjectLine = tags.some(tag => projectRootSet.has(tag));
+                        const normalizedTags = tags
+                                .map((tag) => {
+                                        const normalized = this.normalizeTag(tag);
+                                        return normalized ? normalized.toLowerCase() : null;
+                                })
+                                .filter((tag): tag is string => !!tag);
+                        const isProjectLine = normalizedTags.some(tag => projectRootSet.has(tag));
                         const lineInProject = isProjectLine || parentInProject;
+
+                        let tagForStack: string | null = null;
+                        if (isBullet) {
+                                const leadingTag = this.extractLeadingTagForListItem(line, bulletMatch);
+                                if (leadingTag) {
+                                        const normalizedLeadingTag = leadingTag.toLowerCase();
+                                        const resolvedColor = this.resolveTagColor(normalizedLeadingTag, configuredTagColorMap);
+                                        if (resolvedColor) {
+                                                tagForStack = normalizedLeadingTag;
+                                        }
+                                }
+                        }
+
+                        const lineTagEntries: (string | null)[] = [];
+                        for (let level = 0; level < contextStack.length; level++) {
+                                const entry = contextStack[level];
+                                if (!entry.tag) {
+                                        lineTagEntries.push(null);
+                                        continue;
+                                }
+                                const resolved = this.resolveTagColor(entry.tag, configuredTagColorMap);
+                                lineTagEntries.push(resolved);
+                        }
+                        if (hasIndentation || contextStack.length > 0) {
+                                const styleParts: string[] = [];
+                                for (let level = 0; level < lineTagEntries.length; level++) {
+                                        const color = lineTagEntries[level];
+                                        if (color) {
+                                                styleParts.push(`--op-indent-color-${level + 1}: ${color}`);
+                                        }
+                                }
+                                const cmLine = state.doc.line(i + 1);
+                                const decorationConfig: { class: string; attributes?: Record<string, string> } = {
+                                        class: 'op-indent-colored-line',
+                                };
+                                if (styleParts.length) {
+                                        decorationConfig.attributes = { style: styleParts.join('; ') };
+                                }
+                                decorations.push(
+                                        Decoration.line(decorationConfig).range(cmLine.from)
+                                );
+                        }
 
                         let shouldFlag = false;
                         for (const tag of tags) {
-                                if (!shouldFlag && taskTagSet.has(tag)) {
+                                const normalizedTag = this.normalizeTag(tag)?.toLowerCase();
+                                if (!shouldFlag && normalizedTag && taskTagSet.has(normalizedTag)) {
                                         const trimmed = cleanLine;
                                         const bulletPrefix = trimmed.match(/^[-*+]\s+/);
                                         if (bulletPrefix) {
@@ -844,7 +935,7 @@ export default class ObsidianPlus extends Plugin {
                                         }
                                 }
 
-                                if (!shouldFlag && projectTagSet.has(tag) && !lineInProject) {
+                                if (!shouldFlag && normalizedTag && projectTagSet.has(normalizedTag) && !lineInProject) {
                                         shouldFlag = true;
                                 }
 
@@ -859,7 +950,7 @@ export default class ObsidianPlus extends Plugin {
                         }
 
                         if (isBullet) {
-                                contextStack.push({ indent, inProject: lineInProject });
+                                contextStack.push({ indent, inProject: lineInProject, tag: tagForStack });
                         }
 
                         // TODO: add duplicate handler logic: if this tag has duplicate handler and is a duplicate, highlight it
@@ -1436,6 +1527,7 @@ export default class ObsidianPlus extends Plugin {
                 }
 
                 styleElement.textContent = this.generateTagCSS();
+                this.scheduleTagColorRefresh();
         }
 
         normalizeTag(tag?: string | null): string | null {
@@ -1447,6 +1539,204 @@ export default class ObsidianPlus extends Plugin {
                 const cleaned = singleHash.replace(/[)\],.;:!?]+$/u, '').trim();
                 if (!cleaned.length || cleaned === '#') return null;
                 return cleaned.startsWith('#') ? cleaned : `#${cleaned}`;
+        }
+
+        private extractLeadingTagForListItem(line: string, bulletMatch: RegExpMatchArray | null): string | null {
+                let remainder = line;
+                if (bulletMatch?.[0]) {
+                        remainder = remainder.slice(bulletMatch[0].length);
+                }
+
+                const trimStart = () => {
+                        remainder = remainder.replace(/^\s+/, '');
+                };
+
+                trimStart();
+
+                const checkboxMatch = remainder.match(/^\[(?:\s|x|X|-)\]\s*/);
+                if (checkboxMatch) {
+                        remainder = remainder.slice(checkboxMatch[0].length);
+                        trimStart();
+                }
+
+                while (true) {
+                        const wikiMatch = remainder.match(/^(?:!\[\[[^\]]+\]\]|\[\[[^\]]+\]\])\s*/);
+                        if (!wikiMatch) {
+                                break;
+                        }
+                        remainder = remainder.slice(wikiMatch[0].length);
+                        trimStart();
+                }
+
+                trimStart();
+
+                const tagMatch = remainder.match(/^#([^\s#]+)/);
+                if (!tagMatch) {
+                        return null;
+                }
+
+                return this.normalizeTag(tagMatch[0]);
+        }
+
+        private scheduleTagColorRefresh(delays: number[] = [0, 250, 750, 2000]): void {
+                if (typeof window === 'undefined') {
+                        return;
+                }
+
+                const trigger = () => {
+                        this.clearTagColorCache();
+                        const activeFile = this.app.workspace.getActiveFile();
+                        if (activeFile) {
+                                this.updateFlaggedLines(activeFile);
+                        }
+                };
+
+                const run = () => {
+                        const handles: number[] = [];
+                        for (const delay of delays) {
+                                const handle = window.setTimeout(() => {
+                                        trigger();
+                                }, delay);
+                                handles.push(handle);
+                        }
+                        this.register(() => {
+                                for (const handle of handles) {
+                                        window.clearTimeout(handle);
+                                }
+                        });
+                };
+
+                if ((this.app.workspace as any)?.layoutReady) {
+                        run();
+                } else {
+                        this.app.workspace.onLayoutReady(run);
+                }
+        }
+
+        private clearTagColorCache(): void {
+                this.tagColorCache.clear();
+        }
+
+        private resolveTagColor(tag: string | null | undefined, configuredTagColorMap?: Map<string, string>): string | null {
+                const normalized = this.normalizeTag(tag);
+                if (!normalized) {
+                        return null;
+                }
+
+                const lower = normalized.toLowerCase();
+                const configuredColor = configuredTagColorMap?.get(lower);
+                if (configuredColor) {
+                        return configuredColor;
+                }
+
+                const themeKey = document.body?.classList?.contains('theme-dark') ? 'dark' : 'light';
+                const cached = this.tagColorCache.get(lower);
+                if (cached && themeKey in cached) {
+                        return cached[themeKey] ?? null;
+                }
+
+                let resolved: string | null = null;
+                const coloredTagsPlugin = (this.app.plugins.plugins?.['colored-tags'] as any) ?? null;
+                const tagWithoutHash = normalized.slice(1);
+
+                if (coloredTagsPlugin?.getColors && coloredTagsPlugin?.palettes) {
+                        try {
+                                const palette = coloredTagsPlugin.palettes?.[themeKey];
+                                if (Array.isArray(palette) && palette.length) {
+                                        const settings = coloredTagsPlugin.settings ?? {};
+                                        const colors = coloredTagsPlugin.getColors(
+                                                tagWithoutHash,
+                                                palette,
+                                                settings?.mixColors ?? false,
+                                                settings?.transition ?? false,
+                                                settings?.accessibility?.highTextContrast ?? false,
+                                        );
+                                        if (colors?.background && typeof colors.background === 'string') {
+                                                resolved = colors.background;
+                                        }
+                                }
+                        } catch (error) {
+                                console.debug('Obsidian Plus: unable to read colored-tags palette for', normalized, error);
+                        }
+                }
+
+                if (!resolved) {
+                        resolved = this.sampleTagColorFromDom(normalized);
+                }
+
+                if (resolved) {
+                        let cacheEntry = this.tagColorCache.get(lower);
+                        if (!cacheEntry) {
+                                cacheEntry = {};
+                                this.tagColorCache.set(lower, cacheEntry);
+                        }
+                        cacheEntry[themeKey] = resolved;
+                }
+
+                return resolved;
+        }
+
+        private sampleTagColorFromDom(tag: string): string | null {
+                if (typeof document === 'undefined') {
+                        return null;
+                }
+
+                const normalized = this.normalizeTag(tag);
+                if (!normalized) {
+                        return null;
+                }
+
+                const tagName = normalized.slice(1);
+                const slug = tagName.toLowerCase();
+
+                const container = document.createElement('div');
+                container.style.position = 'absolute';
+                container.style.width = '0';
+                container.style.height = '0';
+                container.style.overflow = 'hidden';
+                container.style.pointerEvents = 'none';
+                container.style.opacity = '0';
+                container.style.visibility = 'hidden';
+
+                const cmRoot = document.createElement('div');
+                cmRoot.className = 'cm-s-obsidian';
+                container.appendChild(cmRoot);
+
+                const cmLine = document.createElement('span');
+                cmLine.className = 'cm-line';
+                cmRoot.appendChild(cmLine);
+
+                const tagSpan = document.createElement('span');
+                tagSpan.className = `cm-hashtag colored-tag-${slug}`;
+                tagSpan.textContent = normalized;
+                cmLine.appendChild(tagSpan);
+
+                const anchor = document.createElement('a');
+                anchor.className = 'tag';
+                anchor.setAttribute('href', `#${tagName}`);
+                anchor.textContent = normalized;
+                container.appendChild(anchor);
+
+                document.body.appendChild(container);
+
+                const spanStyles = window.getComputedStyle(tagSpan);
+                let color = spanStyles.backgroundColor;
+
+                if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+                        const anchorStyles = window.getComputedStyle(anchor);
+                        color = anchorStyles.backgroundColor;
+                        if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+                                color = spanStyles.color;
+                        }
+                }
+
+                container.remove();
+
+                if (!color || color === 'rgba(0, 0, 0, 0)' || color === 'transparent') {
+                        return null;
+                }
+
+                return color;
         }
 
         getStatusCycle(tag?: string | null): TaskStatusChar[] {
