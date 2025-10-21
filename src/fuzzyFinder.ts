@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  prepareFuzzySearch, FuzzyMatch, TFile
+  prepareFuzzySearch, FuzzyMatch, TFile, Menu
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -1916,6 +1916,7 @@ function escapeCssIdentifier(value: string): string {
         const header = container.createDiv({ cls: "tree-of-thought__header" });
         const headerRow = header.createDiv({ cls: "tree-of-thought__header-row" });
         const headerLine = headerRow.createDiv({ cls: "tree-of-thought__header-content" });
+        const headerActions = headerRow.createDiv({ cls: "tree-of-thought__header-actions" });
 
         const headerFile = state.fullResult?.sourceFile ?? state.file ?? this.resolveTaskFile(task);
         const headerSource = headerFile?.path ?? task.path ?? task.file?.path ?? "";
@@ -1949,7 +1950,7 @@ function escapeCssIdentifier(value: string): string {
 
         if (headerFile) {
           const linktext = this.app.metadataCache.fileToLinktext(headerFile, "");
-          const noteLink = headerRow.createEl("a", {
+          const noteLink = headerActions.createEl("a", {
             text: `[[${linktext}]]`,
             cls: "internal-link tree-of-thought__header-link"
           });
@@ -1961,6 +1962,28 @@ function escapeCssIdentifier(value: string): string {
             this.close();
           });
         }
+
+        const hideKeyboardButton = headerActions.createEl("button", {
+          cls: "tree-of-thought__action-button tree-of-thought__action-button--keyboard",
+          text: "Hide keyboard",
+          attr: { type: "button", "aria-label": "Hide keyboard" }
+        });
+        hideKeyboardButton.addEventListener("click", evt => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.hideModalKeyboard();
+        });
+
+        const menuButton = headerActions.createEl("button", {
+          cls: "tree-of-thought__action-button tree-of-thought__action-button--menu",
+          text: "⋯",
+          attr: { type: "button", "aria-label": "Tree of thought options", title: "Tree of thought options" }
+        });
+        menuButton.addEventListener("click", evt => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.showThoughtActionMenu(menuButton);
+        });
 
         const errorMessage = state.error ?? state.fullResult?.error;
         if (errorMessage) {
@@ -2170,6 +2193,71 @@ function escapeCssIdentifier(value: string): string {
             });
           }
         }
+    }
+
+    private hideModalKeyboard(): void {
+        if (document.activeElement === this.inputEl) {
+          (this.inputEl as HTMLInputElement).blur();
+        }
+    }
+
+    private focusModalInput(): void {
+        window.setTimeout(() => {
+          this.inputEl.focus();
+        }, 0);
+    }
+
+    private openFuzzyFinderFromMenu(): void {
+        this.exitThoughtMode();
+        this.tagMode = true;
+        this.activeTag = "#";
+        this.inputEl.value = "#";
+        this.detectMode();
+        this.scheduleSuggestionRefresh();
+        this.focusModalInput();
+    }
+
+    private showThoughtActionMenu(anchor: HTMLElement): void {
+        const menu = new Menu();
+
+        menu.addItem(item => {
+          const focused = document.activeElement === this.inputEl;
+          item.setTitle(focused ? "Hide keyboard" : "Show keyboard");
+          item.onClick(() => {
+            if (document.activeElement === this.inputEl) {
+              this.hideModalKeyboard();
+            } else {
+              this.focusModalInput();
+            }
+          });
+        });
+
+        menu.addItem(item => {
+          item.setTitle("Open FuzzyFinder");
+          item.onClick(() => {
+            this.openFuzzyFinderFromMenu();
+          });
+        });
+
+        const canOpenTree = this.plugin.canOpenTreeOfThoughtUnderCursor();
+        menu.addItem(item => {
+          const title = canOpenTree
+            ? "Open Tree of Thought Under Cursor"
+            : "Open Tree of Thought Under Cursor (cursor must be on a tagged task)";
+          item.setTitle(title);
+          item.setDisabled(!canOpenTree);
+          item.onClick(() => {
+            this.close();
+            window.setTimeout(() => {
+              this.plugin.openTreeOfThoughtUnderCursor().catch(error => {
+                console.error("Failed to open tree of thought under cursor from menu", error);
+              });
+            }, 0);
+          });
+        });
+
+        const rect = anchor.getBoundingClientRect();
+        menu.showAtPosition({ x: rect.left + rect.width / 2, y: rect.bottom });
     }
 
     private attachThoughtSectionLinkHandlers(body: HTMLElement, section: ThoughtSection) {

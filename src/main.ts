@@ -275,7 +275,7 @@ export default class ObsidianPlus extends Plugin {
                         id: 'open-task-tag-fuzzy-finder',
                         name: 'Open FuzzyFinder',
                         callback: () => {
-                                new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
+                                this.openFuzzyFinderModal();
                         }
                 });
 
@@ -295,6 +295,39 @@ export default class ObsidianPlus extends Plugin {
                                 return true;
                         }
                 });
+
+                this.registerEvent(
+                        this.app.workspace.on('editor-menu', (menu, editor, view) => {
+                                if (!view) {
+                                        return;
+                                }
+
+                                menu.addSeparator();
+
+                                menu.addItem(item => {
+                                        item.setTitle('Open FuzzyFinder');
+                                        item.setIcon('search');
+                                        item.onClick(() => {
+                                                this.openFuzzyFinderModal();
+                                        });
+                                });
+
+                                menu.addItem(item => {
+                                        const canOpen = this.canOpenTreeOfThoughtUnderCursor();
+                                        const title = canOpen
+                                                ? 'Open Tree of Thought Under Cursor'
+                                                : 'Open Tree of Thought Under Cursor (cursor must be on a tagged task)';
+                                        item.setTitle(title);
+                                        item.setIcon('lines-of-text');
+                                        item.setDisabled(!canOpen);
+                                        item.onClick(() => {
+                                                this.openTreeOfThoughtUnderCursor().catch(error => {
+                                                        console.error('Failed to open tree of thought under cursor', error);
+                                                });
+                                        });
+                                });
+                        })
+                );
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
@@ -1145,7 +1178,11 @@ export default class ObsidianPlus extends Plugin {
                 return false;
         }
 
-        private canOpenTreeOfThoughtUnderCursor(): boolean {
+        public openFuzzyFinderModal(): void {
+                new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
+        }
+
+        public canOpenTreeOfThoughtUnderCursor(): boolean {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
                 if (!view || !view.file) {
                         return false;
@@ -1161,7 +1198,7 @@ export default class ObsidianPlus extends Plugin {
                 return !!tagDetails;
         }
 
-        private async openTreeOfThoughtUnderCursor(): Promise<void> {
+        public async openTreeOfThoughtUnderCursor(): Promise<void> {
                 const context = await this.buildTreeOfThoughtContext();
                 if (!context) {
                         return;
