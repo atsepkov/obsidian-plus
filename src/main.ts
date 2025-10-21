@@ -1,7 +1,8 @@
 import path from 'path';
 import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
+        MarkdownFileInfo,
+        Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
 } from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -222,13 +223,12 @@ export default class ObsidianPlus extends Plugin {
 			}
 		});
 
-		// This creates an icon in the left ribbon.
-		// const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus', (evt: MouseEvent) => {
-		// 	// Called when the user clicks the icon.
-		// 	new Notice('This is a notice!');
-		// });
-		// Perform additional things with the ribbon
-		// ribbonIconEl.addClass('my-plugin-ribbon-class');
+		if (Platform.isMobile) {
+			const ribbonIconEl = this.addRibbonIcon('search', 'Open FuzzyFinder', () => {
+				this.openFuzzyFinderModal();
+			});
+			ribbonIconEl.addClass('obsidian-plus__ribbon-fuzzy-finder');
+		}
 
 		// This adds a status bar item to the bottom of the app. Does not work on mobile apps.
 		// const statusBarItemEl = this.addStatusBarItem();
@@ -242,16 +242,35 @@ export default class ObsidianPlus extends Plugin {
 				new SampleModal(this.app).open();
 			}
 		});
-		// This adds an editor command that can perform some operation on the current editor instance
-		this.addCommand({
-			id: 'sample-editor-command',
-			name: 'Sample editor command',
-			editorCallback: (editor: Editor, view: MarkdownView) => {
-				console.log(editor.getSelection());
-				editor.replaceSelection('Sample Editor Command');
-			}
-		});
-		// This adds a complex command that can check whether the current state of the app allows execution of the command
+                this.addCommand({
+                        id: 'open-task-tag-fuzzy-finder',
+                        name: 'Open FuzzyFinder',
+                        icon: 'search',
+                        callback: () => {
+                                this.openFuzzyFinderModal();
+                        }
+                });
+
+                this.addCommand({
+                        id: 'open-tree-of-thought-under-cursor',
+                        name: 'Open Tree of Thought Under Cursor',
+                        icon: 'lines-of-text',
+                        editorCheckCallback: (checking: boolean, editor: Editor, view: MarkdownView | MarkdownFileInfo) => {
+                                const canOpen = this.canOpenTreeOfThoughtUnderCursor(editor, view);
+                                if (checking) {
+                                        return canOpen;
+                                }
+                                if (!canOpen) {
+                                        return false;
+                                }
+                                this.openTreeOfThoughtUnderCursor(editor, view).catch(error => {
+                                        console.error('Failed to open tree of thought under cursor', error);
+                                });
+                                return true;
+                        }
+                });
+
+                // This adds a complex command that can check whether the current state of the app allows execution of the command
                 this.addCommand({
                         id: 'open-sample-modal-complex',
                         name: 'Open sample modal (complex)',
@@ -268,31 +287,6 @@ export default class ObsidianPlus extends Plugin {
                                         // This command will only show up in Command Palette when the check function returns true
                                         return true;
                                 }
-                        }
-                });
-
-                this.addCommand({
-                        id: 'open-task-tag-fuzzy-finder',
-                        name: 'Open FuzzyFinder',
-                        callback: () => {
-                                this.openFuzzyFinderModal();
-                        }
-                });
-
-                this.addCommand({
-                        id: 'open-tree-of-thought-under-cursor',
-                        name: 'Open Tree of Thought Under Cursor',
-                        checkCallback: (checking: boolean) => {
-                                const canOpen = this.canOpenTreeOfThoughtUnderCursor();
-                                if (!canOpen) {
-                                        return false;
-                                }
-                                if (!checking) {
-                                        this.openTreeOfThoughtUnderCursor().catch(error => {
-                                                console.error('Failed to open tree of thought under cursor', error);
-                                        });
-                                }
-                                return true;
                         }
                 });
 
@@ -1182,24 +1176,48 @@ export default class ObsidianPlus extends Plugin {
                 new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
         }
 
-        public canOpenTreeOfThoughtUnderCursor(): boolean {
-                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (!view || !view.file) {
+        private resolveEditorContext(editor?: Editor | null, view?: MarkdownView | MarkdownFileInfo | null): {
+                editor: Editor | null;
+                view: MarkdownView | null;
+                file: TFile | null;
+        } {
+                const resolvedView = view instanceof MarkdownView
+                        ? view
+                        : this.app.workspace.getActiveViewOfType(MarkdownView);
+
+                const file = view instanceof MarkdownView
+                        ? view.file
+                        : view?.file ?? resolvedView?.file ?? null;
+
+                const resolvedEditor = editor
+                        ?? (view instanceof MarkdownView ? view.editor : view?.editor ?? null)
+                        ?? resolvedView?.editor
+                        ?? null;
+
+                return {
+                        editor: resolvedEditor,
+                        view: resolvedView ?? null,
+                        file,
+                };
+        }
+
+        public canOpenTreeOfThoughtUnderCursor(editor?: Editor | null, view?: MarkdownView | MarkdownFileInfo | null): boolean {
+                const { editor: activeEditor, file } = this.resolveEditorContext(editor, view);
+                if (!file || !activeEditor) {
                         return false;
                 }
 
-                const editor = view.editor;
-                const cursor = editor.getCursor();
+                const cursor = activeEditor.getCursor();
                 if (!cursor) {
                         return false;
                 }
 
-                const tagDetails = this.resolveInnermostTagUnderCursor(editor, cursor);
+                const tagDetails = this.resolveInnermostTagUnderCursor(activeEditor, cursor);
                 return !!tagDetails;
         }
 
-        public async openTreeOfThoughtUnderCursor(): Promise<void> {
-                const context = await this.buildTreeOfThoughtContext();
+        public async openTreeOfThoughtUnderCursor(editor?: Editor | null, view?: MarkdownView | MarkdownFileInfo | null): Promise<void> {
+                const context = await this.buildTreeOfThoughtContext(editor, view);
                 if (!context) {
                         return;
                 }
@@ -1210,29 +1228,23 @@ export default class ObsidianPlus extends Plugin {
                 }).open();
         }
 
-        private async buildTreeOfThoughtContext(): Promise<TreeOfThoughtOpenOptions | null> {
-                const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-                if (!view) {
+        private async buildTreeOfThoughtContext(editor?: Editor | null, view?: MarkdownView | MarkdownFileInfo | null): Promise<TreeOfThoughtOpenOptions | null> {
+                const { editor: activeEditor, file } = this.resolveEditorContext(editor, view);
+                if (!file || !activeEditor) {
                         return null;
                 }
 
-                const file = view.file;
-                if (!file) {
-                        return null;
-                }
-
-                const editor = view.editor;
-                const cursor = editor.getCursor();
+                const cursor = activeEditor.getCursor();
                 if (!cursor) {
                         return null;
                 }
 
-                const tagDetails = this.resolveInnermostTagUnderCursor(editor, cursor);
+                const tagDetails = this.resolveInnermostTagUnderCursor(activeEditor, cursor);
                 if (!tagDetails) {
                         return null;
                 }
 
-                const resolved = await this.resolveTaskSearchContext(file, editor, tagDetails);
+                const resolved = await this.resolveTaskSearchContext(file, activeEditor, tagDetails);
                 const searchSource = resolved?.searchText ?? tagDetails.text;
                 const search = this.deriveInitialThoughtSearch(searchSource, tagDetails.tag);
 
