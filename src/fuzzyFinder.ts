@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  prepareFuzzySearch, FuzzyMatch, TFile, Menu
+  prepareFuzzySearch, FuzzyMatch, TFile, Menu, Platform, setIcon
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -392,6 +392,10 @@ function escapeCssIdentifier(value: string): string {
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
+    private mobileInputActionsEl: HTMLElement | null = null;
+    private mobileKeyboardButton: HTMLButtonElement | null = null;
+    private mobileInputFocusHandler: (() => void) | null = null;
+    private mobileInputBlurHandler: (() => void) | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -448,6 +452,8 @@ function escapeCssIdentifier(value: string): string {
     onOpen() {
         super.onOpen?.();                    // (safe even if base is empty)
 
+        this.installMobileInputActions();
+
         if (this.initialThoughtRequest) {
           const baseTag = this.initialThoughtRequest.tag || "#";
           const normalizedTag = this.normalizeTag(baseTag);
@@ -487,6 +493,91 @@ function escapeCssIdentifier(value: string): string {
         if (this.pointerExpandListener) {
           this.resultContainerEl?.removeEventListener("mouseover", this.pointerExpandListener);
         }
+
+        this.teardownMobileInputActions();
+    }
+
+    private installMobileInputActions(): void {
+        if (!Platform.isMobile) {
+          return;
+        }
+
+        const container = (this.inputEl?.parentElement as HTMLElement | null) ?? null;
+        if (!container) {
+          return;
+        }
+
+        container.addClass("obsidian-plus__prompt-input-container");
+
+        if (!this.mobileInputActionsEl) {
+          this.mobileInputActionsEl = container.createDiv({ cls: "obsidian-plus__prompt-input-actions" });
+        }
+
+        if (!this.mobileKeyboardButton) {
+          this.mobileKeyboardButton = this.mobileInputActionsEl.createEl("button", {
+            cls: "obsidian-plus__prompt-input-action-button",
+            attr: { type: "button" }
+          });
+          setIcon(this.mobileKeyboardButton, "keyboard");
+          this.mobileKeyboardButton.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            if (document.activeElement === this.inputEl) {
+              this.hideModalKeyboard();
+            } else {
+              this.focusModalInput();
+            }
+          });
+        }
+
+        if (!this.mobileInputFocusHandler) {
+          this.mobileInputFocusHandler = () => this.updateKeyboardToggleState();
+          this.inputEl.addEventListener("focus", this.mobileInputFocusHandler);
+        }
+
+        if (!this.mobileInputBlurHandler) {
+          this.mobileInputBlurHandler = () => this.updateKeyboardToggleState();
+          this.inputEl.addEventListener("blur", this.mobileInputBlurHandler);
+        }
+
+        this.updateKeyboardToggleState();
+    }
+
+    private teardownMobileInputActions(): void {
+        if (this.mobileInputFocusHandler) {
+          this.inputEl.removeEventListener("focus", this.mobileInputFocusHandler);
+          this.mobileInputFocusHandler = null;
+        }
+
+        if (this.mobileInputBlurHandler) {
+          this.inputEl.removeEventListener("blur", this.mobileInputBlurHandler);
+          this.mobileInputBlurHandler = null;
+        }
+
+        if (this.mobileKeyboardButton) {
+          this.mobileKeyboardButton.remove();
+          this.mobileKeyboardButton = null;
+        }
+
+        if (this.mobileInputActionsEl) {
+          this.mobileInputActionsEl.remove();
+          this.mobileInputActionsEl = null;
+        }
+
+        const container = (this.inputEl?.parentElement as HTMLElement | null) ?? null;
+        container?.removeClass("obsidian-plus__prompt-input-container");
+    }
+
+    private updateKeyboardToggleState(): void {
+        if (!this.mobileKeyboardButton) {
+          return;
+        }
+
+        const focused = document.activeElement === this.inputEl;
+        const label = focused ? "Hide keyboard" : "Show keyboard";
+        this.mobileKeyboardButton.setAttr("aria-label", label);
+        this.mobileKeyboardButton.setAttr("title", label);
+        this.mobileKeyboardButton.toggleClass("is-blurred", !focused);
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -2198,12 +2289,17 @@ function escapeCssIdentifier(value: string): string {
     private hideModalKeyboard(): void {
         if (document.activeElement === this.inputEl) {
           (this.inputEl as HTMLInputElement).blur();
+          window.setTimeout(() => this.updateKeyboardToggleState(), 0);
         }
     }
 
     private focusModalInput(): void {
         window.setTimeout(() => {
+          if (!this.inputEl?.isConnected) {
+            return;
+          }
           this.inputEl.focus();
+          this.updateKeyboardToggleState();
         }, 0);
     }
 

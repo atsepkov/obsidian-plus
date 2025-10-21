@@ -266,6 +266,52 @@ input[data-task="-"] {
     white-space: nowrap;
 }
 
+.obsidian-plus__prompt-input-container {
+    position: relative;
+}
+
+.obsidian-plus__prompt-input-container > .prompt-input {
+    padding-right: 2.5rem;
+}
+
+.obsidian-plus__prompt-input-actions {
+    position: absolute;
+    top: 50%;
+    right: 0.35rem;
+    transform: translateY(-50%);
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+}
+
+.obsidian-plus__prompt-input-action-button {
+    appearance: none;
+    border: none;
+    background: transparent;
+    padding: 0.25rem;
+    border-radius: var(--radius-s, 4px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.obsidian-plus__prompt-input-action-button:hover,
+.obsidian-plus__prompt-input-action-button:focus {
+    color: var(--text-normal);
+    background-color: var(--background-modifier-hover);
+}
+
+.obsidian-plus__prompt-input-action-button.is-blurred {
+    color: var(--text-faint);
+}
+
+.obsidian-plus__prompt-input-action-button svg {
+    width: 1.1em;
+    height: 1.1em;
+}
+
 .tree-of-thought__divider {
     border: 0;
     border-top: 1px solid var(--background-modifier-border);
