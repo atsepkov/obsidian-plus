@@ -206,24 +206,11 @@ input[data-task="-"] {
     display: flex;
     align-items: flex-start;
     gap: 0.5rem;
-    flex-wrap: wrap;
 }
 
 .tree-of-thought__header-content {
     flex: 1 1 auto;
     min-width: 0;
-}
-
-.tree-of-thought__header-actions {
-    display: flex;
-    align-items: center;
-    gap: 0.35rem;
-    margin-left: auto;
-    flex: 0 0 auto;
-}
-
-.tree-of-thought__header-actions > * {
-    flex-shrink: 0;
 }
 
 .tree-of-thought__header-content ul,
@@ -233,83 +220,8 @@ input[data-task="-"] {
 
 .tree-of-thought__header-link {
     white-space: nowrap;
+    margin-left: auto;
     color: var(--text-muted);
-}
-
-.tree-of-thought__action-button {
-    appearance: none;
-    border: 1px solid var(--background-modifier-border);
-    background-color: var(--background-modifier-form-field);
-    color: var(--text-muted);
-    font-size: 0.7rem;
-    line-height: 1;
-    padding: 0.25rem 0.55rem;
-    border-radius: var(--radius-s, 4px);
-    cursor: pointer;
-    transition: color 0.15s ease, border-color 0.15s ease, background-color 0.15s ease;
-}
-
-.tree-of-thought__action-button:hover,
-.tree-of-thought__action-button:focus {
-    color: var(--text-normal);
-    border-color: var(--text-accent);
-    background-color: var(--background-secondary);
-}
-
-.tree-of-thought__action-button--menu {
-    width: 1.8em;
-    padding-inline: 0;
-    text-align: center;
-}
-
-.tree-of-thought__action-button--keyboard {
-    white-space: nowrap;
-}
-
-.obsidian-plus__prompt-input-container {
-    position: relative;
-}
-
-.obsidian-plus__prompt-input-container > .prompt-input {
-    padding-right: 2.5rem;
-}
-
-.obsidian-plus__prompt-input-actions {
-    position: absolute;
-    top: 50%;
-    right: 0.35rem;
-    transform: translateY(-50%);
-    display: flex;
-    align-items: center;
-    gap: 0.25rem;
-}
-
-.obsidian-plus__prompt-input-action-button {
-    appearance: none;
-    border: none;
-    background: transparent;
-    padding: 0.25rem;
-    border-radius: var(--radius-s, 4px);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    color: var(--text-muted);
-    transition: color 0.15s ease, background-color 0.15s ease;
-}
-
-.obsidian-plus__prompt-input-action-button:hover,
-.obsidian-plus__prompt-input-action-button:focus {
-    color: var(--text-normal);
-    background-color: var(--background-modifier-hover);
-}
-
-.obsidian-plus__prompt-input-action-button.is-blurred {
-    color: var(--text-faint);
-}
-
-.obsidian-plus__prompt-input-action-button svg {
-    width: 1.1em;
-    height: 1.1em;
 }
 
 .tree-of-thought__divider {

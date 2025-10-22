@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  prepareFuzzySearch, FuzzyMatch, TFile, Menu, Platform, setIcon
+  prepareFuzzySearch, FuzzyMatch, TFile, Platform
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -392,10 +392,7 @@ function escapeCssIdentifier(value: string): string {
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
-    private mobileInputActionsEl: HTMLElement | null = null;
-    private mobileKeyboardButton: HTMLButtonElement | null = null;
-    private mobileInputFocusHandler: (() => void) | null = null;
-    private mobileInputBlurHandler: (() => void) | null = null;
+    private thoughtPointerDownListener: ((evt: Event) => void) | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -452,8 +449,6 @@ function escapeCssIdentifier(value: string): string {
     onOpen() {
         super.onOpen?.();                    // (safe even if base is empty)
 
-        this.installMobileInputActions();
-
         if (this.initialThoughtRequest) {
           const baseTag = this.initialThoughtRequest.tag || "#";
           const normalizedTag = this.normalizeTag(baseTag);
@@ -494,90 +489,6 @@ function escapeCssIdentifier(value: string): string {
           this.resultContainerEl?.removeEventListener("mouseover", this.pointerExpandListener);
         }
 
-        this.teardownMobileInputActions();
-    }
-
-    private installMobileInputActions(): void {
-        if (!Platform.isMobile) {
-          return;
-        }
-
-        const container = (this.inputEl?.parentElement as HTMLElement | null) ?? null;
-        if (!container) {
-          return;
-        }
-
-        container.addClass("obsidian-plus__prompt-input-container");
-
-        if (!this.mobileInputActionsEl) {
-          this.mobileInputActionsEl = container.createDiv({ cls: "obsidian-plus__prompt-input-actions" });
-        }
-
-        if (!this.mobileKeyboardButton) {
-          this.mobileKeyboardButton = this.mobileInputActionsEl.createEl("button", {
-            cls: "obsidian-plus__prompt-input-action-button",
-            attr: { type: "button" }
-          });
-          setIcon(this.mobileKeyboardButton, "keyboard");
-          this.mobileKeyboardButton.addEventListener("click", evt => {
-            evt.preventDefault();
-            evt.stopPropagation();
-            if (document.activeElement === this.inputEl) {
-              this.hideModalKeyboard();
-            } else {
-              this.focusModalInput();
-            }
-          });
-        }
-
-        if (!this.mobileInputFocusHandler) {
-          this.mobileInputFocusHandler = () => this.updateKeyboardToggleState();
-          this.inputEl.addEventListener("focus", this.mobileInputFocusHandler);
-        }
-
-        if (!this.mobileInputBlurHandler) {
-          this.mobileInputBlurHandler = () => this.updateKeyboardToggleState();
-          this.inputEl.addEventListener("blur", this.mobileInputBlurHandler);
-        }
-
-        this.updateKeyboardToggleState();
-    }
-
-    private teardownMobileInputActions(): void {
-        if (this.mobileInputFocusHandler) {
-          this.inputEl.removeEventListener("focus", this.mobileInputFocusHandler);
-          this.mobileInputFocusHandler = null;
-        }
-
-        if (this.mobileInputBlurHandler) {
-          this.inputEl.removeEventListener("blur", this.mobileInputBlurHandler);
-          this.mobileInputBlurHandler = null;
-        }
-
-        if (this.mobileKeyboardButton) {
-          this.mobileKeyboardButton.remove();
-          this.mobileKeyboardButton = null;
-        }
-
-        if (this.mobileInputActionsEl) {
-          this.mobileInputActionsEl.remove();
-          this.mobileInputActionsEl = null;
-        }
-
-        const container = (this.inputEl?.parentElement as HTMLElement | null) ?? null;
-        container?.removeClass("obsidian-plus__prompt-input-container");
-    }
-
-    private updateKeyboardToggleState(): void {
-        if (!this.mobileKeyboardButton) {
-          return;
-        }
-
-        const focused = document.activeElement === this.inputEl;
-        const label = focused ? "Hide keyboard" : "Show keyboard";
-        this.mobileKeyboardButton.setAttr("aria-label", label);
-        this.mobileKeyboardButton.setAttr("title", label);
-        this.mobileKeyboardButton.toggleClass("is-blurred", !focused);
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -1972,6 +1883,7 @@ function escapeCssIdentifier(value: string): string {
 
         container.empty();
         container.addClass("tree-of-thought__container");
+        this.ensureThoughtInteractionBindings(container);
 
         if (!this.thoughtMode) {
           return;
@@ -2007,7 +1919,6 @@ function escapeCssIdentifier(value: string): string {
         const header = container.createDiv({ cls: "tree-of-thought__header" });
         const headerRow = header.createDiv({ cls: "tree-of-thought__header-row" });
         const headerLine = headerRow.createDiv({ cls: "tree-of-thought__header-content" });
-        const headerActions = headerRow.createDiv({ cls: "tree-of-thought__header-actions" });
 
         const headerFile = state.fullResult?.sourceFile ?? state.file ?? this.resolveTaskFile(task);
         const headerSource = headerFile?.path ?? task.path ?? task.file?.path ?? "";
@@ -2041,7 +1952,7 @@ function escapeCssIdentifier(value: string): string {
 
         if (headerFile) {
           const linktext = this.app.metadataCache.fileToLinktext(headerFile, "");
-          const noteLink = headerActions.createEl("a", {
+          const noteLink = headerRow.createEl("a", {
             text: `[[${linktext}]]`,
             cls: "internal-link tree-of-thought__header-link"
           });
@@ -2053,28 +1964,6 @@ function escapeCssIdentifier(value: string): string {
             this.close();
           });
         }
-
-        const hideKeyboardButton = headerActions.createEl("button", {
-          cls: "tree-of-thought__action-button tree-of-thought__action-button--keyboard",
-          text: "Hide keyboard",
-          attr: { type: "button", "aria-label": "Hide keyboard" }
-        });
-        hideKeyboardButton.addEventListener("click", evt => {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.hideModalKeyboard();
-        });
-
-        const menuButton = headerActions.createEl("button", {
-          cls: "tree-of-thought__action-button tree-of-thought__action-button--menu",
-          text: "⋯",
-          attr: { type: "button", "aria-label": "Tree of thought options", title: "Tree of thought options" }
-        });
-        menuButton.addEventListener("click", evt => {
-          evt.preventDefault();
-          evt.stopPropagation();
-          this.showThoughtActionMenu(menuButton);
-        });
 
         const errorMessage = state.error ?? state.fullResult?.error;
         if (errorMessage) {
@@ -2289,71 +2178,49 @@ function escapeCssIdentifier(value: string): string {
     private hideModalKeyboard(): void {
         if (document.activeElement === this.inputEl) {
           (this.inputEl as HTMLInputElement).blur();
-          window.setTimeout(() => this.updateKeyboardToggleState(), 0);
         }
     }
 
-    private focusModalInput(): void {
-        window.setTimeout(() => {
-          if (!this.inputEl?.isConnected) {
-            return;
-          }
-          this.inputEl.focus();
-          this.updateKeyboardToggleState();
-        }, 0);
-    }
+    private ensureThoughtInteractionBindings(container: HTMLElement): void {
+        if (!Platform.isMobile) {
+          return;
+        }
 
-    private openFuzzyFinderFromMenu(): void {
-        this.exitThoughtMode();
-        this.tagMode = true;
-        this.activeTag = "#";
-        this.inputEl.value = "#";
-        this.detectMode();
-        this.scheduleSuggestionRefresh();
-        this.focusModalInput();
-    }
-
-    private showThoughtActionMenu(anchor: HTMLElement): void {
-        const menu = new Menu();
-
-        menu.addItem(item => {
-          const focused = document.activeElement === this.inputEl;
-          item.setTitle(focused ? "Hide keyboard" : "Show keyboard");
-          item.onClick(() => {
-            if (document.activeElement === this.inputEl) {
-              this.hideModalKeyboard();
-            } else {
-              this.focusModalInput();
+        if (!this.thoughtPointerDownListener) {
+          this.thoughtPointerDownListener = evt => {
+            if (!this.thoughtMode) {
+              return;
             }
-          });
-        });
 
-        menu.addItem(item => {
-          item.setTitle("Open FuzzyFinder");
-          item.onClick(() => {
-            this.openFuzzyFinderFromMenu();
-          });
-        });
+            if (evt instanceof PointerEvent) {
+              if (evt.pointerType && evt.pointerType !== "touch" && evt.pointerType !== "pen") {
+                // Pointer from a mouse or unknown source; leave desktop behavior unchanged.
+                return;
+              }
+            } else if (evt instanceof TouchEvent) {
+              // Always allow touches to hide the keyboard.
+            } else if (evt instanceof MouseEvent) {
+              const pointerType = (evt as PointerEvent).pointerType;
+              if (pointerType && pointerType !== "touch" && pointerType !== "pen") {
+                return;
+              }
+            } else {
+              return;
+            }
 
-        const canOpenTree = this.plugin.canOpenTreeOfThoughtUnderCursor();
-        menu.addItem(item => {
-          const title = canOpenTree
-            ? "Open Tree of Thought Under Cursor"
-            : "Open Tree of Thought Under Cursor (cursor must be on a tagged task)";
-          item.setTitle(title);
-          item.setDisabled(!canOpenTree);
-          item.onClick(() => {
-            this.close();
-            window.setTimeout(() => {
-              this.plugin.openTreeOfThoughtUnderCursor().catch(error => {
-                console.error("Failed to open tree of thought under cursor from menu", error);
-              });
-            }, 0);
-          });
-        });
+            this.hideModalKeyboard();
+          };
+        }
 
-        const rect = anchor.getBoundingClientRect();
-        menu.showAtPosition({ x: rect.left + rect.width / 2, y: rect.bottom });
+        if (container.dataset.plusThoughtBlurBound === "true") {
+          return;
+        }
+
+        container.dataset.plusThoughtBlurBound = "true";
+        const listener = this.thoughtPointerDownListener as EventListener;
+        container.addEventListener("pointerdown", listener, { passive: true });
+        container.addEventListener("mousedown", listener, { passive: true });
+        container.addEventListener("touchstart", listener, { passive: true });
     }
 
     private attachThoughtSectionLinkHandlers(body: HTMLElement, section: ThoughtSection) {
@@ -2406,6 +2273,18 @@ function escapeCssIdentifier(value: string): string {
     }
 
     /* ---------- choose behavior ---------- */
+    onChooseSuggestion(item: FuzzyMatch<string | TaskEntry>, evt: MouseEvent | KeyboardEvent) {
+        if (this.thoughtMode && Platform.isMobile && evt instanceof MouseEvent) {
+          const pointerType = (evt as PointerEvent).pointerType;
+          if (!pointerType || pointerType === "touch" || pointerType === "pen") {
+            this.hideModalKeyboard();
+            return;
+          }
+        }
+
+        super.onChooseSuggestion(item, evt);
+    }
+
     async onChooseItem(raw) {
         if (this.thoughtMode) {
             return;
