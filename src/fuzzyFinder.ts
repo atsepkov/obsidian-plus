@@ -252,19 +252,7 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(set);
     }
 
-    interface GlobalTaskRecord {
-        key: string;
-        tag: string;
-        project: string | null;
-        task: TaskEntry;
-    }
-
-    const globalTaskRegistry: { records: GlobalTaskRecord[]; keys: Set<string> } = {
-        records: [],
-        keys: new Set<string>()
-    };
-
-    function normalizeTagForGlobal(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
+    function normalizeTagForSearch(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
         if (!tag) {
             return null;
         }
@@ -282,95 +270,6 @@ function escapeCssIdentifier(value: string): string {
         }
 
         return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
-    }
-
-    function registerGlobalTask(plugin: ObsidianPlus, tag: string, task: TaskEntry, project?: string | null): void {
-        const normalizedTag = normalizeTagForGlobal(plugin, tag);
-        if (!normalizedTag) {
-            return;
-        }
-
-        if (!Array.isArray(task.tags) || !task.tags.length) {
-            task.tags = collectTaskTags(task);
-        }
-        if (!task.tags.includes(normalizedTag)) {
-            task.tags.push(normalizedTag);
-        }
-
-        task.tagHint = normalizedTag;
-        task.project = project ?? task.project ?? null;
-
-        if (!Array.isArray(task.searchLines) || !task.searchLines.length) {
-            task.searchLines = (task.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
-        }
-
-        if (!Array.isArray(task.childLines)) {
-            task.childLines = [];
-        }
-        if (!Array.isArray(task.searchChildren) || task.searchChildren.length !== task.childLines.length) {
-            task.searchChildren = task.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
-        }
-
-        const path = task.path ?? task.file?.path ?? "";
-        const lineNumber = Number.isFinite(task.line) ? Math.floor(task.line) : -1;
-        const block = task.id ?? "";
-        const key = `${project ?? ""}::${normalizedTag}::${path}::${lineNumber}::${block}::${task.text}`;
-
-        if (globalTaskRegistry.keys.has(key)) {
-            return;
-        }
-
-        globalTaskRegistry.keys.add(key);
-        globalTaskRegistry.records.push({
-            key,
-            tag: normalizedTag,
-            project: project ?? null,
-            task
-        });
-    }
-
-    function ensureGlobalTasksPrimed(plugin: ObsidianPlus, onReady: () => void): void {
-        const tags = new Set<string>();
-
-        const configured = plugin.settings?.taskTags ?? [];
-        for (const tag of configured) {
-            const normalized = normalizeTagForGlobal(plugin, tag);
-            if (normalized) {
-                tags.add(normalized);
-            }
-        }
-
-        const webTags = plugin.settings?.webTags ?? {};
-        for (const tag of Object.keys(webTags)) {
-            const normalized = normalizeTagForGlobal(plugin, tag);
-            if (normalized) {
-                tags.add(normalized);
-            }
-        }
-
-        getAllTags(plugin.app).forEach(({ tag }) => {
-            const normalized = normalizeTagForGlobal(plugin, tag);
-            if (normalized) {
-                tags.add(normalized);
-            }
-        });
-
-        for (const tag of tags) {
-            const key = tag;
-            const cached = cache[key];
-            if (Array.isArray(cached) && cached.length) {
-                for (const entry of cached) {
-                    registerGlobalTask(plugin, tag, entry);
-                }
-                continue;
-            }
-
-            collectTasksLazy(tag, plugin, onReady);
-        }
-    }
-
-    function getGlobalTaskRecords(): GlobalTaskRecord[] {
-        return globalTaskRegistry.records;
     }
 
     function normalizeTaskLine(value: string): string {
@@ -430,7 +329,7 @@ function escapeCssIdentifier(value: string): string {
         cache[key]   = [];                 // start with empty list
 
         /* Fetch Dataview API + user options */
-        const dv  = plugin.app.plugins.plugins["dataview"]?.api;
+        const dv  = (plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
         const includeCheckboxes = (plugin.settings.taskTags ?? []).includes(tag);
         const opt = {
           path: '""',
@@ -460,8 +359,28 @@ function escapeCssIdentifier(value: string): string {
           /* inside collectTasksLazy – while pushing rows into cache[key] */
           slice.forEach(r => {
             const entry = toTaskEntry(r);
+            const normalizedTag = normalizeTagForSearch(plugin, tag);
+            if (normalizedTag) {
+              entry.tagHint = normalizedTag;
+              entry.project = project ?? entry.project ?? null;
+              const tags = Array.isArray(entry.tags) && entry.tags.length
+                ? entry.tags
+                : collectTaskTags(entry);
+              entry.tags = tags;
+              if (!entry.tags.includes(normalizedTag)) {
+                entry.tags.push(normalizedTag);
+              }
+            }
+            if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
+              entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+            }
+            if (!Array.isArray(entry.childLines)) {
+              entry.childLines = [];
+            }
+            if (!Array.isArray(entry.searchChildren) || entry.searchChildren.length !== entry.childLines.length) {
+              entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+            }
             cache[key].push(entry);
-            registerGlobalTask(plugin, tag, entry, project ?? null);
           });
         //   slice.forEach(r =>
         //     cache[key].push({ ...r, text: r.text.trim() })
@@ -519,6 +438,10 @@ function escapeCssIdentifier(value: string): string {
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
+    private globalTaskCache: TaskEntry[] | null = null;
+    private globalTaskCacheReady = false;
+    private globalTaskCachePromise: Promise<void> | null = null;
+    private globalPreferredTags: Set<string> | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -2762,10 +2685,115 @@ function escapeCssIdentifier(value: string): string {
     private async sleep(ms: number): Promise<void> {
         await new Promise<void>(resolve => window.setTimeout(resolve, ms));
     }
-  
+
+    private resolveGlobalPreferredTags(): Set<string> {
+        if (this.globalPreferredTags) {
+            return this.globalPreferredTags;
+        }
+
+        const allowed = new Set<string>();
+        const taskTags = this.plugin.settings?.taskTags ?? [];
+        for (const tag of taskTags) {
+            const normalized = normalizeTagForSearch(this.plugin, tag);
+            if (normalized) {
+                allowed.add(normalized);
+            }
+        }
+
+        const webTags = this.plugin.settings?.webTags ?? {};
+        for (const tag of Object.keys(webTags)) {
+            const normalized = normalizeTagForSearch(this.plugin, tag);
+            if (normalized) {
+                allowed.add(normalized);
+            }
+        }
+
+        this.globalPreferredTags = allowed;
+        return allowed;
+    }
+
+    private buildGlobalTaskCache(): void {
+        if (this.globalTaskCacheReady || this.globalTaskCachePromise) {
+            return;
+        }
+
+        const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
+        if (!dv || typeof (this.plugin as any).query !== "function") {
+            this.globalTaskCache = [];
+            this.globalTaskCacheReady = true;
+            return;
+        }
+
+        this.globalTaskCachePromise = new Promise<void>(resolve => {
+            window.setTimeout(() => {
+                const preferredTags = this.resolveGlobalPreferredTags();
+                const options = {
+                    path: '""',
+                    includeCheckboxes: true,
+                    onlyTasks: true,
+                    onlyPrefixTags: false,
+                    ...(this.plugin.settings?.tagQueryOptions ?? {})
+                };
+
+                let rows: any[] = [];
+                try {
+                    rows = (this.plugin as any).query(dv, '#', options) as any[] ?? [];
+                } catch (error) {
+                    console.error("Global task search query failed", error);
+                }
+
+                const seen = new Set<string>();
+                const tasks: TaskEntry[] = [];
+
+                for (const row of rows) {
+                    const entry = toTaskEntry(row);
+                    const tags = collectTaskTags(entry)
+                        .map(tag => normalizeTagForSearch(this.plugin, tag))
+                        .filter((tag): tag is string => !!tag);
+
+                    if (!tags.length) {
+                        continue;
+                    }
+
+                    const normalizedTag = tags.find(tag => preferredTags.has(tag)) ?? tags[0];
+                    entry.tags = tags;
+                    entry.tagHint = normalizedTag;
+
+                    if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
+                        entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+                    }
+
+                    if (!Array.isArray(entry.childLines)) {
+                        entry.childLines = [];
+                    }
+
+                    if (!Array.isArray(entry.searchChildren) || entry.searchChildren.length !== entry.childLines.length) {
+                        entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+                    }
+
+                    const path = entry.path ?? entry.file?.path ?? "";
+                    const line = Number.isFinite(entry.line) ? Math.floor(entry.line) : -1;
+                    const key = `${path}::${line}::${entry.text}`;
+                    if (seen.has(key)) {
+                        continue;
+                    }
+                    seen.add(key);
+
+                    tasks.push(entry);
+                }
+
+                this.globalTaskCache = tasks;
+                this.globalTaskCacheReady = true;
+                this.globalTaskCachePromise = null;
+                resolve();
+                this.scheduleSuggestionRefresh();
+            }, 0);
+        });
+    }
+
     /* ---------- gather tasks with a given tag ---------- */
     private collectTasks(tag: string, project?: string): TaskEntry[] {
-        const dv = this.plugin.app.plugins.plugins["dataview"]?.api;
+        const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
 
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
@@ -2780,7 +2808,27 @@ function escapeCssIdentifier(value: string): string {
             }) as any[];
             return (rows ?? []).map(r => {
               const entry = toTaskEntry(r);
-              registerGlobalTask(this.plugin, tag, entry, project ?? null);
+              const normalizedTag = normalizeTagForSearch(this.plugin, tag);
+              if (normalizedTag) {
+                entry.tagHint = normalizedTag;
+                entry.project = project ?? entry.project ?? null;
+                const tags = Array.isArray(entry.tags) && entry.tags.length
+                  ? entry.tags
+                  : collectTaskTags(entry);
+                entry.tags = tags;
+                if (!entry.tags.includes(normalizedTag)) {
+                  entry.tags.push(normalizedTag);
+                }
+              }
+              if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
+                entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+              }
+              if (!Array.isArray(entry.childLines)) {
+                entry.childLines = [];
+              }
+              if (!Array.isArray(entry.searchChildren) || entry.searchChildren.length !== entry.childLines.length) {
+                entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+              }
               return entry;
             });
           } catch (e) { console.error("Dataview query failed", e); }
@@ -2793,26 +2841,24 @@ function escapeCssIdentifier(value: string): string {
     private getGlobalTaskSuggestions(query: string) {
         this.lastTaskSuggestions = [];
 
-        ensureGlobalTasksPrimed(this.plugin, () => this.scheduleSuggestionRefresh());
-
         const trimmed = query.trim();
         const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(trimmed);
         const expandResult = parseExpandFilter(cleanedQuery);
-        let body = expandResult.cleanedQuery.trim();
+        const body = expandResult.cleanedQuery.trim();
         this.expandMode = expandResult.expandMode;
 
         if (hadStatusFilter && desiredStatus === null) {
           return [];
         }
 
-        if (!body.length && !hadStatusFilter) {
+        const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
+        if (!tokens.length && !hadStatusFilter) {
           return [];
         }
 
-        const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
         const tokenRegexes = tokens
-          .map(tok => {
-            const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          .map(token => {
+            const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             try {
               return new RegExp(`\\b${escaped}\\b`, "i");
             } catch (_error) {
@@ -2821,11 +2867,17 @@ function escapeCssIdentifier(value: string): string {
           })
           .filter((value): value is RegExp => value instanceof RegExp);
 
-        const hasFuzzyBody = body.length > 0;
-        const scorer = hasFuzzyBody ? prepareFuzzySearch(body) : null;
+        if (!this.globalTaskCacheReady) {
+          this.buildGlobalTaskCache();
+          return [];
+        }
 
-        const suggestions = getGlobalTaskRecords().flatMap((record, idx) => {
-          const task = record.task;
+        const tasks = this.globalTaskCache ?? [];
+        if (!tasks.length) {
+          return [];
+        }
+
+        const suggestions = tasks.flatMap((task, idx) => {
           const statusChar = task.status ?? " ";
 
           if (hadStatusFilter) {
@@ -2838,52 +2890,55 @@ function escapeCssIdentifier(value: string): string {
             }
           }
 
+          const lines = task.lines ?? [];
+          const searchLines = task.searchLines ?? lines.map(line => line.toLowerCase());
+          const childLines = task.childLines ?? [];
+          const searchChildren = task.searchChildren ?? childLines.map(line => line.toLowerCase());
+
           let bestLine: string | null = null;
           let bestScore = -Infinity;
 
-          const lines = Array.isArray(task.lines) ? task.lines : [];
-          const totalLines = lines.length;
-
-          for (let lineIndex = 0; lineIndex < totalLines; lineIndex++) {
-            const rawLine = lines[lineIndex];
-            if (typeof rawLine !== "string" || !rawLine.trim().length) {
-              continue;
+          const considerLine = (rawLine: string, lowered: string, baseScore: number) => {
+            if (tokenRegexes.length && !tokenRegexes.every(regex => regex.test(rawLine))) {
+              return;
             }
 
-            const lowered = task.searchLines?.[lineIndex] ?? rawLine.toLowerCase();
-            if (tokens.length && !tokens.every(token => lowered.includes(token))) {
-              continue;
+            if (!tokenRegexes.length && !hadStatusFilter) {
+              return;
             }
 
-            let score = 0;
-            if (scorer) {
-              const match = scorer(rawLine);
-              if (!match) {
-                continue;
-              }
-              score = match.score;
-            }
-
-            let bonus = 0;
-            for (const regex of tokenRegexes) {
-              if (regex.test(lowered)) {
-                bonus += 500;
-              }
-            }
-
-            const total = score + bonus;
-            if (total > bestScore) {
-              bestScore = total;
+            const score = baseScore - Math.min(lowered.length, 120);
+            if (score > bestScore) {
+              bestScore = score;
               bestLine = rawLine.trim();
             }
+          };
+
+          if (!tokenRegexes.length && hadStatusFilter) {
+            const rawLine = typeof lines[0] === "string" ? lines[0] : (typeof task.text === "string" ? task.text : "");
+            const lowered = searchLines[0] ?? rawLine.toLowerCase();
+            considerLine(rawLine, lowered, 200);
+          } else {
+            lines.forEach((line, lineIndex) => {
+              if (typeof line !== "string") {
+                return;
+              }
+              const lowered = searchLines[lineIndex] ?? line.toLowerCase();
+              considerLine(line, lowered, 200 - lineIndex);
+            });
+
+            childLines.forEach((line, lineIndex) => {
+              if (typeof line !== "string") {
+                return;
+              }
+              const lowered = searchChildren[lineIndex] ?? line.toLowerCase();
+              considerLine(line, lowered, 120 - lineIndex);
+            });
           }
 
           if (!bestLine) {
             return [];
           }
-
-          task.tagHint = record.tag;
-          task.project = record.project;
 
           return [{
             item: task,
@@ -2893,7 +2948,7 @@ function escapeCssIdentifier(value: string): string {
           } as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })];
         }) as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[];
 
-        suggestions.sort((a, b) => b.score - a.score);
+        suggestions.sort((a, b) => b.score - a.score || a.sourceIdx - b.sourceIdx);
 
         this.lastTaskSuggestions = suggestions;
         return suggestions;
