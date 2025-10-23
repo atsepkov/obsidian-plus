@@ -2980,20 +2980,21 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
-        if (!tokens.length && !hadStatusFilter) {
+        const uniqueTokens = Array.from(new Set(tokens));
+
+        if (!uniqueTokens.length && !hadStatusFilter) {
           return [];
         }
 
-        const tokenRegexes = tokens
-          .map(token => {
-            const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-            try {
-              return new RegExp(`\\b${escaped}(?=\\w|\\b)`, "i");
-            } catch (_error) {
-              return null;
-            }
-          })
-          .filter((value): value is RegExp => value instanceof RegExp);
+        const computeWordSegments = (input: string): string[] => {
+          if (!input.length) {
+            return [];
+          }
+
+          return input
+            .split(/[^0-9a-z_]+/g)
+            .filter(Boolean);
+        };
 
         if (!this.globalTaskCacheReady) {
           this.buildGlobalTaskCache();
@@ -3026,12 +3027,18 @@ function escapeCssIdentifier(value: string): string {
           let bestLine: string | null = null;
           let bestScore = -Infinity;
 
+          let bestSegments: string[] | null = null;
+
           const considerLine = (rawLine: string, lowered: string, baseScore: number) => {
-            if (tokenRegexes.length && !tokenRegexes.every(regex => regex.test(rawLine))) {
+            const segments = computeWordSegments(lowered);
+
+            if (uniqueTokens.length && !uniqueTokens.every(token => {
+              return segments.some(segment => segment.startsWith(token));
+            })) {
               return;
             }
 
-            if (!tokenRegexes.length && !hadStatusFilter) {
+            if (!uniqueTokens.length && !hadStatusFilter) {
               return;
             }
 
@@ -3039,10 +3046,11 @@ function escapeCssIdentifier(value: string): string {
             if (score > bestScore) {
               bestScore = score;
               bestLine = rawLine.trim();
+              bestSegments = segments;
             }
           };
 
-          if (!tokenRegexes.length && hadStatusFilter) {
+          if (!uniqueTokens.length && hadStatusFilter) {
             const rawLine = typeof lines[0] === "string" ? lines[0] : (typeof task.text === "string" ? task.text : "");
             const lowered = searchLines[0] ?? rawLine.toLowerCase();
             considerLine(rawLine, lowered, 200);
@@ -3068,9 +3076,19 @@ function escapeCssIdentifier(value: string): string {
             return [];
           }
 
+          let bonus = 0;
+          if (uniqueTokens.length && bestSegments) {
+            const segmentSet = new Set(bestSegments);
+            for (const token of uniqueTokens) {
+              if (segmentSet.has(token)) {
+                bonus += 500;
+              }
+            }
+          }
+
           return [{
             item: task,
-            score: bestScore,
+            score: bestScore + bonus,
             matchLine: bestLine,
             sourceIdx: idx
           } as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })];
