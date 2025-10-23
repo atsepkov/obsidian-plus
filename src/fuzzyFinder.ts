@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  prepareFuzzySearch, FuzzyMatch, TFile
+  prepareFuzzySearch, FuzzyMatch, TFile, Platform
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -392,6 +392,7 @@ function escapeCssIdentifier(value: string): string {
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
+    private thoughtPointerDownListener: ((evt: Event) => void) | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -487,6 +488,7 @@ function escapeCssIdentifier(value: string): string {
         if (this.pointerExpandListener) {
           this.resultContainerEl?.removeEventListener("mouseover", this.pointerExpandListener);
         }
+
     }
 
     private handleKeys(evt: KeyboardEvent) {
@@ -1881,6 +1883,7 @@ function escapeCssIdentifier(value: string): string {
 
         container.empty();
         container.addClass("tree-of-thought__container");
+        this.ensureThoughtInteractionBindings(container);
 
         if (!this.thoughtMode) {
           return;
@@ -2172,6 +2175,54 @@ function escapeCssIdentifier(value: string): string {
         }
     }
 
+    private hideModalKeyboard(): void {
+        if (document.activeElement === this.inputEl) {
+          (this.inputEl as HTMLInputElement).blur();
+        }
+    }
+
+    private ensureThoughtInteractionBindings(container: HTMLElement): void {
+        if (!Platform.isMobile) {
+          return;
+        }
+
+        if (!this.thoughtPointerDownListener) {
+          this.thoughtPointerDownListener = evt => {
+            if (!this.thoughtMode) {
+              return;
+            }
+
+            if (evt instanceof PointerEvent) {
+              if (evt.pointerType && evt.pointerType !== "touch" && evt.pointerType !== "pen") {
+                // Pointer from a mouse or unknown source; leave desktop behavior unchanged.
+                return;
+              }
+            } else if (evt instanceof TouchEvent) {
+              // Always allow touches to hide the keyboard.
+            } else if (evt instanceof MouseEvent) {
+              const pointerType = (evt as PointerEvent).pointerType;
+              if (pointerType && pointerType !== "touch" && pointerType !== "pen") {
+                return;
+              }
+            } else {
+              return;
+            }
+
+            this.hideModalKeyboard();
+          };
+        }
+
+        if (container.dataset.plusThoughtBlurBound === "true") {
+          return;
+        }
+
+        container.dataset.plusThoughtBlurBound = "true";
+        const listener = this.thoughtPointerDownListener as EventListener;
+        container.addEventListener("pointerdown", listener, { passive: true });
+        container.addEventListener("mousedown", listener, { passive: true });
+        container.addEventListener("touchstart", listener, { passive: true });
+    }
+
     private attachThoughtSectionLinkHandlers(body: HTMLElement, section: ThoughtSection) {
         const filePath = section.file?.path ?? "";
 
@@ -2222,6 +2273,18 @@ function escapeCssIdentifier(value: string): string {
     }
 
     /* ---------- choose behavior ---------- */
+    onChooseSuggestion(item: FuzzyMatch<string | TaskEntry>, evt: MouseEvent | KeyboardEvent) {
+        if (this.thoughtMode && Platform.isMobile && evt instanceof MouseEvent) {
+          const pointerType = (evt as PointerEvent).pointerType;
+          if (!pointerType || pointerType === "touch" || pointerType === "pen") {
+            this.hideModalKeyboard();
+            return;
+          }
+        }
+
+        super.onChooseSuggestion(item, evt);
+    }
+
     async onChooseItem(raw) {
         if (this.thoughtMode) {
             return;
