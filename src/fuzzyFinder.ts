@@ -24,6 +24,10 @@ export interface TaskEntry {
   searchLines: string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
   childLines?: string[];
+  tags?: string[];
+  tagHint?: string | null;
+  project?: string | null;
+  searchChildren?: string[];
 }
 
 export interface ThoughtTaskHint {
@@ -248,6 +252,127 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(set);
     }
 
+    interface GlobalTaskRecord {
+        key: string;
+        tag: string;
+        project: string | null;
+        task: TaskEntry;
+    }
+
+    const globalTaskRegistry: { records: GlobalTaskRecord[]; keys: Set<string> } = {
+        records: [],
+        keys: new Set<string>()
+    };
+
+    function normalizeTagForGlobal(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
+        if (!tag) {
+            return null;
+        }
+
+        const normalized = typeof plugin.normalizeTag === "function"
+            ? plugin.normalizeTag(tag)
+            : null;
+        if (normalized) {
+            return normalized;
+        }
+
+        const trimmed = tag.trim();
+        if (!trimmed.length || trimmed === "#") {
+            return null;
+        }
+
+        return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
+    }
+
+    function registerGlobalTask(plugin: ObsidianPlus, tag: string, task: TaskEntry, project?: string | null): void {
+        const normalizedTag = normalizeTagForGlobal(plugin, tag);
+        if (!normalizedTag) {
+            return;
+        }
+
+        if (!Array.isArray(task.tags) || !task.tags.length) {
+            task.tags = collectTaskTags(task);
+        }
+        if (!task.tags.includes(normalizedTag)) {
+            task.tags.push(normalizedTag);
+        }
+
+        task.tagHint = normalizedTag;
+        task.project = project ?? task.project ?? null;
+
+        if (!Array.isArray(task.searchLines) || !task.searchLines.length) {
+            task.searchLines = (task.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+        }
+
+        if (!Array.isArray(task.childLines)) {
+            task.childLines = [];
+        }
+        if (!Array.isArray(task.searchChildren) || task.searchChildren.length !== task.childLines.length) {
+            task.searchChildren = task.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+        }
+
+        const path = task.path ?? task.file?.path ?? "";
+        const lineNumber = Number.isFinite(task.line) ? Math.floor(task.line) : -1;
+        const block = task.id ?? "";
+        const key = `${project ?? ""}::${normalizedTag}::${path}::${lineNumber}::${block}::${task.text}`;
+
+        if (globalTaskRegistry.keys.has(key)) {
+            return;
+        }
+
+        globalTaskRegistry.keys.add(key);
+        globalTaskRegistry.records.push({
+            key,
+            tag: normalizedTag,
+            project: project ?? null,
+            task
+        });
+    }
+
+    function ensureGlobalTasksPrimed(plugin: ObsidianPlus, onReady: () => void): void {
+        const tags = new Set<string>();
+
+        const configured = plugin.settings?.taskTags ?? [];
+        for (const tag of configured) {
+            const normalized = normalizeTagForGlobal(plugin, tag);
+            if (normalized) {
+                tags.add(normalized);
+            }
+        }
+
+        const webTags = plugin.settings?.webTags ?? {};
+        for (const tag of Object.keys(webTags)) {
+            const normalized = normalizeTagForGlobal(plugin, tag);
+            if (normalized) {
+                tags.add(normalized);
+            }
+        }
+
+        getAllTags(plugin.app).forEach(({ tag }) => {
+            const normalized = normalizeTagForGlobal(plugin, tag);
+            if (normalized) {
+                tags.add(normalized);
+            }
+        });
+
+        for (const tag of tags) {
+            const key = tag;
+            const cached = cache[key];
+            if (Array.isArray(cached) && cached.length) {
+                for (const entry of cached) {
+                    registerGlobalTask(plugin, tag, entry);
+                }
+                continue;
+            }
+
+            collectTasksLazy(tag, plugin, onReady);
+        }
+    }
+
+    function getGlobalTaskRecords(): GlobalTaskRecord[] {
+        return globalTaskRegistry.records;
+    }
+
     function normalizeTaskLine(value: string): string {
         return value
             .replace(/\^\w+\b/, "")
@@ -334,7 +459,9 @@ function escapeCssIdentifier(value: string): string {
           const slice = rows.slice(i, i + CHUNK);
           /* inside collectTasksLazy – while pushing rows into cache[key] */
           slice.forEach(r => {
-            cache[key].push(toTaskEntry(r));
+            const entry = toTaskEntry(r);
+            cache[key].push(entry);
+            registerGlobalTask(plugin, tag, entry, project ?? null);
           });
         //   slice.forEach(r =>
         //     cache[key].push({ ...r, text: r.text.trim() })
@@ -1534,8 +1661,9 @@ function escapeCssIdentifier(value: string): string {
         const linktext = file
           ? this.app.metadataCache.fileToLinktext(file)
           : filePath.replace(/\.md$/i, "");
-        text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
-        const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
+        const displayTag = this.tagMode ? (task.tagHint ?? this.activeTag) : this.activeTag;
+        text = `${displayTag} ${task.text}  [[${linktext}]]`;
+        const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(displayTag);
         if (showCheckbox) {
           const status = task.status ?? " ";
           // always render checkbox before the tag for valid markdown
@@ -2282,7 +2410,8 @@ function escapeCssIdentifier(value: string): string {
         let text = task.text;
         if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
 
-        const insertion = `${link} ${this.activeTag} *${text.trim()}*`;
+        const targetTag = (task.tagHint ?? this.activeTag)?.trim() || this.activeTag;
+        const insertion = `${link} ${targetTag} *${text.trim()}*`;
 
         const isWholeLinePrompt = /^\s*[-*+] \?\s*$/.test(curLine);
 
@@ -2649,7 +2778,11 @@ function escapeCssIdentifier(value: string): string {
                 onlyPrefixTags: true,
                 includeCheckboxes
             }) as any[];
-            return (rows ?? []).map(r => toTaskEntry(r));
+            return (rows ?? []).map(r => {
+              const entry = toTaskEntry(r);
+              registerGlobalTask(this.plugin, tag, entry, project ?? null);
+              return entry;
+            });
           } catch (e) { console.error("Dataview query failed", e); }
         }
 
@@ -2657,13 +2790,127 @@ function escapeCssIdentifier(value: string): string {
         return [];
     }
 
+    private getGlobalTaskSuggestions(query: string) {
+        this.lastTaskSuggestions = [];
+
+        ensureGlobalTasksPrimed(this.plugin, () => this.scheduleSuggestionRefresh());
+
+        const trimmed = query.trim();
+        const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(trimmed);
+        const expandResult = parseExpandFilter(cleanedQuery);
+        let body = expandResult.cleanedQuery.trim();
+        this.expandMode = expandResult.expandMode;
+
+        if (hadStatusFilter && desiredStatus === null) {
+          return [];
+        }
+
+        if (!body.length && !hadStatusFilter) {
+          return [];
+        }
+
+        const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
+        const tokenRegexes = tokens
+          .map(tok => {
+            const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            try {
+              return new RegExp(`\\b${escaped}\\b`, "i");
+            } catch (_error) {
+              return null;
+            }
+          })
+          .filter((value): value is RegExp => value instanceof RegExp);
+
+        const hasFuzzyBody = body.length > 0;
+        const scorer = hasFuzzyBody ? prepareFuzzySearch(body) : null;
+
+        const suggestions = getGlobalTaskRecords().flatMap((record, idx) => {
+          const task = record.task;
+          const statusChar = task.status ?? " ";
+
+          if (hadStatusFilter) {
+            if (desiredStatus === null || statusChar !== desiredStatus) {
+              return [];
+            }
+          } else {
+            if (!isActiveStatus(statusChar)) {
+              return [];
+            }
+          }
+
+          let bestLine: string | null = null;
+          let bestScore = -Infinity;
+
+          const lines = Array.isArray(task.lines) ? task.lines : [];
+          const totalLines = lines.length;
+
+          for (let lineIndex = 0; lineIndex < totalLines; lineIndex++) {
+            const rawLine = lines[lineIndex];
+            if (typeof rawLine !== "string" || !rawLine.trim().length) {
+              continue;
+            }
+
+            const lowered = task.searchLines?.[lineIndex] ?? rawLine.toLowerCase();
+            if (tokens.length && !tokens.every(token => lowered.includes(token))) {
+              continue;
+            }
+
+            let score = 0;
+            if (scorer) {
+              const match = scorer(rawLine);
+              if (!match) {
+                continue;
+              }
+              score = match.score;
+            }
+
+            let bonus = 0;
+            for (const regex of tokenRegexes) {
+              if (regex.test(lowered)) {
+                bonus += 500;
+              }
+            }
+
+            const total = score + bonus;
+            if (total > bestScore) {
+              bestScore = total;
+              bestLine = rawLine.trim();
+            }
+          }
+
+          if (!bestLine) {
+            return [];
+          }
+
+          task.tagHint = record.tag;
+          task.project = record.project;
+
+          return [{
+            item: task,
+            score: bestScore,
+            matchLine: bestLine,
+            sourceIdx: idx
+          } as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })];
+        }) as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[];
+
+        suggestions.sort((a, b) => b.score - a.score);
+
+        this.lastTaskSuggestions = suggestions;
+        return suggestions;
+    }
+
     getSuggestions(query: string) {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
+            const trimmed = query.trimStart();
+            if (!trimmed.startsWith("#")) {
+              return this.getGlobalTaskSuggestions(query);
+            }
+
             this.lastTaskSuggestions = [];
             this.expandMode = "none";
             const tags      = getAllTags(this.app);   // already sorted
-            const q         = query.replace(/^#/, "").trim();
+            const q         = trimmed.replace(/^#/, "").trim();
 
             /* ➊  Handle one‑char query in constant time ------------------------ */
             if (q.length === 1) {
