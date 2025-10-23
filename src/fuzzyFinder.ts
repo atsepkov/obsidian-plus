@@ -262,6 +262,33 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(set);
     }
 
+    function resolveNormalizedTaskTags(plugin: ObsidianPlus, entry: TaskEntry): string[] {
+        const tags = new Set<string>();
+
+        const pushTag = (value: unknown) => {
+            if (typeof value !== "string") {
+                return;
+            }
+            const normalized = normalizeTagForSearch(plugin, value);
+            if (normalized) {
+                tags.add(normalized);
+            }
+        };
+
+        if (Array.isArray(entry.tags)) {
+            for (const tag of entry.tags) {
+                pushTag(tag);
+            }
+        }
+
+        const discovered = collectTaskTags(entry);
+        for (const tag of discovered) {
+            pushTag(tag);
+        }
+
+        return Array.from(tags);
+    }
+
     function normalizeTagForSearch(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
         if (!tag) {
             return null;
@@ -370,17 +397,17 @@ function escapeCssIdentifier(value: string): string {
           slice.forEach(r => {
             const entry = toTaskEntry(r);
             const normalizedTag = normalizeTagForSearch(plugin, tag);
+            const tags = resolveNormalizedTaskTags(plugin, entry);
+
             if (normalizedTag) {
               entry.tagHint = normalizedTag;
               entry.project = project ?? entry.project ?? null;
-              const tags = Array.isArray(entry.tags) && entry.tags.length
-                ? entry.tags
-                : collectTaskTags(entry);
-              entry.tags = tags;
-              if (!entry.tags.includes(normalizedTag)) {
-                entry.tags.push(normalizedTag);
+              if (!tags.includes(normalizedTag)) {
+                tags.push(normalizedTag);
               }
             }
+
+            entry.tags = tags;
             if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
               entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
             }
@@ -1990,7 +2017,7 @@ function escapeCssIdentifier(value: string): string {
 
         input.disabled = true;
         try {
-            const tags = collectTaskTags(task)
+            const tags = resolveNormalizedTaskTags(this.plugin, task)
                 .map(tag => this.plugin.normalizeTag(tag) ?? tag)
                 .filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
             const result = await manager.cycleTaskLine({
@@ -2850,9 +2877,7 @@ function escapeCssIdentifier(value: string): string {
 
                 for (const row of rows) {
                     const entry = toTaskEntry(row);
-                    const tags = collectTaskTags(entry)
-                        .map(tag => normalizeTagForSearch(this.plugin, tag))
-                        .filter((tag): tag is string => !!tag);
+                    const tags = resolveNormalizedTaskTags(this.plugin, entry);
 
                     if (!tags.length) {
                         continue;
@@ -2912,17 +2937,17 @@ function escapeCssIdentifier(value: string): string {
             return (rows ?? []).map(r => {
               const entry = toTaskEntry(r);
               const normalizedTag = normalizeTagForSearch(this.plugin, tag);
+              const tags = resolveNormalizedTaskTags(this.plugin, entry);
+
               if (normalizedTag) {
                 entry.tagHint = normalizedTag;
                 entry.project = project ?? entry.project ?? null;
-                const tags = Array.isArray(entry.tags) && entry.tags.length
-                  ? entry.tags
-                  : collectTaskTags(entry);
-                entry.tags = tags;
-                if (!entry.tags.includes(normalizedTag)) {
-                  entry.tags.push(normalizedTag);
+                if (!tags.includes(normalizedTag)) {
+                  tags.push(normalizedTag);
                 }
               }
+
+              entry.tags = tags;
               if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
                 entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
               }
