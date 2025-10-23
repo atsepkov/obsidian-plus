@@ -2988,7 +2988,7 @@ function escapeCssIdentifier(value: string): string {
           .map(token => {
             const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
             try {
-              return new RegExp(`\\b${escaped}\\b`, "i");
+              return new RegExp(`\\b${escaped}(?=\\w|\\b)`, "i");
             } catch (_error) {
               return null;
             }
