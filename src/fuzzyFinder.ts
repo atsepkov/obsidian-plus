@@ -3030,7 +3030,8 @@ function escapeCssIdentifier(value: string): string {
           let bestSegments: string[] | null = null;
 
           const considerLine = (rawLine: string, lowered: string, baseScore: number) => {
-            const segments = computeWordSegments(lowered);
+            const normalized = lowered.toLowerCase();
+            const segments = computeWordSegments(normalized);
 
             if (uniqueTokens.length && !uniqueTokens.every(token => {
               return segments.some(segment => segment.startsWith(token));
@@ -3042,7 +3043,7 @@ function escapeCssIdentifier(value: string): string {
               return;
             }
 
-            const score = baseScore - Math.min(lowered.length, 120);
+            const score = baseScore - Math.min(normalized.length, 120);
             if (score > bestScore) {
               bestScore = score;
               bestLine = rawLine.trim();
