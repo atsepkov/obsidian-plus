@@ -293,6 +293,21 @@ function escapeCssIdentifier(value: string): string {
         return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
     }
 
+    function startsWithNormalizedTag(value: string, tag: string): boolean {
+        if (!value || !tag) {
+            return false;
+        }
+
+        const normalizedValue = value.trim().toLowerCase();
+        const normalizedTag = tag.trim().toLowerCase();
+
+        if (!normalizedValue || !normalizedTag) {
+            return false;
+        }
+
+        return normalizedValue === normalizedTag || normalizedValue.startsWith(`${normalizedTag} `);
+    }
+
     function normalizeTagForSearch(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
         if (!tag) {
             return null;
@@ -1724,7 +1739,7 @@ function escapeCssIdentifier(value: string): string {
         const remainder = bulletPrefix ? raw.slice(bulletPrefix.length) : raw;
 
         const escapedTag = escapeRegex(normalizedTag);
-        const leadingTagPattern = new RegExp(`^\s*${escapedTag}(?=\s|$)`, "i");
+        const leadingTagPattern = new RegExp(`^(?:\s*${escapedTag})+(?=\s|$)`, "i");
         let withoutTag = remainder;
 
         if (leadingTagPattern.test(remainder)) {
@@ -1748,7 +1763,7 @@ function escapeCssIdentifier(value: string): string {
         const displayTag = normalizeTagForSearch(this.plugin, rawTag) ?? (rawTag ? rawTag.trim() : "");
         const sanitizedTaskText = this.sanitizeTaskTextForDisplay(task, displayTag || null);
 
-        const composedLine = displayTag
+        const composedLine = displayTag && !startsWithNormalizedTag(sanitizedTaskText, displayTag)
           ? `${displayTag} ${sanitizedTaskText}`.trim()
           : sanitizedTaskText;
 
@@ -2960,6 +2975,15 @@ function escapeCssIdentifier(value: string): string {
         });
     }
 
+    private buildGlobalSuggestionKey(task: TaskEntry): string {
+        const path = task.path ?? task.file?.path ?? "";
+        const line = Number.isFinite(task.line) ? Math.floor(task.line) : -1;
+        const id = typeof task.id === "string" ? task.id : "";
+        const normalizedText = typeof task.text === "string" ? normalizeTaskLine(task.text) : "";
+
+        return `${path}::${id}::${line}::${normalizedText}`;
+    }
+
     /* ---------- gather tasks with a given tag ---------- */
     private collectTasks(tag: string, project?: string): TaskEntry[] {
         const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
@@ -3138,8 +3162,34 @@ function escapeCssIdentifier(value: string): string {
 
         suggestions.sort((a, b) => b.score - a.score || a.sourceIdx - b.sourceIdx);
 
-        this.lastTaskSuggestions = suggestions;
-        return suggestions;
+        const seen = new Map<string, (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })>();
+        const deduped: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
+
+        for (const suggestion of suggestions) {
+          const task = suggestion.item;
+          const key = this.buildGlobalSuggestionKey(task);
+          const existing = seen.get(key);
+
+          if (!existing) {
+            seen.set(key, suggestion);
+            deduped.push(suggestion);
+            continue;
+          }
+
+          const existingTag = typeof existing.item.tagHint === "string" ? existing.item.tagHint.trim() : "";
+          const incomingTag = typeof task.tagHint === "string" ? task.tagHint.trim() : "";
+
+          if (!existingTag && incomingTag) {
+            seen.set(key, suggestion);
+            const index = deduped.indexOf(existing);
+            if (index !== -1) {
+              deduped[index] = suggestion;
+            }
+          }
+        }
+
+        this.lastTaskSuggestions = deduped;
+        return deduped;
     }
 
     getSuggestions(query: string) {
