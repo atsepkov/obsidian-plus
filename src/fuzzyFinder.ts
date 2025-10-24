@@ -289,6 +289,10 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(tags);
     }
 
+    function escapeRegex(value: string): string {
+        return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    }
+
     function normalizeTagForSearch(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
         if (!tag) {
             return null;
@@ -1705,8 +1709,33 @@ function escapeCssIdentifier(value: string): string {
         await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
     }
 
+    private sanitizeTaskTextForDisplay(task: TaskEntry, normalizedTag: string | null): string {
+        const raw = typeof task.text === "string" ? task.text.trim() : "";
+        if (!raw.length) {
+          return "";
+        }
+
+        if (!normalizedTag) {
+          return raw;
+        }
+
+        const bulletMatch = raw.match(/^([-*+]\s*(\[[^\]]*\]\s*)?|\[[^\]]*\]\s*)/);
+        const bulletPrefix = bulletMatch ? bulletMatch[1] ?? "" : "";
+        const remainder = bulletPrefix ? raw.slice(bulletPrefix.length) : raw;
+
+        const escapedTag = escapeRegex(normalizedTag);
+        const leadingTagPattern = new RegExp(`^\s*${escapedTag}(?=\s|$)`, "i");
+        let withoutTag = remainder;
+
+        if (leadingTagPattern.test(remainder)) {
+          withoutTag = remainder.replace(leadingTagPattern, "").replace(/^\s+/, "");
+        }
+
+        const recombined = `${bulletPrefix}${withoutTag}`.trim();
+        return recombined.length ? recombined : raw;
+    }
+
     private async renderTaskSuggestion(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }, el: HTMLElement) {
-        let text = "";
         const task = item.item;
         const hit    = item.matchLine;
         const filePath = task.path ?? task.file?.path ?? "";
@@ -1714,9 +1743,19 @@ function escapeCssIdentifier(value: string): string {
         const linktext = file
           ? this.app.metadataCache.fileToLinktext(file)
           : filePath.replace(/\.md$/i, "");
-        const displayTag = this.tagMode ? (task.tagHint ?? this.activeTag) : this.activeTag;
-        text = `${displayTag} ${task.text}  [[${linktext}]]`;
-        const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(displayTag);
+
+        const rawTag = this.tagMode ? (task.tagHint ?? this.activeTag) : this.activeTag;
+        const displayTag = normalizeTagForSearch(this.plugin, rawTag) ?? (rawTag ? rawTag.trim() : "");
+        const sanitizedTaskText = this.sanitizeTaskTextForDisplay(task, displayTag || null);
+
+        const composedLine = displayTag
+          ? `${displayTag} ${sanitizedTaskText}`.trim()
+          : sanitizedTaskText;
+
+        let text = composedLine.length ? composedLine : displayTag;
+        text = `${text}  [[${linktext}]]`.trim();
+
+        const showCheckbox = displayTag && (this.plugin.settings.taskTags ?? []).includes(displayTag);
         if (showCheckbox) {
           const status = task.status ?? " ";
           // always render checkbox before the tag for valid markdown
@@ -2901,7 +2940,9 @@ function escapeCssIdentifier(value: string): string {
 
                     const path = entry.path ?? entry.file?.path ?? "";
                     const line = Number.isFinite(entry.line) ? Math.floor(entry.line) : -1;
-                    const key = `${path}::${line}::${entry.text}`;
+                    const normalizedLine = typeof entry.text === "string" ? normalizeTaskLine(entry.text) : "";
+                    const id = typeof entry.id === "string" ? entry.id : "";
+                    const key = `${path}::${id}::${line}::${normalizedLine}`;
                     if (seen.has(key)) {
                         continue;
                     }
