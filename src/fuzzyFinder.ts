@@ -1724,30 +1724,31 @@ function escapeCssIdentifier(value: string): string {
         await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
     }
 
-    private sanitizeTaskTextForDisplay(task: TaskEntry, normalizedTag: string | null): string {
+    private sanitizeTaskTextForDisplay(task: TaskEntry, normalizedTag: string | null): { content: string; marker: string | null; hadCheckbox: boolean } {
         const raw = typeof task.text === "string" ? task.text.trim() : "";
         if (!raw.length) {
-          return "";
+          return { content: "", marker: null, hadCheckbox: false };
         }
 
-        if (!normalizedTag) {
-          return raw;
+        const markerMatch = raw.match(/^([-*+])\s*(\[[^\]]*\]\s*)?/);
+        const marker = markerMatch ? markerMatch[1] : null;
+        const hadCheckbox = Boolean(markerMatch && markerMatch[2]);
+
+        let remainder = markerMatch ? raw.slice(markerMatch[0].length) : raw;
+
+        if (normalizedTag) {
+          const escapedTag = escapeRegex(normalizedTag);
+          const leadingTagPattern = new RegExp(`^(?:\s*${escapedTag})+(?=\s|$)`, "i");
+          if (leadingTagPattern.test(remainder)) {
+            remainder = remainder.replace(leadingTagPattern, "").replace(/^\s+/, "");
+          }
         }
 
-        const bulletMatch = raw.match(/^([-*+]\s*(\[[^\]]*\]\s*)?|\[[^\]]*\]\s*)/);
-        const bulletPrefix = bulletMatch ? bulletMatch[1] ?? "" : "";
-        const remainder = bulletPrefix ? raw.slice(bulletPrefix.length) : raw;
-
-        const escapedTag = escapeRegex(normalizedTag);
-        const leadingTagPattern = new RegExp(`^(?:\s*${escapedTag})+(?=\s|$)`, "i");
-        let withoutTag = remainder;
-
-        if (leadingTagPattern.test(remainder)) {
-          withoutTag = remainder.replace(leadingTagPattern, "").replace(/^\s+/, "");
-        }
-
-        const recombined = `${bulletPrefix}${withoutTag}`.trim();
-        return recombined.length ? recombined : raw;
+        return {
+          content: remainder.trim(),
+          marker,
+          hadCheckbox
+        };
     }
 
     private async renderTaskSuggestion(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }, el: HTMLElement) {
@@ -1761,20 +1762,32 @@ function escapeCssIdentifier(value: string): string {
 
         const rawTag = this.tagMode ? (task.tagHint ?? this.activeTag) : this.activeTag;
         const displayTag = normalizeTagForSearch(this.plugin, rawTag) ?? (rawTag ? rawTag.trim() : "");
-        const sanitizedTaskText = this.sanitizeTaskTextForDisplay(task, displayTag || null);
+        const displayParts = this.sanitizeTaskTextForDisplay(task, displayTag || null);
 
-        const composedLine = displayTag && !startsWithNormalizedTag(sanitizedTaskText, displayTag)
-          ? `${displayTag} ${sanitizedTaskText}`.trim()
-          : sanitizedTaskText;
+        let body = displayParts.content;
+        if (displayTag && !startsWithNormalizedTag(body, displayTag)) {
+          body = body.length ? `${displayTag} ${body}`.trim() : displayTag;
+        }
 
-        let text = composedLine.length ? composedLine : displayTag;
-        text = `${text}  [[${linktext}]]`.trim();
+        let textBody = body.trim();
+        if (!textBody.length && displayTag) {
+          textBody = displayTag;
+        }
 
         const showCheckbox = displayTag && (this.plugin.settings.taskTags ?? []).includes(displayTag);
+        let line = textBody;
+
         if (showCheckbox) {
           const status = task.status ?? " ";
-          // always render checkbox before the tag for valid markdown
-          text = `- [${status}] ${text}`;
+          const marker = displayParts.marker ?? "-";
+          line = textBody.length ? `${marker} [${status}] ${textBody}` : `${marker} [${status}]`;
+        } else if (displayParts.marker) {
+          line = textBody.length ? `${displayParts.marker} ${textBody}` : displayParts.marker;
+        }
+
+        let text = line.trim();
+        if (linktext) {
+          text = text.length ? `${text}  [[${linktext}]]` : `[[${linktext}]]`;
         }
 
         if (file && !task.file) {
@@ -2953,11 +2966,7 @@ function escapeCssIdentifier(value: string): string {
                         entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
                     }
 
-                    const path = entry.path ?? entry.file?.path ?? "";
-                    const line = Number.isFinite(entry.line) ? Math.floor(entry.line) : -1;
-                    const normalizedLine = typeof entry.text === "string" ? normalizeTaskLine(entry.text) : "";
-                    const id = typeof entry.id === "string" ? entry.id : "";
-                    const key = `${path}::${id}::${line}::${normalizedLine}`;
+                    const key = this.buildGlobalSuggestionKey(entry);
                     if (seen.has(key)) {
                         continue;
                     }
@@ -2977,11 +2986,36 @@ function escapeCssIdentifier(value: string): string {
 
     private buildGlobalSuggestionKey(task: TaskEntry): string {
         const path = task.path ?? task.file?.path ?? "";
+        const trimmedPath = typeof path === "string" ? path.trim() : "";
+        const id = typeof task.id === "string" ? task.id.trim() : "";
+        const hasPath = trimmedPath.length > 0;
+        const hasId = id.length > 0;
         const line = Number.isFinite(task.line) ? Math.floor(task.line) : -1;
-        const id = typeof task.id === "string" ? task.id : "";
-        const normalizedText = typeof task.text === "string" ? normalizeTaskLine(task.text) : "";
+        const hasLine = line >= 0;
 
-        return `${path}::${id}::${line}::${normalizedText}`;
+        if (hasPath && hasId) {
+            return `${trimmedPath}::id::${id}`;
+        }
+
+        if (hasPath && hasLine) {
+            return `${trimmedPath}::line::${line}`;
+        }
+
+        if (hasId) {
+            return `id::${id}`;
+        }
+
+        if (hasPath) {
+            const normalizedText = typeof task.text === "string" ? normalizeTaskLine(task.text) : "";
+            return `${trimmedPath}::text::${normalizedText}`;
+        }
+
+        if (hasLine) {
+            return `line::${line}`;
+        }
+
+        const normalizedText = typeof task.text === "string" ? normalizeTaskLine(task.text) : "";
+        return `text::${normalizedText}`;
     }
 
     /* ---------- gather tasks with a given tag ---------- */
