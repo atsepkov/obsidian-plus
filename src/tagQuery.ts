@@ -192,7 +192,10 @@ export class TagQuery {
                 let text = line.text.split('\n')[0].trim();
                 const tagPosition = text.indexOf(targetIdentifier);
                 if (!includeTags && targetIdentifier) {
-                    text = text.replace(targetIdentifier, "").trim();
+                    // text = text.replace(targetIdentifier, "").trim();
+                    if (targetIdentifier !== '#') {
+                        text = text.replace(targetIdentifier, "").trim();
+                    }
                 }
                 // Add tagPosition to the line object if needed for filtering
                 results.push({ ...line, tagPosition: tagPosition, text });

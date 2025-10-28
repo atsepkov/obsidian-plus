@@ -1720,7 +1720,7 @@ function escapeCssIdentifier(value: string): string {
         const { tag, count } = (item.item as { tag: string; count: number });
         const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
         file = this.app.vault.getAbstractFileByPath(tag) as TFile;
-        const text = `${tag} ${desc ? " " + desc : ""}`;
+        const text = desc.startsWith(tag) ? desc : `${tag} ${desc ? " " + desc : ""}`;
         await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
     }
 
