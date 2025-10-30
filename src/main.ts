@@ -271,14 +271,15 @@ export default class ObsidianPlus extends Plugin {
 		// 		}
 		// });
 
-		// this.addCommand({
-		// 		id: 'open-task-tag-fuzzy-finder',
-		// 		name: 'Open FuzzyFinder',
-		// 		callback: () => {
-		// 				new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
-		// 		}
-		// });
-
+		// add keyboard shortcuts for opening the modal
+		this.addCommand({
+				id: 'open-task-tag-fuzzy-finder',
+				icon: 'tags',
+				name: 'Open FuzzyFinder',
+				callback: () => {
+						new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
+				}
+		});
 		this.addCommand({
 				id: 'open-tree-of-thought-under-cursor',
 				icon: 'brain',
