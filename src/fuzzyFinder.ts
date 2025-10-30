@@ -2130,6 +2130,26 @@ function escapeCssIdentifier(value: string): string {
         container.empty();
         container.addClass("tree-of-thought__container");
 
+        if (!container.dataset.plusThoughtInteractionBound) {
+          const stopPropagation = (evt: Event) => {
+            if (!this.thoughtMode) {
+              return;
+            }
+            evt.stopPropagation();
+          };
+          const eventNames: (keyof HTMLElementEventMap)[] = [
+            "mousedown",
+            "mouseup",
+            "click",
+            "touchstart",
+            "touchend",
+          ];
+          for (const eventName of eventNames) {
+            container.addEventListener(eventName, stopPropagation, { passive: true });
+          }
+          container.dataset.plusThoughtInteractionBound = "true";
+        }
+
         if (!this.thoughtMode) {
           return;
         }
