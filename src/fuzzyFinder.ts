@@ -24,6 +24,10 @@ export interface TaskEntry {
   searchLines: string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
   childLines?: string[];
+  tags?: string[];
+  tagHint?: string | null;
+  project?: string | null;
+  searchChildren?: string[];
 }
 
 export interface ThoughtTaskHint {
@@ -219,17 +223,27 @@ function escapeCssIdentifier(value: string): string {
         return Array.from(set).filter(Boolean);
     }
 
+    const TAG_CAPTURE = /(^|[\s>])#([^\s#]+)/g;
+
     function collectTaskTags(entry: TaskEntry): string[] {
         const set = new Set<string>();
         const gather = (text: string | undefined | null) => {
             if (!text) return;
-            const matches = text.match(/#[^\s#]+/g) ?? [];
-            for (const tag of matches) {
-                const trimmed = tag.trim();
-                if (trimmed) {
-                    const normalized = trimmed.startsWith('#') ? trimmed : `#${trimmed}`;
-                    set.add(normalized);
+
+            TAG_CAPTURE.lastIndex = 0;
+            let match: RegExpExecArray | null;
+            while ((match = TAG_CAPTURE.exec(text)) !== null) {
+                const body = match[2];
+                if (!body) {
+                    continue;
                 }
+
+                const normalized = body.trim();
+                if (!normalized.length) {
+                    continue;
+                }
+
+                set.add(`#${normalized}`);
             }
         };
 
@@ -246,6 +260,72 @@ function escapeCssIdentifier(value: string): string {
         }
 
         return Array.from(set);
+    }
+
+    function resolveNormalizedTaskTags(plugin: ObsidianPlus, entry: TaskEntry): string[] {
+        const tags = new Set<string>();
+
+        const pushTag = (value: unknown) => {
+            if (typeof value !== "string") {
+                return;
+            }
+            const normalized = normalizeTagForSearch(plugin, value);
+            if (normalized) {
+                tags.add(normalized);
+            }
+        };
+
+        if (Array.isArray(entry.tags)) {
+            for (const tag of entry.tags) {
+                pushTag(tag);
+            }
+        }
+
+        const discovered = collectTaskTags(entry);
+        for (const tag of discovered) {
+            pushTag(tag);
+        }
+
+        return Array.from(tags);
+    }
+
+    function escapeRegex(value: string): string {
+        return value.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&");
+    }
+
+    function startsWithNormalizedTag(value: string, tag: string): boolean {
+        if (!value || !tag) {
+            return false;
+        }
+
+        const normalizedValue = value.trim().toLowerCase();
+        const normalizedTag = tag.trim().toLowerCase();
+
+        if (!normalizedValue || !normalizedTag) {
+            return false;
+        }
+
+        return normalizedValue === normalizedTag || normalizedValue.startsWith(`${normalizedTag} `);
+    }
+
+    function normalizeTagForSearch(plugin: ObsidianPlus, tag: string | null | undefined): string | null {
+        if (!tag) {
+            return null;
+        }
+
+        const normalized = typeof plugin.normalizeTag === "function"
+            ? plugin.normalizeTag(tag)
+            : null;
+        if (normalized) {
+            return normalized;
+        }
+
+        const trimmed = tag.trim();
+        if (!trimmed.length || trimmed === "#") {
+            return null;
+        }
+
+        return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
     }
 
     function normalizeTaskLine(value: string): string {
@@ -305,7 +385,7 @@ function escapeCssIdentifier(value: string): string {
         cache[key]   = [];                 // start with empty list
 
         /* Fetch Dataview API + user options */
-        const dv  = plugin.app.plugins.plugins["dataview"]?.api;
+        const dv  = (plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
         const includeCheckboxes = (plugin.settings.taskTags ?? []).includes(tag);
         const opt = {
           path: '""',
@@ -334,7 +414,29 @@ function escapeCssIdentifier(value: string): string {
           const slice = rows.slice(i, i + CHUNK);
           /* inside collectTasksLazy – while pushing rows into cache[key] */
           slice.forEach(r => {
-            cache[key].push(toTaskEntry(r));
+            const entry = toTaskEntry(r);
+            const normalizedTag = normalizeTagForSearch(plugin, tag);
+            const tags = resolveNormalizedTaskTags(plugin, entry);
+
+            if (normalizedTag) {
+              entry.tagHint = normalizedTag;
+              entry.project = project ?? entry.project ?? null;
+              if (!tags.includes(normalizedTag)) {
+                tags.push(normalizedTag);
+              }
+            }
+
+            entry.tags = tags;
+            if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
+              entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+            }
+            if (!Array.isArray(entry.childLines)) {
+              entry.childLines = [];
+            }
+            if (!Array.isArray(entry.searchChildren) || entry.searchChildren.length !== entry.childLines.length) {
+              entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+            }
+            cache[key].push(entry);
           });
         //   slice.forEach(r =>
         //     cache[key].push({ ...r, text: r.text.trim() })
@@ -392,6 +494,10 @@ function escapeCssIdentifier(value: string): string {
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
+    private globalTaskCache: TaskEntry[] | null = null;
+    private globalTaskCacheReady = false;
+    private globalTaskCachePromise: Promise<void> | null = null;
+    private globalPreferredTags: Set<string> | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -496,9 +602,11 @@ function escapeCssIdentifier(value: string): string {
 
         const isTabLike = evt.key === "Tab" || evt.key === ">";
         const isSpace = evt.key === " " || evt.key === "Space" || evt.key === "Spacebar";
+        const isGlobalTaskSearch = this.isGlobalTaskSearchActive();
 
         if (
           this.tagMode &&
+          !isGlobalTaskSearch &&
           typeof chosen === "object" &&
           "tag" in chosen &&
           (isTabLike || isSpace)
@@ -509,25 +617,44 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
 
-        if (!this.tagMode && !this.thoughtMode && isTabLike) {
+        if ((isGlobalTaskSearch || !this.tagMode) && !this.thoughtMode && isTabLike) {
           evt.preventDefault();
-          const key = this.getTaskCacheKey();
-          if (!key) {
-            return;
-          }
+
           const selectedIndex = list?.selectedItem ?? 0;
           const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
           const suggestion = this.lastTaskSuggestions[displayIndex];
           if (!suggestion) {
             return;
           }
+
           const task = suggestion.item as TaskEntry;
-          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, task);
-          if (cacheIndex == null) {
+          const tagFromTask = task.tagHint
+            ?? this.extractTagFromTask(task)
+            ?? (Array.isArray(task.tags) ? task.tags[0] : null)
+            ?? (this.activeTag && this.activeTag !== "#" ? this.activeTag : null);
+          if (!tagFromTask) {
             return;
           }
-          this.inputEl.value = `${this.activeTag} ${task.text}`.trimEnd() + " ";
+
+          const normalizedTag = this.normalizeTag(tagFromTask);
+          const previousValue = this.inputEl.value;
+          this.inputEl.value = `${normalizedTag} ${task.text ?? ""}`.trimEnd() + " ";
           this.detectMode();
+
+          const key = this.getTaskCacheKey();
+          if (!key) {
+            this.inputEl.value = previousValue;
+            this.detectMode();
+            return;
+          }
+
+          let cacheIndex = suggestion.sourceIdx
+            ?? this.lookupTaskIndex(key, task)
+            ?? this.findTaskIndexByHint(key, task);
+          if (cacheIndex == null) {
+            cacheIndex = this.attachTaskToCache(key, task);
+          }
+
           this.enterThoughtMode(key, {
             displayIndex,
             cacheIndex,
@@ -546,6 +673,78 @@ function escapeCssIdentifier(value: string): string {
         if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End"].includes(evt.key)) {
           this.scheduleExpandRefresh();
         }
+    }
+
+    private isGlobalTaskSearchActive(): boolean {
+        if (!this.tagMode || this.thoughtMode) {
+          return false;
+        }
+
+        const trimmed = this.inputEl.value.trimStart();
+        if (!trimmed.length) {
+          return false;
+        }
+
+        return !trimmed.startsWith("#");
+    }
+
+    private buildTaskHintFromEntry(task: TaskEntry): ThoughtTaskHint | null {
+        const hint: ThoughtTaskHint = {};
+
+        const path = this.extractTaskPath(task);
+        if (path) {
+          hint.path = path;
+        }
+
+        const blockId = this.extractTaskBlockId(task);
+        if (blockId) {
+          hint.blockId = blockId;
+        }
+
+        if (typeof task.line === "number" && Number.isFinite(task.line)) {
+          hint.line = Math.floor(task.line);
+        }
+
+        if (typeof task.text === "string" && task.text.trim().length) {
+          hint.text = task.text;
+        }
+
+        return Object.keys(hint).length ? hint : null;
+    }
+
+    private findTaskIndexByHint(key: string, task: TaskEntry): number | null {
+        const list = this.taskCache[key];
+        if (!Array.isArray(list) || !list.length) {
+          return null;
+        }
+
+        const hint = this.buildTaskHintFromEntry(task);
+        if (!hint) {
+          return null;
+        }
+
+        for (let i = 0; i < list.length; i++) {
+          if (this.matchesTaskHint(list[i], hint)) {
+            return i;
+          }
+        }
+
+        return null;
+    }
+
+    private attachTaskToCache(key: string, task: TaskEntry): number {
+        if (!this.taskCache[key]) {
+          this.taskCache[key] = [];
+        }
+
+        const existing = this.findTaskIndexByHint(key, task);
+        if (existing != null) {
+          return existing;
+        }
+
+        const list = this.taskCache[key]!;
+        list.push(task);
+        return list.length - 1;
     }
 
     private insertNewTemplate(tag: string) {
@@ -1521,12 +1720,38 @@ function escapeCssIdentifier(value: string): string {
         const { tag, count } = (item.item as { tag: string; count: number });
         const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
         file = this.app.vault.getAbstractFileByPath(tag) as TFile;
-        const text = `${tag} ${desc ? " " + desc : ""}`;
+        const text = desc.startsWith(tag) ? desc : `${tag} ${desc ? " " + desc : ""}`;
         await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
     }
 
+    private sanitizeTaskTextForDisplay(task: TaskEntry, normalizedTag: string | null): { content: string; marker: string | null; hadCheckbox: boolean } {
+        const raw = typeof task.text === "string" ? task.text.trim() : "";
+        if (!raw.length) {
+          return { content: "", marker: null, hadCheckbox: false };
+        }
+
+        const markerMatch = raw.match(/^([-*+])\s*(\[[^\]]*\]\s*)?/);
+        const marker = markerMatch ? markerMatch[1] : null;
+        const hadCheckbox = Boolean(markerMatch && markerMatch[2]);
+
+        let remainder = markerMatch ? raw.slice(markerMatch[0].length) : raw;
+
+        if (normalizedTag) {
+          const escapedTag = escapeRegex(normalizedTag);
+          const leadingTagPattern = new RegExp(`^(?:\s*${escapedTag})+(?=\s|$)`, "i");
+          if (leadingTagPattern.test(remainder)) {
+            remainder = remainder.replace(leadingTagPattern, "").replace(/^\s+/, "");
+          }
+        }
+
+        return {
+          content: remainder.trim(),
+          marker,
+          hadCheckbox
+        };
+    }
+
     private async renderTaskSuggestion(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }, el: HTMLElement) {
-        let text = "";
         const task = item.item;
         const hit    = item.matchLine;
         const filePath = task.path ?? task.file?.path ?? "";
@@ -1534,12 +1759,35 @@ function escapeCssIdentifier(value: string): string {
         const linktext = file
           ? this.app.metadataCache.fileToLinktext(file)
           : filePath.replace(/\.md$/i, "");
-        text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
-        const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
+
+        const rawTag = this.tagMode ? (task.tagHint ?? this.activeTag) : this.activeTag;
+        const displayTag = normalizeTagForSearch(this.plugin, rawTag) ?? (rawTag ? rawTag.trim() : "");
+        const displayParts = this.sanitizeTaskTextForDisplay(task, displayTag || null);
+
+        let body = displayParts.content;
+        if (displayTag && !startsWithNormalizedTag(body, displayTag)) {
+          body = body.length ? `${displayTag} ${body}`.trim() : displayTag;
+        }
+
+        let textBody = body.trim();
+        if (!textBody.length && displayTag) {
+          textBody = displayTag;
+        }
+
+        const showCheckbox = displayTag && (this.plugin.settings.taskTags ?? []).includes(displayTag);
+        let line = textBody;
+
         if (showCheckbox) {
           const status = task.status ?? " ";
-          // always render checkbox before the tag for valid markdown
-          text = `- [${status}] ${text}`;
+          const marker = displayParts.marker ?? "-";
+          line = textBody.length ? `${marker} [${status}] ${textBody}` : `${marker} [${status}]`;
+        } else if (displayParts.marker) {
+          line = textBody.length ? `${displayParts.marker} ${textBody}` : displayParts.marker;
+        }
+
+        let text = line.trim();
+        if (linktext) {
+          text = text.length ? `${text}  [[${linktext}]]` : `[[${linktext}]]`;
         }
 
         if (file && !task.file) {
@@ -1836,7 +2084,7 @@ function escapeCssIdentifier(value: string): string {
 
         input.disabled = true;
         try {
-            const tags = collectTaskTags(task)
+            const tags = resolveNormalizedTaskTags(this.plugin, task)
                 .map(tag => this.plugin.normalizeTag(tag) ?? tag)
                 .filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
             const result = await manager.cycleTaskLine({
@@ -2282,7 +2530,8 @@ function escapeCssIdentifier(value: string): string {
         let text = task.text;
         if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
 
-        const insertion = `${link} ${this.activeTag} *${text.trim()}*`;
+        const targetTag = (task.tagHint ?? this.activeTag)?.trim() || this.activeTag;
+        const insertion = `${link} ${targetTag} *${text.trim()}*`;
 
         const isWholeLinePrompt = /^\s*[-*+] \?\s*$/.test(curLine);
 
@@ -2633,10 +2882,145 @@ function escapeCssIdentifier(value: string): string {
     private async sleep(ms: number): Promise<void> {
         await new Promise<void>(resolve => window.setTimeout(resolve, ms));
     }
-  
+
+    private resolveGlobalPreferredTags(): Set<string> {
+        if (this.globalPreferredTags) {
+            return this.globalPreferredTags;
+        }
+
+        const allowed = new Set<string>();
+        const taskTags = this.plugin.settings?.taskTags ?? [];
+        for (const tag of taskTags) {
+            const normalized = normalizeTagForSearch(this.plugin, tag);
+            if (normalized) {
+                allowed.add(normalized);
+            }
+        }
+
+        const webTags = this.plugin.settings?.webTags ?? {};
+        for (const tag of Object.keys(webTags)) {
+            const normalized = normalizeTagForSearch(this.plugin, tag);
+            if (normalized) {
+                allowed.add(normalized);
+            }
+        }
+
+        this.globalPreferredTags = allowed;
+        return allowed;
+    }
+
+    private buildGlobalTaskCache(): void {
+        if (this.globalTaskCacheReady || this.globalTaskCachePromise) {
+            return;
+        }
+
+        const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
+        if (!dv || typeof (this.plugin as any).query !== "function") {
+            this.globalTaskCache = [];
+            this.globalTaskCacheReady = true;
+            return;
+        }
+
+        this.globalTaskCachePromise = new Promise<void>(resolve => {
+            window.setTimeout(() => {
+                const preferredTags = this.resolveGlobalPreferredTags();
+                const options = {
+                    path: '""',
+                    includeCheckboxes: true,
+                    onlyTasks: true,
+                    onlyPrefixTags: false,
+                    ...(this.plugin.settings?.tagQueryOptions ?? {})
+                };
+
+                let rows: any[] = [];
+                try {
+                    rows = (this.plugin as any).query(dv, '#', options) as any[] ?? [];
+                } catch (error) {
+                    console.error("Global task search query failed", error);
+                }
+
+                const seen = new Set<string>();
+                const tasks: TaskEntry[] = [];
+
+                for (const row of rows) {
+                    const entry = toTaskEntry(row);
+                    const tags = resolveNormalizedTaskTags(this.plugin, entry);
+
+                    if (!tags.length) {
+                        continue;
+                    }
+
+                    const normalizedTag = tags.find(tag => preferredTags.has(tag)) ?? tags[0];
+                    entry.tags = tags;
+                    entry.tagHint = normalizedTag;
+
+                    if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
+                        entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+                    }
+
+                    if (!Array.isArray(entry.childLines)) {
+                        entry.childLines = [];
+                    }
+
+                    if (!Array.isArray(entry.searchChildren) || entry.searchChildren.length !== entry.childLines.length) {
+                        entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+                    }
+
+                    const key = this.buildGlobalSuggestionKey(entry);
+                    if (seen.has(key)) {
+                        continue;
+                    }
+                    seen.add(key);
+
+                    tasks.push(entry);
+                }
+
+                this.globalTaskCache = tasks;
+                this.globalTaskCacheReady = true;
+                this.globalTaskCachePromise = null;
+                resolve();
+                this.scheduleSuggestionRefresh();
+            }, 0);
+        });
+    }
+
+    private buildGlobalSuggestionKey(task: TaskEntry): string {
+        const path = task.path ?? task.file?.path ?? "";
+        const trimmedPath = typeof path === "string" ? path.trim() : "";
+        const id = typeof task.id === "string" ? task.id.trim() : "";
+        const hasPath = trimmedPath.length > 0;
+        const hasId = id.length > 0;
+        const line = Number.isFinite(task.line) ? Math.floor(task.line) : -1;
+        const hasLine = line >= 0;
+
+        if (hasPath && hasId) {
+            return `${trimmedPath}::id::${id}`;
+        }
+
+        if (hasPath && hasLine) {
+            return `${trimmedPath}::line::${line}`;
+        }
+
+        if (hasId) {
+            return `id::${id}`;
+        }
+
+        if (hasPath) {
+            const normalizedText = typeof task.text === "string" ? normalizeTaskLine(task.text) : "";
+            return `${trimmedPath}::text::${normalizedText}`;
+        }
+
+        if (hasLine) {
+            return `line::${line}`;
+        }
+
+        const normalizedText = typeof task.text === "string" ? normalizeTaskLine(task.text) : "";
+        return `text::${normalizedText}`;
+    }
+
     /* ---------- gather tasks with a given tag ---------- */
     private collectTasks(tag: string, project?: string): TaskEntry[] {
-        const dv = this.plugin.app.plugins.plugins["dataview"]?.api;
+        const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
 
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
@@ -2649,7 +3033,31 @@ function escapeCssIdentifier(value: string): string {
                 onlyPrefixTags: true,
                 includeCheckboxes
             }) as any[];
-            return (rows ?? []).map(r => toTaskEntry(r));
+            return (rows ?? []).map(r => {
+              const entry = toTaskEntry(r);
+              const normalizedTag = normalizeTagForSearch(this.plugin, tag);
+              const tags = resolveNormalizedTaskTags(this.plugin, entry);
+
+              if (normalizedTag) {
+                entry.tagHint = normalizedTag;
+                entry.project = project ?? entry.project ?? null;
+                if (!tags.includes(normalizedTag)) {
+                  tags.push(normalizedTag);
+                }
+              }
+
+              entry.tags = tags;
+              if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
+                entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+              }
+              if (!Array.isArray(entry.childLines)) {
+                entry.childLines = [];
+              }
+              if (!Array.isArray(entry.searchChildren) || entry.searchChildren.length !== entry.childLines.length) {
+                entry.searchChildren = entry.childLines.map(line => (typeof line === "string" ? line.toLowerCase() : ""));
+              }
+              return entry;
+            });
           } catch (e) { console.error("Dataview query failed", e); }
         }
 
@@ -2657,13 +3065,179 @@ function escapeCssIdentifier(value: string): string {
         return [];
     }
 
+    private getGlobalTaskSuggestions(query: string) {
+        this.lastTaskSuggestions = [];
+
+        const trimmed = query.trim();
+        const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(trimmed);
+        const expandResult = parseExpandFilter(cleanedQuery);
+        const body = expandResult.cleanedQuery.trim();
+        this.expandMode = expandResult.expandMode;
+
+        if (hadStatusFilter && desiredStatus === null) {
+          return [];
+        }
+
+        const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
+        const uniqueTokens = Array.from(new Set(tokens));
+
+        if (!uniqueTokens.length && !hadStatusFilter) {
+          return [];
+        }
+
+        const computeWordSegments = (input: string): string[] => {
+          if (!input.length) {
+            return [];
+          }
+
+          return input
+            .split(/[^0-9a-z_]+/g)
+            .filter(Boolean);
+        };
+
+        if (!this.globalTaskCacheReady) {
+          this.buildGlobalTaskCache();
+          return [];
+        }
+
+        const tasks = this.globalTaskCache ?? [];
+        if (!tasks.length) {
+          return [];
+        }
+
+        const suggestions = tasks.flatMap((task, idx) => {
+          const statusChar = task.status ?? " ";
+
+          if (hadStatusFilter) {
+            if (desiredStatus === null || statusChar !== desiredStatus) {
+              return [];
+            }
+          } else {
+            if (!isActiveStatus(statusChar)) {
+              return [];
+            }
+          }
+
+          const lines = task.lines ?? [];
+          const searchLines = task.searchLines ?? lines.map(line => line.toLowerCase());
+          const childLines = task.childLines ?? [];
+          const searchChildren = task.searchChildren ?? childLines.map(line => line.toLowerCase());
+
+          let bestLine: string | null = null;
+          let bestScore = -Infinity;
+
+          let bestSegments: string[] | null = null;
+
+          const considerLine = (rawLine: string, lowered: string, baseScore: number) => {
+            const normalized = lowered.toLowerCase();
+            const segments = computeWordSegments(normalized);
+
+            if (uniqueTokens.length && !uniqueTokens.every(token => {
+              return segments.some(segment => segment.startsWith(token));
+            })) {
+              return;
+            }
+
+            if (!uniqueTokens.length && !hadStatusFilter) {
+              return;
+            }
+
+            const score = baseScore - Math.min(normalized.length, 120);
+            if (score > bestScore) {
+              bestScore = score;
+              bestLine = rawLine.trim();
+              bestSegments = segments;
+            }
+          };
+
+          if (!uniqueTokens.length && hadStatusFilter) {
+            const rawLine = typeof lines[0] === "string" ? lines[0] : (typeof task.text === "string" ? task.text : "");
+            const lowered = searchLines[0] ?? rawLine.toLowerCase();
+            considerLine(rawLine, lowered, 200);
+          } else {
+            lines.forEach((line, lineIndex) => {
+              if (typeof line !== "string") {
+                return;
+              }
+              const lowered = searchLines[lineIndex] ?? line.toLowerCase();
+              considerLine(line, lowered, 200 - lineIndex);
+            });
+
+            childLines.forEach((line, lineIndex) => {
+              if (typeof line !== "string") {
+                return;
+              }
+              const lowered = searchChildren[lineIndex] ?? line.toLowerCase();
+              considerLine(line, lowered, 120 - lineIndex);
+            });
+          }
+
+          if (!bestLine) {
+            return [];
+          }
+
+          let bonus = 0;
+          if (uniqueTokens.length && bestSegments) {
+            const segmentSet = new Set(bestSegments);
+            for (const token of uniqueTokens) {
+              if (segmentSet.has(token)) {
+                bonus += 500;
+              }
+            }
+          }
+
+          return [{
+            item: task,
+            score: bestScore + bonus,
+            matchLine: bestLine,
+            sourceIdx: idx
+          } as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })];
+        }) as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[];
+
+        suggestions.sort((a, b) => b.score - a.score || a.sourceIdx - b.sourceIdx);
+
+        const seen = new Map<string, (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })>();
+        const deduped: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
+
+        for (const suggestion of suggestions) {
+          const task = suggestion.item;
+          const key = this.buildGlobalSuggestionKey(task);
+          const existing = seen.get(key);
+
+          if (!existing) {
+            seen.set(key, suggestion);
+            deduped.push(suggestion);
+            continue;
+          }
+
+          const existingTag = typeof existing.item.tagHint === "string" ? existing.item.tagHint.trim() : "";
+          const incomingTag = typeof task.tagHint === "string" ? task.tagHint.trim() : "";
+
+          if (!existingTag && incomingTag) {
+            seen.set(key, suggestion);
+            const index = deduped.indexOf(existing);
+            if (index !== -1) {
+              deduped[index] = suggestion;
+            }
+          }
+        }
+
+        this.lastTaskSuggestions = deduped;
+        return deduped;
+    }
+
     getSuggestions(query: string) {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
+            const trimmed = query.trimStart();
+            if (!trimmed.startsWith("#")) {
+              return this.getGlobalTaskSuggestions(query);
+            }
+
             this.lastTaskSuggestions = [];
             this.expandMode = "none";
             const tags      = getAllTags(this.app);   // already sorted
-            const q         = query.replace(/^#/, "").trim();
+            const q         = trimmed.replace(/^#/, "").trim();
 
             /* ➊  Handle one‑char query in constant time ------------------------ */
             if (q.length === 1) {
