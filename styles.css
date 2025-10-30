@@ -200,6 +200,16 @@ input[data-task="-"] {
     padding: var(--size-4-2, 8px);
     -webkit-user-select: text;
     user-select: text;
+    cursor: text;
+}
+
+.tree-of-thought__container .tree-of-thought__header-link,
+.tree-of-thought__container .tree-of-thought__label--interactive,
+.tree-of-thought__container .tree-of-thought__label-link,
+.tree-of-thought__container .tree-of-thought__link,
+.tree-of-thought__container .tree-of-thought__reference-link,
+.tree-of-thought__container .tree-of-thought__reference-note {
+    cursor: pointer;
 }
 
 .tree-of-thought__header {
