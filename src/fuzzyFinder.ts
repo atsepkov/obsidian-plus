@@ -598,7 +598,7 @@ function escapeCssIdentifier(value: string): string {
       });
       settingsButton.setAttr("aria-haspopup", "menu");
       settingsButton.setAttr("aria-expanded", "false");
-      setIcon(settingsButton, "sliders-horizontal");
+      setIcon(settingsButton, "settings");
       settingsButton.addEventListener("click", evt => {
         evt.preventDefault();
         evt.stopPropagation();
@@ -962,6 +962,7 @@ function escapeCssIdentifier(value: string): string {
         this.resultContainerEl?.addEventListener("mouseover", this.pointerExpandListener);
 
         this.updatePhaseControls();
+        window.setTimeout(() => this.inputEl.focus(), 0);
     }
 
     onClose() {

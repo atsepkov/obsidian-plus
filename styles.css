@@ -254,14 +254,14 @@ input[data-task="-"] {
 .oplus-fuzzy-modal .oplus-header-button.mod-settings {
     position: absolute;
     top: 50%;
-    right: calc(var(--input-height, 2.2em));
+    right: calc(var(--input-height, 2.2em) + 9px);
     transform: translateY(-50%);
     z-index: 2;
 }
 
 .oplus-fuzzy-modal .search-input-clear-button {
     right: 5px;
-    cursor: pointer;
+    cursor: pointer !important;
 }
 
 .tree-of-thought__container .tree-of-thought__header-link,
