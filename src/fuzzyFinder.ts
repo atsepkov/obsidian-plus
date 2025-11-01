@@ -1005,6 +1005,10 @@ function escapeCssIdentifier(value: string): string {
 
         if ((isGlobalTaskSearch || !this.tagMode) && !this.thoughtMode && isTabLike) {
           evt.preventDefault();
+          evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
 
           const selectedIndex = list?.selectedItem ?? 0;
           const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
@@ -1053,10 +1057,14 @@ function escapeCssIdentifier(value: string): string {
             cacheIndex = this.attachTaskToCache(key, task);
           }
 
+          if (this.inputEl.value.length) {
+            this.inputEl.value = "";
+          }
           this.enterThoughtMode(key, {
             displayIndex,
             cacheIndex,
-            task
+            task,
+            search: ""
           });
           return;
         }
