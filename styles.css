@@ -341,6 +341,16 @@ input[data-task="-"] {
     margin-bottom: 0.75em !important;
 }
 
+.tree-of-thought__markdown .op-expandable-list > li,
+.tree-of-thought__markdown .op-expandable-children > li {
+    margin-bottom: 5px;
+}
+
+.tree-of-thought__markdown .op-expandable-list > li:last-child,
+.tree-of-thought__markdown .op-expandable-children > li:last-child {
+    margin-bottom: 0;
+}
+
 .tree-of-thought__markdown .internal-embed,
 .tree-of-thought__markdown img {
     max-width: 100%;
