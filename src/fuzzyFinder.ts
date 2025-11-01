@@ -503,6 +503,7 @@ function escapeCssIdentifier(value: string): string {
     private headerContainerEl: HTMLElement | null = null;
     private backButtonEl: HTMLButtonElement | null = null;
     private propertyButtonEl: HTMLButtonElement | null = null;
+    private previousTaskSearchValue: string | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -770,10 +771,16 @@ function escapeCssIdentifier(value: string): string {
       }
 
       if (this.thoughtMode) {
-        const thought = this.parseThoughtQuery(this.inputEl.value);
-        const base = thought.baseQuery.trimEnd();
-        const next = base.length ? `${base} ` : `${this.normalizeTag(this.activeTag ?? "#")} `;
-        this.inputEl.value = next;
+        let restore = this.previousTaskSearchValue ?? "";
+        restore = restore.replace(/\s+$/, "");
+        if (!restore.length) {
+          const fallbackTag = this.normalizeTag(this.activeTag ?? "#");
+          restore = fallbackTag.replace(/\s+$/, "");
+        }
+        if (!restore.endsWith(" ")) {
+          restore += " ";
+        }
+        this.inputEl.value = restore;
         this.exitThoughtMode();
         this.detectMode();
         this.scheduleSuggestionRefresh();
@@ -1022,6 +1029,7 @@ function escapeCssIdentifier(value: string): string {
 
           const normalizedTag = this.normalizeTag(tagFromTask);
           const previousValue = this.inputEl.value;
+          this.previousTaskSearchValue = previousValue.replace(/\s+$/, "");
           this.inputEl.value = `${normalizedTag} ${task.text ?? ""}`.trimEnd() + " ";
           this.detectMode();
 
@@ -1222,6 +1230,10 @@ function escapeCssIdentifier(value: string): string {
 
         if (changed) {
           this.scheduleSuggestionRefresh();
+        }
+
+        if (!this.thoughtMode) {
+          this.previousTaskSearchValue = this.inputEl.value.replace(/\s+$/, "");
         }
 
         this.updatePhaseControls();
@@ -1512,7 +1524,8 @@ function escapeCssIdentifier(value: string): string {
 
     private enterThoughtMode(key: string, payload: { displayIndex: number | null; cacheIndex: number | null; task?: TaskEntry; showIndex?: boolean; search?: string }) {
         const { displayIndex, cacheIndex, task, showIndex = false } = payload;
-        const search = payload.search ?? this.thoughtSearchQuery;
+        const wasThoughtMode = this.thoughtMode;
+        const search = payload.search ?? (wasThoughtMode ? this.thoughtSearchQuery : "");
         if (cacheIndex == null) {
           return;
         }
@@ -1527,8 +1540,10 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const tagForQuery = this.extractTagFromCacheKey(key) ?? (this.activeTag || "#");
-        const baseFromInput = this.parseThoughtQuery(this.inputEl.value).baseQuery.trimEnd();
-        let base = baseFromInput || tagForQuery;
+        const thoughtFromInput = this.parseThoughtQuery(this.inputEl.value);
+        const baseFromInput = thoughtFromInput.baseQuery.trimEnd();
+        const hasActiveThought = thoughtFromInput.active;
+        let base = hasActiveThought && baseFromInput.length ? baseFromInput : tagForQuery;
 
         if (task) {
           const rawText = (task.text ?? "").trim();
@@ -3806,6 +3821,7 @@ function escapeCssIdentifier(value: string): string {
             window.setTimeout(() => {
               if (this.thoughtMode) return;
               if (this.inputEl.value !== snapshot) return;
+              this.previousTaskSearchValue = snapshot.replace(/\s+$/, "");
               const resolvedIdx = (first as any).sourceIdx ?? this.lookupTaskIndex(key, first.item as TaskEntry);
               this.enterThoughtMode(key, {
                 displayIndex: 0,
