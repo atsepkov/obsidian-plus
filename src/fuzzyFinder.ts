@@ -665,25 +665,25 @@ function escapeCssIdentifier(value: string): string {
 
     private setStatusFilterSetting(value: TaskStatusChar | null): void {
       if (this.statusFilter === value) {
-        this.updatePropertyButtonState();
+        this.updatePhaseControls();
         return;
       }
 
       this.statusFilter = value;
       this.scheduleSuggestionRefresh();
-      this.updatePropertyButtonState();
+      this.updatePhaseControls();
     }
 
     private setExpandSetting(mode: ExpandMode): void {
       if (this.expandSetting === mode) {
-        this.updatePropertyButtonState();
+        this.updatePhaseControls();
         return;
       }
 
       this.expandSetting = mode;
       this.applyExpandMode(mode);
       this.scheduleSuggestionRefresh();
-      this.updatePropertyButtonState();
+      this.updatePhaseControls();
     }
 
     private describeStatusFilter(value: TaskStatusChar | null): string {
@@ -753,7 +753,15 @@ function escapeCssIdentifier(value: string): string {
       if (!this.tagMode) {
         return true;
       }
-      return this.isGlobalTaskSearchActive();
+      if (this.isGlobalTaskSearchActive()) {
+        return true;
+      }
+
+      const trimmed = this.inputEl.value.trim();
+      const hasInput = trimmed.length > 0;
+      const filtersDefault = this.statusFilter === null && this.expandSetting === "none";
+
+      return hasInput || !filtersDefault;
     }
 
     private navigateBack(): void {
@@ -769,6 +777,31 @@ function escapeCssIdentifier(value: string): string {
         this.exitThoughtMode();
         this.detectMode();
         this.scheduleSuggestionRefresh();
+        this.updatePhaseControls();
+        this.inputEl.focus();
+        return;
+      }
+
+      if (this.tagMode && !this.isGlobalTaskSearchActive()) {
+        const trimmed = this.inputEl.value.trim();
+        const hadInput = trimmed.length > 0;
+        const hadStatusFilter = this.statusFilter !== null;
+        const hadExpandSetting = this.expandSetting !== "none";
+
+        if (hadStatusFilter) {
+          this.setStatusFilterSetting(null);
+        }
+        if (hadExpandSetting) {
+          this.setExpandSetting("none");
+        }
+
+        if (hadInput) {
+          this.inputEl.value = "";
+          this.exitThoughtMode();
+          this.detectMode();
+          this.scheduleSuggestionRefresh();
+        }
+
         this.updatePhaseControls();
         this.inputEl.focus();
         return;

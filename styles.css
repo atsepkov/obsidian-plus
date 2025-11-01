@@ -207,11 +207,14 @@ input[data-task="-"] {
     display: flex;
     align-items: center;
     gap: var(--size-2-2, 6px);
+    position: relative;
 }
 
 .oplus-fuzzy-modal .oplus-fuzzy-header .prompt-input {
     flex: 1 1 auto;
     min-width: 0;
+    padding-left: 5px;
+    padding-right: calc(var(--input-height, 2.2em) * 2 + 14px);
 }
 
 .oplus-fuzzy-modal .oplus-header-button {
@@ -246,6 +249,18 @@ input[data-task="-"] {
 
 .oplus-fuzzy-modal .oplus-header-button.is-active {
     color: var(--interactive-accent);
+}
+
+.oplus-fuzzy-modal .oplus-header-button.mod-settings {
+    position: absolute;
+    top: 50%;
+    right: calc(5px + var(--input-height, 2.2em) + 4px);
+    transform: translateY(-50%);
+    z-index: 2;
+}
+
+.oplus-fuzzy-modal .search-input-clear-button {
+    right: 5px;
 }
 
 .tree-of-thought__container .tree-of-thought__header-link,
