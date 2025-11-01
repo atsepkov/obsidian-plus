@@ -2130,6 +2130,29 @@ function escapeCssIdentifier(value: string): string {
         container.empty();
         container.addClass("tree-of-thought__container");
 
+        if (!container.dataset.plusThoughtInteractionBound) {
+          const stopPropagation = (evt: Event) => {
+            if (!this.thoughtMode) {
+              return;
+            }
+            if (evt.type === "click") {
+              this.handleThoughtExpandClick(evt as MouseEvent, container);
+            }
+            evt.stopPropagation();
+          };
+          const passiveEvents: (keyof HTMLElementEventMap)[] = [
+            "mousedown",
+            "mouseup",
+            "touchstart",
+            "touchend",
+          ];
+          for (const eventName of passiveEvents) {
+            container.addEventListener(eventName, stopPropagation, { passive: true });
+          }
+          container.addEventListener("click", stopPropagation);
+          container.dataset.plusThoughtInteractionBound = "true";
+        }
+
         if (!this.thoughtMode) {
           return;
         }
@@ -2418,6 +2441,46 @@ function escapeCssIdentifier(value: string): string {
             });
           }
         }
+    }
+
+    private handleThoughtExpandClick(evt: MouseEvent, container: HTMLElement) {
+        if (evt.defaultPrevented) {
+          return;
+        }
+        if (typeof evt.button === "number" && evt.button !== 0) {
+          return;
+        }
+
+        const rawTarget = evt.target;
+        if (!(rawTarget instanceof Element)) {
+          return;
+        }
+
+        const toggle = rawTarget.closest<HTMLElement>(".op-expandable-item");
+        if (!toggle || !container.contains(toggle)) {
+          return;
+        }
+
+        const parentId = toggle.dataset.parentId;
+        if (!parentId) {
+          return;
+        }
+
+        const childSelector = `#${escapeCssIdentifier(parentId)}`;
+        const childrenList = container.querySelector<HTMLElement>(childSelector);
+        if (!childrenList) {
+          return;
+        }
+
+        const siblingLists = container.querySelectorAll<HTMLElement>(".op-expandable-children");
+        siblingLists.forEach(list => {
+          if (list !== childrenList) {
+            list.style.display = "none";
+          }
+        });
+
+        const isHidden = childrenList.style.display === "none";
+        childrenList.style.display = isHidden ? "block" : "none";
     }
 
     private attachThoughtSectionLinkHandlers(body: HTMLElement, section: ThoughtSection) {
