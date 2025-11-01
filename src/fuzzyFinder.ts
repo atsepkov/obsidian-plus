@@ -1184,8 +1184,8 @@ function escapeCssIdentifier(value: string): string {
         const trimmed = q.replace(/\s+$/, "");
         const previousThoughtSearch = this.thoughtSearchQuery;
         const tagMatch = trimmed.match(/^#\S+/);
-        const remainder = tagMatch ? trimmed.slice(tagMatch[0].length) : "";
-        const hasTaskSpace = remainder.length > 0 && /^\s/.test(remainder);
+        const remainderSource = tagMatch ? q.slice(tagMatch[0].length) : "";
+        const hasTaskSpace = remainderSource.length > 0 && /^\s/.test(remainderSource);
 
         if (this.thoughtMode) {
           this.tagMode = false;
