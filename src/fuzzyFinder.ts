@@ -531,26 +531,6 @@ function escapeCssIdentifier(value: string): string {
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
       this.initializeHeaderControls();
 
-      this.modalEl?.addEventListener(
-        "keydown",
-        evt => {
-          if (!this.isDrilldownSelection) {
-            return;
-          }
-          if (!(evt instanceof KeyboardEvent)) {
-            return;
-          }
-          if (this.tryHandleSelectionKey(evt)) {
-            evt.preventDefault();
-            evt.stopPropagation();
-            if (typeof evt.stopImmediatePropagation === "function") {
-              evt.stopImmediatePropagation();
-            }
-          }
-        },
-        true
-      );
-
       /* Keep mode in sync while user edits */
       this.inputEl.value = "#";
       this.inputEl.addEventListener("input", () => {
@@ -563,14 +543,6 @@ function escapeCssIdentifier(value: string): string {
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.inputEl.addEventListener("keyup", evt => this.handleKeyup(evt));
-      this.scope.register([], "Enter", evt => {
-        if (!this.isDrilldownSelection) {
-          return;
-        }
-        if (this.tryHandleSelectionKey(evt)) {
-          return false;
-        }
-      });
       this.detectMode(); // initial
       this.updatePhaseControls();
     }
@@ -1034,8 +1006,7 @@ function escapeCssIdentifier(value: string): string {
           return true;
         }
 
-        const treatEnterAsDrilldown = this.isDrilldownSelection && evt.key === "Enter";
-        const isTabLike = evt.key === "Tab" || evt.key === ">" || treatEnterAsDrilldown;
+        const isTabLike = evt.key === "Tab" || evt.key === ">";
         const isSpace = evt.key === " " || evt.key === "Space" || evt.key === "Spacebar";
         const isGlobalTaskSearch = this.isGlobalTaskSearchActive();
 

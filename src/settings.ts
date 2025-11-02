@@ -34,13 +34,13 @@ export class SettingTab extends PluginSettingTab {
       })
 
     new Setting(containerEl)
-      .setName('Obsidian Plus Search enter key behavior')
-      .setDesc('Choose what happens when you press Enter while browsing tags, tasks, or notes.')
+      .setName('Obsidian Plus Search select behavior')
+      .setDesc('Choose whether selecting a result should act like pressing Enter, Tab, or vary by device.')
       .addDropdown((dropdown) => {
         dropdown
-          .addOption('insert', 'Insert selection')
-          .addOption('drilldown', 'Drill down into selection')
-          .addOption('hybrid', 'Desktop inserts, mobile drills down')
+          .addOption('insert', 'Match Enter key behavior')
+          .addOption('drilldown', 'Match Tab key behavior')
+          .addOption('hybrid', 'Enter on desktop, Tab on mobile')
           .setValue(this.plugin.settings.fuzzySelectionBehavior ?? 'insert')
           .onChange(async (value) => {
             this.plugin.settings.fuzzySelectionBehavior = value as 'insert' | 'drilldown' | 'hybrid';
