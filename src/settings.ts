@@ -34,11 +34,11 @@ export class SettingTab extends PluginSettingTab {
       })
 
     new Setting(containerEl)
-      .setName('Fuzzy finder selection behavior')
-      .setDesc('Choose how selecting tags and tasks behaves on desktop and mobile.')
+      .setName('Obsidian Plus Search enter key behavior')
+      .setDesc('Choose what happens when you press Enter while browsing tags, tasks, or notes.')
       .addDropdown((dropdown) => {
         dropdown
-          .addOption('insert', 'Insert selection (current behavior)')
+          .addOption('insert', 'Insert selection')
           .addOption('drilldown', 'Drill down into selection')
           .addOption('hybrid', 'Desktop inserts, mobile drills down')
           .setValue(this.plugin.settings.fuzzySelectionBehavior ?? 'insert')

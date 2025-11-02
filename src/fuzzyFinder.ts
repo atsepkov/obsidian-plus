@@ -529,13 +529,6 @@ function escapeCssIdentifier(value: string): string {
       this.projectTag = this.detectProject();
 
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
-      this.setInstructions([
-        { command: "↑↓",  purpose: "select" },
-        { command: "␠",   purpose: "drill‑down" },
-        { command: "⏎",   purpose: "insert" },
-        { command: "Esc", purpose: "cancel" }
-      ]);
-
       this.initializeHeaderControls();
 
       /* Keep mode in sync while user edits */
@@ -1016,6 +1009,10 @@ function escapeCssIdentifier(value: string): string {
           (isTabLike || isSpace)
         ) {
           evt.preventDefault();
+          evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
           this.inputEl.value = this.normalizeTag(chosen.tag) + " ";  // autocomplete
           this.detectMode();                                        // switches to task mode
           return;
