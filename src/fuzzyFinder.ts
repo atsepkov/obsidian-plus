@@ -2456,10 +2456,6 @@ function escapeCssIdentifier(value: string): string {
             return;
           }
 
-          if (typeof (evt as any).preventDefault === "function") {
-            (evt as any).preventDefault();
-          }
-
           if (typeof evt.stopImmediatePropagation === "function") {
             evt.stopImmediatePropagation();
           }
@@ -2476,8 +2472,10 @@ function escapeCssIdentifier(value: string): string {
           "touchend",
         ];
 
+        const pointerOptions: AddEventListenerOptions = { capture: true, passive: true };
+
         for (const eventName of pointerEvents) {
-          suggestionItem.addEventListener(eventName, stopPointerEvent, { capture: true });
+          suggestionItem.addEventListener(eventName, stopPointerEvent, pointerOptions);
         }
 
         const handleClick = (evt: MouseEvent) => {
@@ -2500,7 +2498,7 @@ function escapeCssIdentifier(value: string): string {
           },
           dispose: () => {
             for (const eventName of pointerEvents) {
-              suggestionItem.removeEventListener(eventName, stopPointerEvent, true);
+              suggestionItem.removeEventListener(eventName, stopPointerEvent, pointerOptions);
             }
             suggestionItem.removeEventListener("click", handleClick, true);
           },
