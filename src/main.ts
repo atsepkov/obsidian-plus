@@ -1,7 +1,7 @@
 import path from 'path';
 import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
+        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
 } from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -30,6 +30,8 @@ const dimLineDecoration = Decoration.line({
 // this effect will fire whenever user updates the plugin config
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
+type FuzzySelectionBehaviorSetting = "insert" | "drilldown" | "hybrid";
+
 interface ObsidianPlusSettings {
         tagListFilePath: string;
         tagColors: string[];
@@ -38,14 +40,17 @@ interface ObsidianPlusSettings {
         tagDescriptions: { [key: string]: string };
         subscribe: Record<string,{ connector:TagConnector; interval:number }>;
         statusCycles: Record<string, TaskStatusChar[]>;
-	
+
         /** tags representing projects (root bullets) */
         projects: string[];
         /** tags that should be scoped to a project */
         projectTags: string[];
-	
-	aiConnector: string;
-	summarizeWithAi: boolean;
+
+        aiConnector: string;
+        summarizeWithAi: boolean;
+
+        /** controls how the fuzzy finder behaves when selecting tags/tasks */
+        fuzzySelectionBehavior: FuzzySelectionBehaviorSetting;
 }
 
 const DEFAULT_SETTINGS: ObsidianPlusSettings = {
@@ -57,11 +62,13 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
         subscribe: {},
         statusCycles: {},
 
-	projects: [],
-	projectTags: [],
+        projects: [],
+        projectTags: [],
 
-	aiConnector: null,
-	summarizeWithAi: false,
+        aiConnector: null,
+        summarizeWithAi: false,
+
+        fuzzySelectionBehavior: "insert",
 }
 
 interface TaskLineInfo {
@@ -1478,10 +1485,10 @@ export default class ObsidianPlus extends Plugin {
 		console.log('Settings loaded'); 
 	}
 
-	async saveSettings() {
-		// await this.saveData(this.settings);
-		// const loaded = await this.loadData()
-		// console.log('Settings saved', this.settings, loaded)
+        async saveSettings() {
+                // await this.saveData(this.settings);
+                // const loaded = await this.loadData()
+                // console.log('Settings saved', this.settings, loaded)
 
 		// Create a copy of settings to avoid modifying the live object directly
 		const settingsToSave = { ...this.settings };
@@ -1499,12 +1506,20 @@ export default class ObsidianPlus extends Plugin {
 		await this.saveData(settingsToSave);
 
 		// Log the object that was actually saved
-		console.log('Settings saved:', settingsToSave);
-		// Optional: Log what's currently loaded to compare
-		// const loaded = await this.loadData();
-		// console.log('Current data.json:', loaded);
-		
-	}
+                console.log('Settings saved:', settingsToSave);
+                // Optional: Log what's currently loaded to compare
+                // const loaded = await this.loadData();
+                // console.log('Current data.json:', loaded);
+
+        }
+
+        resolveFuzzySelectionBehavior(): "insert" | "drilldown" {
+                const configured = this.settings?.fuzzySelectionBehavior ?? "insert";
+                if (configured === "hybrid") {
+                        return Platform.isMobileApp ? "drilldown" : "insert";
+                }
+                return configured;
+        }
 
         generateTagCSS(): string {
                 return this.settings.tagColors.map((tagColor) => {

@@ -32,7 +32,22 @@ export class SettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       })
-    
+
+    new Setting(containerEl)
+      .setName('Fuzzy finder selection behavior')
+      .setDesc('Choose how selecting tags and tasks behaves on desktop and mobile.')
+      .addDropdown((dropdown) => {
+        dropdown
+          .addOption('insert', 'Insert selection (current behavior)')
+          .addOption('drilldown', 'Drill down into selection')
+          .addOption('hybrid', 'Desktop inserts, mobile drills down')
+          .setValue(this.plugin.settings.fuzzySelectionBehavior ?? 'insert')
+          .onChange(async (value) => {
+            this.plugin.settings.fuzzySelectionBehavior = value as 'insert' | 'drilldown' | 'hybrid';
+            await this.plugin.saveSettings();
+          });
+      });
+
     this.plugin.settings.tagColors.forEach((tagColor, index) => {
       const setting = new Setting(containerEl)
         .addText((text: TextComponent) => {
