@@ -2421,14 +2421,35 @@ function escapeCssIdentifier(value: string): string {
         this.bindDrilldownSuggestionHandlers(el, item);
     }
 
+    private readonly drilldownSuggestionBindings = new WeakMap<
+      HTMLElement,
+      {
+        update(item: FuzzyMatch<string | TaskEntry>): void;
+        dispose(): void;
+      }
+    >();
+
     private bindDrilldownSuggestionHandlers(el: HTMLElement, item: FuzzyMatch<string | TaskEntry>): void {
-        if (this.thoughtMode || !this.isDrilldownSelection) {
+        const suggestionItem = el.closest<HTMLElement>(".suggestion-item");
+        if (!suggestionItem) {
           return;
         }
 
-        if (el.dataset.plusDrilldownBound === "true") {
+        const existing = this.drilldownSuggestionBindings.get(suggestionItem);
+        if (this.thoughtMode || !this.isDrilldownSelection) {
+          if (existing) {
+            existing.dispose();
+            this.drilldownSuggestionBindings.delete(suggestionItem);
+          }
           return;
         }
+
+        if (existing) {
+          existing.update(item);
+          return;
+        }
+
+        let current = item;
 
         const stopPointerEvent = (evt: Event) => {
           if (!this.isDrilldownSelection || this.thoughtMode) {
@@ -2456,10 +2477,10 @@ function escapeCssIdentifier(value: string): string {
         ];
 
         for (const eventName of pointerEvents) {
-          el.addEventListener(eventName, stopPointerEvent, { capture: true });
+          suggestionItem.addEventListener(eventName, stopPointerEvent, { capture: true });
         }
 
-        el.addEventListener("click", evt => {
+        const handleClick = (evt: MouseEvent) => {
           if (!this.isDrilldownSelection || this.thoughtMode) {
             return;
           }
@@ -2468,10 +2489,22 @@ function escapeCssIdentifier(value: string): string {
             evt.stopImmediatePropagation();
           }
           evt.stopPropagation();
-          this.handleDrilldownSelection(item);
-        }, true);
+          this.handleDrilldownSelection(current);
+        };
 
-        el.dataset.plusDrilldownBound = "true";
+        suggestionItem.addEventListener("click", handleClick, true);
+
+        this.drilldownSuggestionBindings.set(suggestionItem, {
+          update(next) {
+            current = next;
+          },
+          dispose: () => {
+            for (const eventName of pointerEvents) {
+              suggestionItem.removeEventListener(eventName, stopPointerEvent, true);
+            }
+            suggestionItem.removeEventListener("click", handleClick, true);
+          },
+        });
     }
 
     private handleDrilldownSelection(item: FuzzyMatch<string | TaskEntry>): void {
