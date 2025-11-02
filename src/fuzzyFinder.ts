@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  prepareFuzzySearch, FuzzyMatch, TFile
+  Menu, prepareFuzzySearch, FuzzyMatch, TFile, setIcon
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -12,7 +12,7 @@ import {
   type TaskContextSnapshot,
   type ThoughtOriginSection
 } from "./treeOfThought";
-import { ExpandMode, isActiveStatus, normalizeStatusChar, parseExpandFilter, parseStatusFilter } from "./statusFilters";
+import { ExpandMode, TaskStatusChar, isActiveStatus, normalizeStatusChar, parseExpandFilter, parseStatusFilter, resolveExpandAlias, resolveStatusAlias } from "./statusFilters";
   
 export interface TaskEntry {
   file:   TFile;
@@ -491,6 +491,8 @@ function escapeCssIdentifier(value: string): string {
     private initialThoughtAttempts = 0;
     private initialThoughtTimer: number | null = null;
     private expandMode: ExpandMode = "none";
+    private expandSetting: ExpandMode = "none";
+    private statusFilter: TaskStatusChar | null = null;
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
@@ -498,11 +500,16 @@ function escapeCssIdentifier(value: string): string {
     private globalTaskCacheReady = false;
     private globalTaskCachePromise: Promise<void> | null = null;
     private globalPreferredTags: Set<string> | null = null;
+    private headerContainerEl: HTMLElement | null = null;
+    private backButtonEl: HTMLButtonElement | null = null;
+    private propertyButtonEl: HTMLButtonElement | null = null;
+    private previousTaskSearchValue: string | null = null;
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
                 options?: TaskTagModalOptions) {
       super(app);
+      this.modalEl?.addClass("oplus-fuzzy-modal");
       this.plugin = plugin;
       this.replaceRange = range ?? null;
       this.allowInsertion = options?.allowInsertion ?? true;
@@ -518,15 +525,23 @@ function escapeCssIdentifier(value: string): string {
         { command: "⏎",   purpose: "insert" },
         { command: "Esc", purpose: "cancel" }
       ]);
-  
+
+      this.initializeHeaderControls();
+
       /* Keep mode in sync while user edits */
       this.inputEl.value = "#";
       this.inputEl.addEventListener("input", () => {
+        const consumed = this.consumeInlinePropertyTokens();
         this.detectMode();
+        if (consumed) {
+          this.scheduleSuggestionRefresh();
+        }
+        this.updatePhaseControls();
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.inputEl.addEventListener("keyup", evt => this.handleKeyup(evt));
       this.detectMode(); // initial
+      this.updatePhaseControls();
     }
 
     /** Determine the project tag for the current cursor location */
@@ -549,6 +564,374 @@ function escapeCssIdentifier(value: string): string {
         return found || null;
       }
       return null;
+    }
+
+    private initializeHeaderControls(): void {
+      if (this.headerContainerEl) {
+        return;
+      }
+
+      const container = this.inputEl?.parentElement;
+      if (!container) {
+        return;
+      }
+
+      container.classList.add("oplus-fuzzy-header");
+      this.headerContainerEl = container;
+
+      const backButton = container.createEl("button", {
+        cls: "clickable-icon oplus-header-button mod-back",
+        attr: { type: "button" }
+      });
+      backButton.setAttr("aria-label", "Go back");
+      setIcon(backButton, "arrow-left");
+      backButton.addEventListener("click", evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.navigateBack();
+      });
+      container.insertBefore(backButton, this.inputEl);
+      this.backButtonEl = backButton;
+
+      const settingsButton = container.createEl("button", {
+        cls: "clickable-icon oplus-header-button mod-settings",
+        attr: { type: "button" }
+      });
+      settingsButton.setAttr("aria-haspopup", "menu");
+      settingsButton.setAttr("aria-expanded", "false");
+      setIcon(settingsButton, "settings");
+      settingsButton.addEventListener("click", evt => {
+        evt.preventDefault();
+        evt.stopPropagation();
+        this.openPropertyMenu(evt);
+      });
+      container.insertBefore(settingsButton, this.inputEl.nextSibling);
+      this.propertyButtonEl = settingsButton;
+
+      this.updatePhaseControls();
+    }
+
+    private openPropertyMenu(evt: MouseEvent): void {
+      if (!this.propertyButtonEl) {
+        return;
+      }
+
+      const menu = new Menu(this.app);
+
+      const statusOptions: Array<{ label: string; value: TaskStatusChar | null }> = [
+        { value: null, label: "Status: Active only" },
+        { value: " ", label: "Status: Open [ ]" },
+        { value: "/", label: "Status: In progress [/]" },
+        { value: "x", label: "Status: Done [x]" },
+        { value: "-", label: "Status: Cancelled [-]" },
+        { value: "!", label: "Status: Attention [!]" },
+        { value: "?", label: "Status: Uncertain [?]" }
+      ];
+
+      for (const option of statusOptions) {
+        menu.addItem(item => {
+          item.setTitle(option.label);
+          item.setChecked(this.statusFilter === option.value);
+          item.onClick(() => {
+            this.setStatusFilterSetting(option.value);
+          });
+        });
+      }
+
+      menu.addSeparator();
+
+      const expandOptions: Array<{ label: string; value: ExpandMode }> = [
+        { value: "none", label: "Expand: Collapsed" },
+        { value: "focus", label: "Expand: Focus selected" },
+        { value: "all", label: "Expand: Expand all" }
+      ];
+
+      for (const option of expandOptions) {
+        menu.addItem(item => {
+          item.setTitle(option.label);
+          item.setChecked(this.expandSetting === option.value);
+          item.onClick(() => {
+            this.setExpandSetting(option.value);
+          });
+        });
+      }
+
+      this.propertyButtonEl.setAttr("aria-expanded", "true");
+      menu.onHide(() => {
+        this.propertyButtonEl?.setAttr("aria-expanded", "false");
+        window.setTimeout(() => this.inputEl.focus(), 0);
+      });
+      menu.showAtMouseEvent(evt);
+    }
+
+    private setStatusFilterSetting(value: TaskStatusChar | null): void {
+      if (this.statusFilter === value) {
+        this.updatePhaseControls();
+        return;
+      }
+
+      this.statusFilter = value;
+      this.scheduleSuggestionRefresh();
+      this.updatePhaseControls();
+    }
+
+    private setExpandSetting(mode: ExpandMode): void {
+      if (this.expandSetting === mode) {
+        this.updatePhaseControls();
+        return;
+      }
+
+      this.expandSetting = mode;
+      this.applyExpandMode(mode);
+      this.scheduleSuggestionRefresh();
+      this.updatePhaseControls();
+    }
+
+    private describeStatusFilter(value: TaskStatusChar | null): string {
+      switch (value) {
+        case " ":
+          return "Status: Open";
+        case "/":
+          return "Status: In progress";
+        case "x":
+          return "Status: Done";
+        case "-":
+          return "Status: Cancelled";
+        case "!":
+          return "Status: Attention";
+        case "?":
+          return "Status: Uncertain";
+        default:
+          return "Status: Active only";
+      }
+    }
+
+    private describeExpandMode(mode: ExpandMode): string {
+      switch (mode) {
+        case "focus":
+          return "Expand: Focus selected";
+        case "all":
+          return "Expand: Expand all";
+        default:
+          return "Expand: Collapsed";
+      }
+    }
+
+    private updatePropertyButtonState(): void {
+      if (!this.propertyButtonEl) {
+        return;
+      }
+
+      const active = this.statusFilter !== null || this.expandSetting !== "none";
+      this.propertyButtonEl.toggleClass("is-active", active);
+      this.propertyButtonEl.setAttr("aria-pressed", active ? "true" : "false");
+
+      const summary = `${this.describeStatusFilter(this.statusFilter)} · ${this.describeExpandMode(this.expandSetting)}`;
+      this.propertyButtonEl.setAttr("aria-label", summary);
+      this.propertyButtonEl.setAttr("title", summary);
+    }
+
+    private updatePhaseControls(): void {
+      this.updateBackButtonState();
+      this.updatePropertyButtonState();
+    }
+
+    private updateBackButtonState(): void {
+      if (!this.backButtonEl) {
+        return;
+      }
+
+      const canGoBack = this.canNavigateBack();
+      this.backButtonEl.disabled = !canGoBack;
+      this.backButtonEl.toggleClass("is-disabled", !canGoBack);
+      this.backButtonEl.setAttr("aria-disabled", canGoBack ? "false" : "true");
+    }
+
+    private canNavigateBack(): boolean {
+      if (this.thoughtMode) {
+        return true;
+      }
+      if (!this.tagMode) {
+        return true;
+      }
+      if (this.isGlobalTaskSearchActive()) {
+        return true;
+      }
+
+      const trimmed = this.inputEl.value.trim();
+      const hasInput = trimmed.length > 0;
+      const filtersDefault = this.statusFilter === null && this.expandSetting === "none";
+
+      return hasInput || !filtersDefault;
+    }
+
+    private navigateBack(): void {
+      if (!this.canNavigateBack()) {
+        return;
+      }
+
+      if (this.thoughtMode) {
+        let restore = this.previousTaskSearchValue ?? "";
+        if (!restore.length) {
+          restore = this.normalizeTag(this.activeTag ?? "#");
+        }
+        this.inputEl.value = restore;
+        this.exitThoughtMode();
+        this.detectMode();
+        this.scheduleSuggestionRefresh();
+        this.updatePhaseControls();
+        this.inputEl.focus();
+        return;
+      }
+
+      if (this.tagMode && !this.isGlobalTaskSearchActive()) {
+        const trimmed = this.inputEl.value.trim();
+        const hadInput = trimmed.length > 0;
+        const hadStatusFilter = this.statusFilter !== null;
+        const hadExpandSetting = this.expandSetting !== "none";
+
+        if (hadStatusFilter) {
+          this.setStatusFilterSetting(null);
+        }
+        if (hadExpandSetting) {
+          this.setExpandSetting("none");
+        }
+
+        if (hadInput) {
+          this.inputEl.value = "";
+          this.exitThoughtMode();
+          this.detectMode();
+          this.scheduleSuggestionRefresh();
+        }
+
+        this.updatePhaseControls();
+        this.inputEl.focus();
+        return;
+      }
+
+      if (!this.tagMode || this.isGlobalTaskSearchActive()) {
+        this.exitThoughtMode();
+        this.tagMode = true;
+        this.activeTag = "#";
+        this.inputEl.value = "#";
+        this.detectMode();
+        this.scheduleSuggestionRefresh();
+        this.updatePhaseControls();
+        this.inputEl.focus();
+      }
+    }
+
+    private consumeInlinePropertyTokens(): boolean {
+      const input = this.inputEl;
+      const value = input.value;
+      if (!value) {
+        return false;
+      }
+
+      const tokenRegex = /\b(status|expand):\s*([^\s]+)(\s+)/gi;
+      const replacements: Array<{ start: number; end: number; replacement: string }> = [];
+      let changed = false;
+      let match: RegExpExecArray | null;
+
+      while ((match = tokenRegex.exec(value)) != null) {
+        const type = match[1]?.toLowerCase();
+        const raw = match[2] ?? "";
+        const trailing = match[3] ?? " ";
+        const start = match.index;
+        const end = start + match[0].length;
+
+        if (type === "status") {
+          const resolved = resolveStatusAlias(raw);
+          if (resolved == null) {
+            continue;
+          }
+          this.setStatusFilterSetting(resolved);
+          replacements.push({ start, end, replacement: trailing.length ? " " : "" });
+          changed = true;
+        } else if (type === "expand") {
+          const resolved = resolveExpandAlias(raw);
+          if (resolved == null) {
+            continue;
+          }
+          this.setExpandSetting(resolved);
+          replacements.push({ start, end, replacement: trailing.length ? " " : "" });
+          changed = true;
+        }
+      }
+
+      if (!changed || !replacements.length) {
+        return false;
+      }
+
+      replacements.sort((a, b) => a.start - b.start);
+
+      let result = "";
+      let cursor = 0;
+      for (const rep of replacements) {
+        result += value.slice(cursor, rep.start);
+        result += rep.replacement;
+        cursor = rep.end;
+      }
+      result += value.slice(cursor);
+
+      result = result.replace(/\s{2,}/g, " ");
+      if (result.length && !result.endsWith(" ")) {
+        result = result.trimEnd() + " ";
+      }
+
+      input.value = result;
+      input.setSelectionRange(result.length, result.length);
+      return true;
+    }
+
+    private applyExpandMode(mode: ExpandMode): void {
+      if (this.expandMode === mode) {
+        return;
+      }
+      this.expandMode = mode;
+      this.scheduleExpandRefresh();
+    }
+
+    private prepareQueryFilters(query: string): {
+      body: string;
+      statusFilter: TaskStatusChar | null;
+      enforceActiveOnly: boolean;
+      statusInvalid: boolean;
+      expandMode: ExpandMode;
+    } {
+      const trimmed = query.trim();
+      const statusParse = parseStatusFilter(trimmed);
+      let body = statusParse.cleanedQuery;
+
+      const statusInvalid = statusParse.hadStatusFilter && statusParse.statusChar == null;
+      let statusFilter = this.statusFilter;
+      let enforceActiveOnly = false;
+
+      if (statusParse.hadStatusFilter) {
+        if (statusParse.statusChar != null) {
+          statusFilter = statusParse.statusChar;
+        }
+      } else if (statusFilter == null) {
+        enforceActiveOnly = true;
+      }
+
+      const expandParse = parseExpandFilter(body);
+      body = expandParse.cleanedQuery;
+      let expandMode = this.expandSetting;
+      if (expandParse.hadExpandFilter) {
+        expandMode = expandParse.expandMode;
+      }
+
+      this.applyExpandMode(expandMode);
+
+      const normalizedBody = body.replace(/\s{2,}/g, " ").trim();
+      return {
+        body: normalizedBody,
+        statusFilter: statusFilter,
+        enforceActiveOnly,
+        statusInvalid,
+        expandMode
+      };
     }
 
     onOpen() {
@@ -579,6 +962,9 @@ function escapeCssIdentifier(value: string): string {
           this.pointerExpandListener = () => this.scheduleExpandRefresh();
         }
         this.resultContainerEl?.addEventListener("mouseover", this.pointerExpandListener);
+
+        this.updatePhaseControls();
+        window.setTimeout(() => this.inputEl.focus(), 0);
     }
 
     onClose() {
@@ -619,6 +1005,10 @@ function escapeCssIdentifier(value: string): string {
 
         if ((isGlobalTaskSearch || !this.tagMode) && !this.thoughtMode && isTabLike) {
           evt.preventDefault();
+          evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
 
           const selectedIndex = list?.selectedItem ?? 0;
           const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
@@ -638,13 +1028,25 @@ function escapeCssIdentifier(value: string): string {
 
           const normalizedTag = this.normalizeTag(tagFromTask);
           const previousValue = this.inputEl.value;
-          this.inputEl.value = `${normalizedTag} ${task.text ?? ""}`.trimEnd() + " ";
-          this.detectMode();
+          this.previousTaskSearchValue = previousValue;
 
-          const key = this.getTaskCacheKey();
+          const nextActiveTag = normalizedTag;
+          const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(nextActiveTag)
+            ? this.projectTag
+            : null;
+          const projectScope = project ?? undefined;
+          const key = project ? `${project}|${nextActiveTag}` : nextActiveTag;
+          if (key) {
+            this.tagMode = false;
+            this.activeTag = nextActiveTag;
+          }
+          if (key && key !== this.cachedTag) {
+            this.taskCache[key] = this.collectTasks(nextActiveTag, projectScope);
+            this.cachedTag = key;
+          }
+
           if (!key) {
             this.inputEl.value = previousValue;
-            this.detectMode();
             return;
           }
 
@@ -655,11 +1057,14 @@ function escapeCssIdentifier(value: string): string {
             cacheIndex = this.attachTaskToCache(key, task);
           }
 
+          if (this.inputEl.value.length) {
+            this.inputEl.value = "";
+          }
           this.enterThoughtMode(key, {
             displayIndex,
             cacheIndex,
             task,
-            showIndex: true
+            search: ""
           });
           return;
         }
@@ -776,44 +1181,33 @@ function escapeCssIdentifier(value: string): string {
           this.autoThoughtGuard = null;
         }
 
-        const thought = this.parseThoughtQuery(q);
-        const baseQuery = thought.baseQuery;
-        const tagMatch = baseQuery.match(/^#\S+/);
-        const remainder = tagMatch ? baseQuery.slice(tagMatch[0].length) : "";
-        const hasTaskSpace = /^\s/.test(remainder);
+        const trimmed = q.replace(/\s+$/, "");
+        const previousThoughtSearch = this.thoughtSearchQuery;
+        const tagMatch = trimmed.match(/^#\S+/);
+        const remainderSource = tagMatch ? q.slice(tagMatch[0].length) : "";
+        const hasTaskSpace = remainderSource.length > 0 && /^\s/.test(remainderSource);
 
-        if (tagMatch && hasTaskSpace) {
+        if (this.thoughtMode) {
+          this.tagMode = false;
+          if (previousThoughtSearch !== trimmed) {
+            this.thoughtSearchQuery = trimmed;
+            this.scheduleThoughtRerender();
+          }
+        } else if (tagMatch && hasTaskSpace) {
           this.tagMode   = false;
-          this.activeTag = tagMatch[0];        // “#tag”
+          this.activeTag = tagMatch[0];
 
           const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
               ? this.projectTag
               : null;
           const key = project ? `${project}|${this.activeTag}` : this.activeTag;
 
-          /* 🆕  cache populate */
           if (key !== this.cachedTag) {
-            this.taskCache[key] = this.collectTasks(this.activeTag, project);
+            this.taskCache[key] = this.collectTasks(this.activeTag, project ?? undefined);
             this.cachedTag = key;
           }
 
-          if (thought.active) {
-            this.thoughtMode = true;
-            this.thoughtSearchQuery = thought.search.trim();
-            if (thought.index !== null) {
-              this.thoughtDisplayIndex = thought.index;
-              const resolved = this.resolveCacheIndexFromDisplay(key, this.thoughtDisplayIndex);
-              if (resolved.cacheIndex != null) {
-                this.thoughtTaskIndex = resolved.cacheIndex;
-                if (resolved.task) {
-                  this.ensureTaskCached(key, resolved.task, resolved.cacheIndex);
-                }
-              }
-            }
-            this.thoughtCacheKey = key;
-          } else {
-            this.exitThoughtMode();
-          }
+          this.exitThoughtMode();
         } else {
           this.tagMode   = true;
           this.activeTag = tagMatch ? tagMatch[0] : "#";
@@ -839,6 +1233,12 @@ function escapeCssIdentifier(value: string): string {
         if (changed) {
           this.scheduleSuggestionRefresh();
         }
+
+        if (!this.thoughtMode) {
+          this.previousTaskSearchValue = this.inputEl.value;
+        }
+
+        this.updatePhaseControls();
     }
 
     private normalizeTag(tag: string): string {
@@ -907,8 +1307,7 @@ function escapeCssIdentifier(value: string): string {
         this.enterThoughtMode(key, {
           displayIndex: index,
           cacheIndex: index,
-          task,
-          showIndex: false
+          task
         });
         this.initialThoughtRequest = null;
     }
@@ -1031,24 +1430,6 @@ function escapeCssIdentifier(value: string): string {
         });
     }
 
-    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null; active: boolean; search: string } {
-        const trimmed = query.replace(/\s+$/, " ");
-        const thoughtMatch = trimmed.match(/^(.*?)(?:\s*\((\d+)\))?\s*>\s*(.*)$/s);
-        if (!thoughtMatch) {
-          return { baseQuery: query, index: null, active: false, search: "" };
-        }
-        const base = thoughtMatch[1] ?? "";
-        const idxRaw = thoughtMatch[2] != null ? Number(thoughtMatch[2]) : null;
-        const idx = Number.isFinite(idxRaw) ? Math.max(0, (idxRaw as number) - 1) : null;
-        const search = (thoughtMatch[3] ?? "").replace(/\s+$/, "");
-        return {
-          baseQuery: base.trimEnd(),
-          index: idx,
-          active: true,
-          search
-        };
-    }
-
     private configureInstructionBar() {
         const instructions = [] as { command: string; purpose: string }[];
 
@@ -1091,6 +1472,7 @@ function escapeCssIdentifier(value: string): string {
         this.thoughtState = null;
         this.thoughtLoadToken++;
         this.autoThoughtGuard = this.inputEl.value;
+        this.updatePhaseControls();
     }
 
     private getTaskCacheKey(): string | null {
@@ -1123,13 +1505,14 @@ function escapeCssIdentifier(value: string): string {
         };
     }
 
-    private enterThoughtMode(key: string, payload: { displayIndex: number | null; cacheIndex: number | null; task?: TaskEntry; showIndex?: boolean; search?: string }) {
-        const { displayIndex, cacheIndex, task, showIndex = false } = payload;
-        const search = payload.search ?? this.thoughtSearchQuery;
+    private enterThoughtMode(key: string, payload: { displayIndex: number | null; cacheIndex: number | null; task?: TaskEntry; search?: string }) {
+        const { displayIndex, cacheIndex, task } = payload;
+        const wasThoughtMode = this.thoughtMode;
+        const search = payload.search ?? (wasThoughtMode ? this.thoughtSearchQuery : "");
         if (cacheIndex == null) {
           return;
         }
-        const normalizedSearch = search.trim();
+        const normalizedSearch = search.replace(/\s+$/, "");
 
         if (this.thoughtMode &&
             this.thoughtCacheKey === key &&
@@ -1139,37 +1522,9 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
 
-        const tagForQuery = this.extractTagFromCacheKey(key) ?? (this.activeTag || "#");
-        const baseFromInput = this.parseThoughtQuery(this.inputEl.value).baseQuery.trimEnd();
-        let base = baseFromInput || tagForQuery;
-
-        if (task) {
-          const rawText = (task.text ?? "").trim();
-          const normalizedTag = tagForQuery.trim();
-          let taskPortion = rawText;
-          if (normalizedTag && rawText) {
-            const lowerTag = normalizedTag.toLowerCase();
-            if (rawText.toLowerCase().startsWith(lowerTag)) {
-              taskPortion = rawText.slice(normalizedTag.length).trimStart();
-            }
-          }
-          if (taskPortion) {
-            base = `${normalizedTag} ${taskPortion}`.trimEnd();
-          } else if (!base.trim() && normalizedTag) {
-            base = normalizedTag;
-          }
-        }
-
-        const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex + 1})` : "";
-        let next = `${base}${indexFragment} > `;
-        if (normalizedSearch.length) {
-          next += `${normalizedSearch} `;
-        }
-        if (!next.endsWith(" ")) {
-          next += " ";
-        }
-        if (this.inputEl.value !== next) {
-          this.inputEl.value = next;
+        const activeTag = this.extractTagFromCacheKey(key);
+        if (activeTag) {
+          this.activeTag = activeTag;
         }
 
         this.thoughtCacheKey = key;
@@ -1179,9 +1534,16 @@ function escapeCssIdentifier(value: string): string {
         if (task) {
           this.ensureTaskCached(key, task, cacheIndex);
         }
+
+        if (this.inputEl.value !== normalizedSearch) {
+          this.inputEl.value = normalizedSearch;
+        }
+
         this.thoughtMode = true;
+        this.tagMode = false;
         this.autoThoughtGuard = null;
         this.detectMode();
+        window.setTimeout(() => this.inputEl.focus(), 0);
     }
 
     private ensureTaskCached(key: string, task: TaskEntry, index: number | null) {
@@ -3131,20 +3493,19 @@ function escapeCssIdentifier(value: string): string {
     private getGlobalTaskSuggestions(query: string) {
         this.lastTaskSuggestions = [];
 
-        const trimmed = query.trim();
-        const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(trimmed);
-        const expandResult = parseExpandFilter(cleanedQuery);
-        const body = expandResult.cleanedQuery.trim();
-        this.expandMode = expandResult.expandMode;
-
-        if (hadStatusFilter && desiredStatus === null) {
+        const filters = this.prepareQueryFilters(query);
+        if (filters.statusInvalid) {
           return [];
         }
+
+        const body = filters.body;
+        const desiredStatus = filters.statusFilter;
+        const enforceActiveOnly = filters.enforceActiveOnly;
 
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
         const uniqueTokens = Array.from(new Set(tokens));
 
-        if (!uniqueTokens.length && !hadStatusFilter) {
+        if (!uniqueTokens.length && desiredStatus == null) {
           return [];
         }
 
@@ -3171,11 +3532,11 @@ function escapeCssIdentifier(value: string): string {
         const suggestions = tasks.flatMap((task, idx) => {
           const statusChar = task.status ?? " ";
 
-          if (hadStatusFilter) {
-            if (desiredStatus === null || statusChar !== desiredStatus) {
+          if (desiredStatus != null) {
+            if (statusChar !== desiredStatus) {
               return [];
             }
-          } else {
+          } else if (enforceActiveOnly) {
             if (!isActiveStatus(statusChar)) {
               return [];
             }
@@ -3201,7 +3562,7 @@ function escapeCssIdentifier(value: string): string {
               return;
             }
 
-            if (!uniqueTokens.length && !hadStatusFilter) {
+            if (!uniqueTokens.length && desiredStatus == null) {
               return;
             }
 
@@ -3213,7 +3574,7 @@ function escapeCssIdentifier(value: string): string {
             }
           };
 
-          if (!uniqueTokens.length && hadStatusFilter) {
+          if (!uniqueTokens.length && desiredStatus != null) {
             const rawLine = typeof lines[0] === "string" ? lines[0] : (typeof task.text === "string" ? task.text : "");
             const lowered = searchLines[0] ?? rawLine.toLowerCase();
             considerLine(rawLine, lowered, 200);
@@ -3298,7 +3659,7 @@ function escapeCssIdentifier(value: string): string {
             }
 
             this.lastTaskSuggestions = [];
-            this.expandMode = "none";
+            this.applyExpandMode("none");
             const tags      = getAllTags(this.app);   // already sorted
             const q         = trimmed.replace(/^#/, "").trim();
 
@@ -3325,14 +3686,13 @@ function escapeCssIdentifier(value: string): string {
         /* ---------- TASK MODE ---------- */
         const tag   = this.activeTag;                         // "#todo"
         let body  = query.replace(/^#\S+\s/, "");           // user’s filter
-        const { cleanedQuery, statusChar: desiredStatus, hadStatusFilter } = parseStatusFilter(body);
-        body = cleanedQuery;
-        const expandResult = parseExpandFilter(body);
-        body = expandResult.cleanedQuery;
-        this.expandMode = expandResult.expandMode;
-        if (hadStatusFilter && desiredStatus === null) {
+        const filters = this.prepareQueryFilters(body);
+        if (filters.statusInvalid) {
           return [];
         }
+        body = filters.body;
+        const desiredStatus = filters.statusFilter;
+        const enforceActiveOnly = filters.enforceActiveOnly;
         const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
           ? this.projectTag
           : null;
@@ -3367,9 +3727,9 @@ function escapeCssIdentifier(value: string): string {
         const suggestions = this.taskCache[key]!.flatMap((t, idx) => {
             const statusChar = t.status ?? " ";
 
-            if (hadStatusFilter) {
-                if (desiredStatus === null || statusChar !== desiredStatus) return [];
-            } else {
+            if (desiredStatus != null) {
+                if (statusChar !== desiredStatus) return [];
+            } else if (enforceActiveOnly) {
                 if (!isActiveStatus(statusChar)) return [];
             }
             let bestLine = null;
@@ -3421,12 +3781,12 @@ function escapeCssIdentifier(value: string): string {
             window.setTimeout(() => {
               if (this.thoughtMode) return;
               if (this.inputEl.value !== snapshot) return;
+              this.previousTaskSearchValue = snapshot;
               const resolvedIdx = (first as any).sourceIdx ?? this.lookupTaskIndex(key, first.item as TaskEntry);
               this.enterThoughtMode(key, {
                 displayIndex: 0,
                 cacheIndex: resolvedIdx ?? null,
-                task: first.item as TaskEntry,
-                showIndex: false
+                task: first.item as TaskEntry
               });
             }, 0);
           }

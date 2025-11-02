@@ -203,6 +203,67 @@ input[data-task="-"] {
     cursor: text;
 }
 
+.oplus-fuzzy-modal .oplus-fuzzy-header {
+    display: flex;
+    align-items: center;
+    gap: var(--size-2-2, 6px);
+    position: relative;
+}
+
+.oplus-fuzzy-modal .oplus-fuzzy-header .prompt-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    padding-left: 0px;
+    padding-right: calc(var(--input-height, 2.2em) * 2 + 14px);
+}
+
+.oplus-fuzzy-modal .oplus-header-button {
+    border: none;
+    background: transparent;
+    color: inherit;
+    padding: 0;
+    width: var(--input-height, 2.2em);
+    height: var(--input-height, 2.2em);
+    border-radius: var(--radius-s, 4px);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: background-color 120ms ease;
+}
+
+.oplus-fuzzy-modal .oplus-header-button svg {
+    width: 1.1em;
+    height: 1.1em;
+}
+
+.oplus-fuzzy-modal .oplus-header-button:hover,
+.oplus-fuzzy-modal .oplus-header-button:focus-visible {
+    background-color: var(--background-modifier-hover);
+}
+
+.oplus-fuzzy-modal .oplus-header-button.is-disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.oplus-fuzzy-modal .oplus-header-button.is-active {
+    color: var(--interactive-accent);
+}
+
+.oplus-fuzzy-modal .oplus-header-button.mod-settings {
+    position: absolute;
+    top: 50%;
+    right: var(--input-height, 2.2em);
+    transform: translateY(-50%);
+    z-index: 2;
+}
+
+.oplus-fuzzy-modal .search-input-clear-button {
+    right: 5px;
+    cursor: pointer !important;
+}
+
 .tree-of-thought__container .tree-of-thought__header-link,
 .tree-of-thought__container .tree-of-thought__label--interactive,
 .tree-of-thought__container .tree-of-thought__label-link,

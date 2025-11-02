@@ -344,3 +344,17 @@ export function parseExpandFilter(query: string): ExpandFilterParseResult {
     hadExpandFilter: true,
   };
 }
+
+export function resolveExpandAlias(raw: string): ExpandMode | null {
+  if (raw == null) {
+    return null;
+  }
+
+  const normalized = String(raw).trim().toLowerCase();
+  if (!normalized.length) {
+    return null;
+  }
+
+  const resolved = EXPAND_ALIASES[normalized];
+  return resolved ?? null;
+}
