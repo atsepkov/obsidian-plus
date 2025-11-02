@@ -543,6 +543,14 @@ function escapeCssIdentifier(value: string): string {
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.inputEl.addEventListener("keyup", evt => this.handleKeyup(evt));
+      this.scope.register([], "Enter", evt => {
+        if (!this.isDrilldownSelection) {
+          return;
+        }
+        if (this.tryHandleSelectionKey(evt)) {
+          return false;
+        }
+      });
       this.detectMode(); // initial
       this.updatePhaseControls();
     }
@@ -984,7 +992,11 @@ function escapeCssIdentifier(value: string): string {
         }
     }
 
-    private handleKeys(evt: KeyboardEvent) {
+    private tryHandleSelectionKey(evt: KeyboardEvent): boolean {
+        if (evt.defaultPrevented) {
+          return true;
+        }
+
         const list  = this.chooser;               // ul.suggestion-container
         const item  = list?.values?.[list.selectedItem];
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
@@ -992,8 +1004,11 @@ function escapeCssIdentifier(value: string): string {
         if (this.thoughtMode && evt.key === "Enter" && this.isDrilldownSelection) {
           evt.preventDefault();
           evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
           void this.commitThoughtSelection();
-          return;
+          return true;
         }
 
         const treatEnterAsDrilldown = this.isDrilldownSelection && evt.key === "Enter";
@@ -1001,11 +1016,14 @@ function escapeCssIdentifier(value: string): string {
         const isSpace = evt.key === " " || evt.key === "Space" || evt.key === "Spacebar";
         const isGlobalTaskSearch = this.isGlobalTaskSearchActive();
 
+        const maybeTag = chosen as { tag?: string } | undefined;
         if (
           this.tagMode &&
+          !this.thoughtMode &&
           !isGlobalTaskSearch &&
-          typeof chosen === "object" &&
-          "tag" in chosen &&
+          maybeTag &&
+          typeof maybeTag === "object" &&
+          typeof maybeTag.tag === "string" &&
           (isTabLike || isSpace)
         ) {
           evt.preventDefault();
@@ -1013,9 +1031,9 @@ function escapeCssIdentifier(value: string): string {
           if (typeof evt.stopImmediatePropagation === "function") {
             evt.stopImmediatePropagation();
           }
-          this.inputEl.value = this.normalizeTag(chosen.tag) + " ";  // autocomplete
+          this.inputEl.value = this.normalizeTag(maybeTag.tag) + " ";  // autocomplete
           this.detectMode();                                        // switches to task mode
-          return;
+          return true;
         }
 
         if ((isGlobalTaskSearch || !this.tagMode) && !this.thoughtMode && isTabLike) {
@@ -1028,6 +1046,14 @@ function escapeCssIdentifier(value: string): string {
           const selectedIndex = list?.selectedItem ?? null;
           const displayIndex = selectedIndex != null && selectedIndex >= 0 ? selectedIndex : null;
           this.drillIntoTask(displayIndex, null);
+          return true;
+        }
+
+        return false;
+    }
+
+    private handleKeys(evt: KeyboardEvent) {
+        if (this.tryHandleSelectionKey(evt)) {
           return;
         }
 
