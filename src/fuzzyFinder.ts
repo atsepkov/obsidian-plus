@@ -2434,10 +2434,15 @@ function escapeCssIdentifier(value: string): string {
           if (!this.isDrilldownSelection || this.thoughtMode) {
             return;
           }
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
           evt.stopPropagation();
         };
 
         const passiveEvents: (keyof HTMLElementEventMap)[] = [
+          "pointerdown",
+          "pointerup",
           "mousedown",
           "mouseup",
           "touchstart",
@@ -2445,7 +2450,7 @@ function escapeCssIdentifier(value: string): string {
         ];
 
         for (const eventName of passiveEvents) {
-          el.addEventListener(eventName, stopPropagation, { passive: true });
+          el.addEventListener(eventName, stopPropagation, { passive: true, capture: true });
         }
 
         el.addEventListener("click", evt => {
@@ -2453,9 +2458,12 @@ function escapeCssIdentifier(value: string): string {
             return;
           }
           evt.preventDefault();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
           evt.stopPropagation();
           this.handleDrilldownSelection(item);
-        });
+        }, true);
 
         el.dataset.plusDrilldownBound = "true";
     }
