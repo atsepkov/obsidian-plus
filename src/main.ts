@@ -32,6 +32,75 @@ export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 type FuzzySelectionBehaviorSetting = "insert" | "drilldown" | "hybrid";
 
+function sanitizeForJson(value: unknown, seen = new WeakSet<object>()): any {
+        if (value === null) {
+                return null;
+        }
+
+        const valueType = typeof value;
+
+        if (valueType === "string" || valueType === "boolean") {
+                return value;
+        }
+
+        if (valueType === "number") {
+                return Number.isFinite(value as number) ? value : undefined;
+        }
+
+        if (valueType === "bigint") {
+                return value.toString();
+        }
+
+        if (valueType === "undefined" || valueType === "symbol" || valueType === "function") {
+                return undefined;
+        }
+
+        if (Array.isArray(value)) {
+                if (seen.has(value)) {
+                        return undefined;
+                }
+
+                seen.add(value);
+                const result: any[] = [];
+                for (const entry of value) {
+                        const sanitizedEntry = sanitizeForJson(entry, seen);
+                        if (sanitizedEntry !== undefined) {
+                                result.push(sanitizedEntry);
+                        }
+                }
+                return result;
+        }
+
+        if (value instanceof Date) {
+                return value.toJSON();
+        }
+
+        if (valueType === "object") {
+                const objectValue = value as Record<string, unknown>;
+                if (seen.has(objectValue)) {
+                        return undefined;
+                }
+
+                seen.add(objectValue);
+
+                const prototype = Object.getPrototypeOf(objectValue);
+                if (prototype !== Object.prototype && prototype !== null) {
+                        return undefined;
+                }
+
+                const result: Record<string, any> = {};
+                for (const [key, child] of Object.entries(objectValue)) {
+                        const sanitizedChild = sanitizeForJson(child, seen);
+                        if (sanitizedChild !== undefined) {
+                                result[key] = sanitizedChild;
+                        }
+                }
+                return result;
+        }
+
+        return undefined;
+}
+
 interface ObsidianPlusSettings {
         tagListFilePath: string;
         tagColors: string[];
@@ -1491,37 +1560,37 @@ export default class ObsidianPlus extends Plugin {
 	}
 
         async saveSettings() {
-                // await this.saveData(this.settings);
-                // const loaded = await this.loadData()
-                // console.log('Settings saved', this.settings, loaded)
+                const configuredBehavior = this.settings.fuzzySelectionBehavior;
+                const normalizedBehavior: FuzzySelectionBehaviorSetting =
+                        configuredBehavior === "insert" || configuredBehavior === "drilldown" || configuredBehavior === "hybrid"
+                                ? configuredBehavior
+                                : "insert";
 
-		// Create a copy of settings to avoid modifying the live object directly
-                const settingsToSave = { ...this.settings };
+                const rawSettings = {
+                        ...this.settings,
+                        fuzzySelectionBehavior: normalizedBehavior,
+                };
 
-                if (settingsToSave.fuzzySelectionBehavior !== "insert" &&
-                        settingsToSave.fuzzySelectionBehavior !== "drilldown" &&
-                        settingsToSave.fuzzySelectionBehavior !== "hybrid") {
-                        settingsToSave.fuzzySelectionBehavior = "insert";
+                const sanitizedSettings = sanitizeForJson(rawSettings) as Record<string, any>;
+
+                if (!sanitizedSettings) {
+                        console.error('Failed to sanitize settings before saving.', rawSettings);
+                        return;
                 }
 
-		// Remove properties that should NOT be saved
-		delete settingsToSave.webTags;
-		delete settingsToSave.aiConnector;
-		// taskTags are derived by ConfigLoader, no need to save them
-                delete settingsToSave.taskTags;
-                delete settingsToSave.projects;
-                delete settingsToSave.projectTags;
-                delete settingsToSave.statusCycles;
+                delete sanitizedSettings.webTags;
+                delete sanitizedSettings.aiConnector;
+                delete sanitizedSettings.taskTags;
+                delete sanitizedSettings.projects;
+                delete sanitizedSettings.projectTags;
+                delete sanitizedSettings.statusCycles;
 
-		// Save only the serializable parts
-		await this.saveData(settingsToSave);
-
-		// Log the object that was actually saved
-                console.log('Settings saved:', settingsToSave);
-                // Optional: Log what's currently loaded to compare
-                // const loaded = await this.loadData();
-                // console.log('Current data.json:', loaded);
-
+                try {
+                        await this.saveData(sanitizedSettings);
+                        console.log('Settings saved:', sanitizedSettings);
+                } catch (error) {
+                        console.error('Failed to save settings:', error, sanitizedSettings);
+                }
         }
 
         resolveFuzzySelectionBehavior(): "insert" | "drilldown" {
