@@ -575,42 +575,6 @@ function escapeCssIdentifier(value: string): string {
       this.updatePhaseControls();
     }
 
-    onChooseSuggestion(value: FuzzyMatch<string | TaskEntry>, evt: MouseEvent | KeyboardEvent): void {
-      if (this.isDrilldownSelection) {
-        if (evt instanceof KeyboardEvent) {
-          const handled = this.tryHandleSelectionKey(evt);
-          if (handled) {
-            evt.preventDefault();
-            evt.stopPropagation();
-            if (typeof evt.stopImmediatePropagation === "function") {
-              evt.stopImmediatePropagation();
-            }
-            return;
-          }
-
-          if (evt.key === "Enter") {
-            evt.preventDefault();
-            evt.stopPropagation();
-            if (typeof evt.stopImmediatePropagation === "function") {
-              evt.stopImmediatePropagation();
-            }
-            void this.onChooseItem(value);
-            return;
-          }
-        } else if (evt instanceof MouseEvent || (typeof TouchEvent !== "undefined" && evt instanceof TouchEvent)) {
-          evt.preventDefault();
-          evt.stopPropagation();
-          if (typeof evt.stopImmediatePropagation === "function") {
-            evt.stopImmediatePropagation();
-          }
-          void this.onChooseItem(value);
-          return;
-        }
-      }
-
-      super.onChooseSuggestion(value, evt);
-    }
-
     /** Determine the project tag for the current cursor location */
     private detectProject(): string | null {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -2334,6 +2298,7 @@ function escapeCssIdentifier(value: string): string {
         file = this.app.vault.getAbstractFileByPath(tag) as TFile;
         const text = desc.startsWith(tag) ? desc : `${tag} ${desc ? " " + desc : ""}`;
         await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
+        this.bindDrilldownSuggestionHandlers(el, item);
     }
 
     private sanitizeTaskTextForDisplay(task: TaskEntry, normalizedTag: string | null): { content: string; marker: string | null; hadCheckbox: boolean } {
@@ -2453,6 +2418,82 @@ function escapeCssIdentifier(value: string): string {
         await this.applyExpandModeToElement(el, metadata, suggestionIndex);
         this.scheduleExpandRefresh();
         this.bindInternalLinkHandlers(el, markdownSource);
+        this.bindDrilldownSuggestionHandlers(el, item);
+    }
+
+    private bindDrilldownSuggestionHandlers(el: HTMLElement, item: FuzzyMatch<string | TaskEntry>): void {
+        if (this.thoughtMode || !this.isDrilldownSelection) {
+          return;
+        }
+
+        if (el.dataset.plusDrilldownBound === "true") {
+          return;
+        }
+
+        const stopPropagation = (evt: Event) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+          evt.stopPropagation();
+        };
+
+        const passiveEvents: (keyof HTMLElementEventMap)[] = [
+          "mousedown",
+          "mouseup",
+          "touchstart",
+          "touchend",
+        ];
+
+        for (const eventName of passiveEvents) {
+          el.addEventListener(eventName, stopPropagation, { passive: true });
+        }
+
+        el.addEventListener("click", evt => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+          evt.preventDefault();
+          evt.stopPropagation();
+          this.handleDrilldownSelection(item);
+        });
+
+        el.dataset.plusDrilldownBound = "true";
+    }
+
+    private handleDrilldownSelection(item: FuzzyMatch<string | TaskEntry>): void {
+        if (!this.isDrilldownSelection || this.thoughtMode) {
+          return;
+        }
+
+        if (this.tagMode) {
+          const raw = item?.item ?? item;
+          let tag: string | null = null;
+          if (typeof raw === "string") {
+            tag = raw;
+          } else if (raw && typeof raw === "object" && "tag" in raw && typeof (raw as any).tag === "string") {
+            tag = (raw as any).tag;
+          }
+          if (tag) {
+            this.applyTagDrilldown(tag);
+          }
+          return;
+        }
+
+        const match = item as FuzzyMatch<TaskEntry> & { sourceIdx?: number };
+        const displayIndex = this.findDisplayIndexForSuggestion(match);
+        const task = match?.item && typeof match.item === "object"
+          ? match.item as TaskEntry
+          : null;
+        this.drillIntoTask(displayIndex, task);
+    }
+
+    private applyTagDrilldown(tag: string): void {
+        const normalized = this.normalizeTag(tag);
+        const nextValue = `${normalized} `;
+        this.inputEl.value = nextValue;
+        this.detectMode();
+        this.scheduleSuggestionRefresh();
+        window.setTimeout(() => this.inputEl.focus(), 0);
     }
 
     private collectChildPreviewLines(task: TaskEntry): string[] {
