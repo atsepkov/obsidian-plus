@@ -2468,8 +2468,6 @@ function escapeCssIdentifier(value: string): string {
           "pointerup",
           "mousedown",
           "mouseup",
-          "touchstart",
-          "touchend",
         ];
 
         const pointerOptions: AddEventListenerOptions = { capture: true, passive: true };
@@ -2477,6 +2475,28 @@ function escapeCssIdentifier(value: string): string {
         for (const eventName of pointerEvents) {
           suggestionItem.addEventListener(eventName, stopPointerEvent, pointerOptions);
         }
+
+        const stopTouchEvent = (evt: TouchEvent) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+
+          evt.stopPropagation();
+
+          if (evt.type === "touchend") {
+            evt.preventDefault();
+            this.handleDrilldownSelection(current);
+          }
+        };
+
+        const touchOptions: AddEventListenerOptions = { capture: true, passive: false };
+
+        suggestionItem.addEventListener("touchstart", stopTouchEvent, touchOptions);
+        suggestionItem.addEventListener("touchend", stopTouchEvent, touchOptions);
 
         const handleClick = (evt: MouseEvent) => {
           if (!this.isDrilldownSelection || this.thoughtMode) {
@@ -2500,6 +2520,8 @@ function escapeCssIdentifier(value: string): string {
             for (const eventName of pointerEvents) {
               suggestionItem.removeEventListener(eventName, stopPointerEvent, pointerOptions);
             }
+            suggestionItem.removeEventListener("touchstart", stopTouchEvent, touchOptions);
+            suggestionItem.removeEventListener("touchend", stopTouchEvent, touchOptions);
             suggestionItem.removeEventListener("click", handleClick, true);
           },
         });
