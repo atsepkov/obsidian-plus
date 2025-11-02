@@ -2430,17 +2430,23 @@ function escapeCssIdentifier(value: string): string {
           return;
         }
 
-        const stopPropagation = (evt: Event) => {
+        const stopPointerEvent = (evt: Event) => {
           if (!this.isDrilldownSelection || this.thoughtMode) {
             return;
           }
+
+          if (typeof (evt as any).preventDefault === "function") {
+            (evt as any).preventDefault();
+          }
+
           if (typeof evt.stopImmediatePropagation === "function") {
             evt.stopImmediatePropagation();
           }
+
           evt.stopPropagation();
         };
 
-        const passiveEvents: (keyof HTMLElementEventMap)[] = [
+        const pointerEvents: (keyof HTMLElementEventMap)[] = [
           "pointerdown",
           "pointerup",
           "mousedown",
@@ -2449,8 +2455,8 @@ function escapeCssIdentifier(value: string): string {
           "touchend",
         ];
 
-        for (const eventName of passiveEvents) {
-          el.addEventListener(eventName, stopPropagation, { passive: true, capture: true });
+        for (const eventName of pointerEvents) {
+          el.addEventListener(eventName, stopPointerEvent, { capture: true });
         }
 
         el.addEventListener("click", evt => {
