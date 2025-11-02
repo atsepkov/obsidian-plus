@@ -555,6 +555,40 @@ function escapeCssIdentifier(value: string): string {
       this.updatePhaseControls();
     }
 
+    onChooseSuggestion(value: FuzzyMatch<string | TaskEntry>, evt: MouseEvent | KeyboardEvent): void {
+      if (this.isDrilldownSelection) {
+        if (evt instanceof KeyboardEvent) {
+          if (evt.defaultPrevented) {
+            return;
+          }
+
+          const handled = this.tryHandleSelectionKey(evt);
+          if (handled) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            return;
+          }
+
+          if (evt.key === "Enter") {
+            evt.preventDefault();
+            evt.stopPropagation();
+            if (typeof evt.stopImmediatePropagation === "function") {
+              evt.stopImmediatePropagation();
+            }
+            void this.onChooseItem(value);
+            return;
+          }
+        } else if (evt instanceof MouseEvent) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          void this.onChooseItem(value);
+          return;
+        }
+      }
+
+      super.onChooseSuggestion(value, evt);
+    }
+
     /** Determine the project tag for the current cursor location */
     private detectProject(): string | null {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);

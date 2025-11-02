@@ -1466,7 +1466,12 @@ export default class ObsidianPlus extends Plugin {
 		// this.updateFlaggedLines(this.app.workspace.getActiveFile());
 		// console.log('Settings loaded')
 
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+                this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+                const behavior = this.settings.fuzzySelectionBehavior;
+                if (behavior !== "insert" && behavior !== "drilldown" && behavior !== "hybrid") {
+                        this.settings.fuzzySelectionBehavior = "insert";
+                }
 
 		// Explicitly reset runtime state managed by ConfigLoader
 		// This prevents loading potentially invalid data from data.json
@@ -1491,7 +1496,13 @@ export default class ObsidianPlus extends Plugin {
                 // console.log('Settings saved', this.settings, loaded)
 
 		// Create a copy of settings to avoid modifying the live object directly
-		const settingsToSave = { ...this.settings };
+                const settingsToSave = { ...this.settings };
+
+                if (settingsToSave.fuzzySelectionBehavior !== "insert" &&
+                        settingsToSave.fuzzySelectionBehavior !== "drilldown" &&
+                        settingsToSave.fuzzySelectionBehavior !== "hybrid") {
+                        settingsToSave.fuzzySelectionBehavior = "insert";
+                }
 
 		// Remove properties that should NOT be saved
 		delete settingsToSave.webTags;
