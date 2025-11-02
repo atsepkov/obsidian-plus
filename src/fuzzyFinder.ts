@@ -531,6 +531,26 @@ function escapeCssIdentifier(value: string): string {
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
       this.initializeHeaderControls();
 
+      this.modalEl?.addEventListener(
+        "keydown",
+        evt => {
+          if (!this.isDrilldownSelection) {
+            return;
+          }
+          if (!(evt instanceof KeyboardEvent)) {
+            return;
+          }
+          if (this.tryHandleSelectionKey(evt)) {
+            evt.preventDefault();
+            evt.stopPropagation();
+            if (typeof evt.stopImmediatePropagation === "function") {
+              evt.stopImmediatePropagation();
+            }
+          }
+        },
+        true
+      );
+
       /* Keep mode in sync while user edits */
       this.inputEl.value = "#";
       this.inputEl.addEventListener("input", () => {
