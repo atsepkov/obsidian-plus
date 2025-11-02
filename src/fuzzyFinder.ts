@@ -558,14 +558,13 @@ function escapeCssIdentifier(value: string): string {
     onChooseSuggestion(value: FuzzyMatch<string | TaskEntry>, evt: MouseEvent | KeyboardEvent): void {
       if (this.isDrilldownSelection) {
         if (evt instanceof KeyboardEvent) {
-          if (evt.defaultPrevented) {
-            return;
-          }
-
           const handled = this.tryHandleSelectionKey(evt);
           if (handled) {
             evt.preventDefault();
             evt.stopPropagation();
+            if (typeof evt.stopImmediatePropagation === "function") {
+              evt.stopImmediatePropagation();
+            }
             return;
           }
 
@@ -578,9 +577,12 @@ function escapeCssIdentifier(value: string): string {
             void this.onChooseItem(value);
             return;
           }
-        } else if (evt instanceof MouseEvent) {
+        } else if (evt instanceof MouseEvent || (typeof TouchEvent !== "undefined" && evt instanceof TouchEvent)) {
           evt.preventDefault();
           evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
           void this.onChooseItem(value);
           return;
         }
@@ -1031,8 +1033,11 @@ function escapeCssIdentifier(value: string): string {
           return true;
         }
 
-        const list  = this.chooser;               // ul.suggestion-container
-        const item  = list?.values?.[list.selectedItem];
+        const list = this.chooser;                // ul.suggestion-container
+        const values = list?.values ?? [];
+        const selectedIndex = list?.selectedItem ?? -1;
+        const fallbackIndex = selectedIndex >= 0 ? selectedIndex : (values.length > 0 ? 0 : null);
+        const item = fallbackIndex != null ? values[fallbackIndex] : undefined;
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
 
         if (this.thoughtMode && evt.key === "Enter" && this.isDrilldownSelection) {
@@ -1077,8 +1082,7 @@ function escapeCssIdentifier(value: string): string {
             evt.stopImmediatePropagation();
           }
 
-          const selectedIndex = list?.selectedItem ?? null;
-          const displayIndex = selectedIndex != null && selectedIndex >= 0 ? selectedIndex : null;
+          const displayIndex = fallbackIndex != null && fallbackIndex >= 0 ? fallbackIndex : null;
           this.drillIntoTask(displayIndex, null);
           return true;
         }
