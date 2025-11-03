@@ -15,11 +15,11 @@ export class SettingTab extends PluginSettingTab {
     containerEl.createEl('h2', { text: 'Tag Color Settings' });
 
     new Setting(containerEl)
-      .setName("Tag List File")
-      .setDesc("Path to a note containing tags. For example: Inbox/TaskTags.md")
+      .setName('Tag List File')
+      .setDesc('Path to a note containing tags. For example: Inbox/TaskTags.md')
       .addText(text => {
         text
-          .setPlaceholder("TaskTags.md")
+          .setPlaceholder('TaskTags.md')
           .setValue(this.plugin.settings.tagListFilePath)
           .onChange(async (value) => {
             this.plugin.settings.tagListFilePath = value;
@@ -27,7 +27,7 @@ export class SettingTab extends PluginSettingTab {
             if (this.plugin.configLoader) {
               await this.plugin.configLoader.loadTaskTagsFromFile();
             } else {
-              console.error("ConfigLoader not initialized");
+              console.error('ConfigLoader not initialized');
             }
           });
       });

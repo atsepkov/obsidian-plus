@@ -13,7 +13,7 @@ import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirr
 import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
-import { advanceStatus, DEFAULT_STATUS_CYCLE, normalizeStatusChar, type TaskStatusChar } from "./statusFilters";
+import { advanceStatus, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
 
 type ResolvedTaskSearchContext = {
         path: string;
@@ -1918,17 +1918,13 @@ export default class ObsidianPlus extends Plugin {
                 return advanceStatus(current, this.getStatusCycle(tag));
         }
 
-        applyStatusToCheckbox(element: HTMLInputElement, status: string): void {
+        applyStatusToCheckbox(element: HTMLInputElement, status: TaskStatusChar): void {
                 if (!element) return;
-
-                const statusChar = typeof status === 'string' && status.length ? status[0] : ' ';
-                const normalized = normalizeStatusChar(statusChar);
-
-                element.dataset.task = statusChar;
-                element.setAttribute('data-task', statusChar);
-                element.checked = normalized === 'x';
-                element.indeterminate = normalized === '/';
-                const aria = normalized === 'x' ? 'true' : normalized === '/' ? 'mixed' : 'false';
+                element.dataset.task = status;
+                element.setAttribute('data-task', status);
+                element.checked = status === 'x';
+                element.indeterminate = status === '/';
+                const aria = status === 'x' ? 'true' : status === '/' ? 'mixed' : 'false';
                 element.setAttribute('aria-checked', aria);
         }
 
