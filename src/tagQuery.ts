@@ -470,9 +470,10 @@ export class TagQuery {
             const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
             const statusChar = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
             const ariaChecked = statusChar === "/" ? "mixed" : statusChar === "x" ? "true" : "false";
-            const checkedAttr = statusChar === "x" ? "checked" : "";
-            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${statusChar}" ${checkedAttr} aria-checked="${ariaChecked}">` +
-                   `<span>${text}</span>`;
+            const displayChar = statusChar === " " ? "\u00a0" : statusChar;
+            text = `<button type="button" class="op-toggle-task" id="i${id}" data-task="${statusChar}" role="checkbox" aria-checked="${ariaChecked}" aria-label="Toggle task status">` +
+                   `[${displayChar}]` +
+                   `</button><span>${text}</span>`;
         }
 
         if (icon.url) {

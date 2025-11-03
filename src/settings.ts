@@ -14,6 +14,24 @@ export class SettingTab extends PluginSettingTab {
     containerEl.empty();
     containerEl.createEl('h2', { text: 'Tag Color Settings' });
 
+    new Setting(containerEl)
+      .setName("Tag List File")
+      .setDesc("Path to a note containing tags. For example: Inbox/TaskTags.md")
+      .addText(text => {
+        text
+          .setPlaceholder("TaskTags.md")
+          .setValue(this.plugin.settings.tagListFilePath)
+          .onChange(async (value) => {
+            this.plugin.settings.tagListFilePath = value;
+            await this.plugin.saveSettings();
+            if (this.plugin.configLoader) {
+              await this.plugin.configLoader.loadTaskTagsFromFile();
+            } else {
+              console.error("ConfigLoader not initialized");
+            }
+          });
+      });
+
     // add a toggle to use AI to summarize tasks
     new Setting(containerEl)
       .setName('Use AI to summarize tasks')
@@ -103,23 +121,5 @@ export class SettingTab extends PluginSettingTab {
           });
       });
 
-    new Setting(containerEl)
-      .setName("Tag List File")
-      .setDesc("Path to a note containing tags. For example: Inbox/TaskTags.md")
-      .addText(text => {
-        text
-          .setPlaceholder("TaskTags.md")
-          .setValue(this.plugin.settings.tagListFilePath)
-          .onChange(async (value) => {
-            this.plugin.settings.tagListFilePath = value;
-            await this.plugin.saveSettings();
-            if (this.plugin.configLoader) {
-              await this.plugin.configLoader.loadTaskTagsFromFile();
-            } else {
-              console.error("ConfigLoader not initialized");
-            }
-          });
-      });
-    
   }
 }
