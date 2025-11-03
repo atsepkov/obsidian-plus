@@ -1,7 +1,7 @@
 import path from 'path';
 import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon
+        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
 } from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
@@ -30,6 +30,134 @@ const dimLineDecoration = Decoration.line({
 // this effect will fire whenever user updates the plugin config
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
+type FuzzySelectionBehaviorSetting = "insert" | "drilldown" | "hybrid";
+
+function sanitizeForJson(value: unknown, cache = new WeakMap<object, unknown>()): any {
+        if (value === null) {
+                return null;
+        }
+
+        const valueType = typeof value;
+
+        if (valueType === "string" || valueType === "boolean") {
+                return value;
+        }
+
+        if (valueType === "number") {
+                return Number.isFinite(value as number) ? value : undefined;
+        }
+
+        if (valueType === "bigint") {
+                return value.toString();
+        }
+
+        if (valueType === "undefined" || valueType === "symbol" || valueType === "function") {
+                return undefined;
+        }
+
+        if (value instanceof Date) {
+                return value.toJSON();
+        }
+
+        if (Array.isArray(value)) {
+                if (cache.has(value)) {
+                        return cache.get(value);
+                }
+
+                const result: any[] = [];
+                cache.set(value, result);
+
+                for (const entry of value) {
+                        const sanitizedEntry = sanitizeForJson(entry, cache);
+                        if (sanitizedEntry !== undefined) {
+                                result.push(sanitizedEntry);
+                        }
+                }
+
+                return result;
+        }
+
+        if (value instanceof Map) {
+                if (cache.has(value)) {
+                        return cache.get(value);
+                }
+
+                const result: Record<string, any> = {};
+                cache.set(value, result);
+
+                for (const [rawKey, rawValue] of value.entries()) {
+                        const key = typeof rawKey === "string" ? rawKey : String(rawKey);
+                        const sanitizedEntry = sanitizeForJson(rawValue, cache);
+                        if (sanitizedEntry !== undefined) {
+                                result[key] = sanitizedEntry;
+                        }
+                }
+
+                return result;
+        }
+
+        if (value instanceof Set) {
+                if (cache.has(value)) {
+                        return cache.get(value);
+                }
+
+                const result: any[] = [];
+                cache.set(value, result);
+
+                for (const entry of value.values()) {
+                        const sanitizedEntry = sanitizeForJson(entry, cache);
+                        if (sanitizedEntry !== undefined) {
+                                result.push(sanitizedEntry);
+                        }
+                }
+
+                return result;
+        }
+
+        if (ArrayBuffer.isView(value)) {
+                return Array.from((value as ArrayLike<number>));
+        }
+
+        if (value instanceof ArrayBuffer) {
+                return Array.from(new Uint8Array(value));
+        }
+
+        if (valueType === "object") {
+                const objectValue = value as Record<string, unknown>;
+                if (cache.has(objectValue)) {
+                        return cache.get(objectValue);
+                }
+
+                const prototype = Object.getPrototypeOf(objectValue);
+                if (prototype !== Object.prototype && prototype !== null) {
+                        const toJSON = (objectValue as { toJSON?: () => unknown }).toJSON;
+                        if (typeof toJSON === "function") {
+                                try {
+                                        return sanitizeForJson(toJSON.call(objectValue), cache);
+                                } catch (error) {
+                                        console.error('Failed to sanitize via toJSON()', error, objectValue);
+                                }
+                        }
+
+                        return undefined;
+                }
+
+                const result: Record<string, any> = {};
+                cache.set(objectValue, result);
+
+                for (const [key, child] of Object.entries(objectValue)) {
+                        const sanitizedChild = sanitizeForJson(child, cache);
+                        if (sanitizedChild !== undefined) {
+                                result[key] = sanitizedChild;
+                        }
+                }
+
+                return result;
+        }
+
+        return undefined;
+}
+
 interface ObsidianPlusSettings {
         tagListFilePath: string;
         tagColors: string[];
@@ -38,14 +166,17 @@ interface ObsidianPlusSettings {
         tagDescriptions: { [key: string]: string };
         subscribe: Record<string,{ connector:TagConnector; interval:number }>;
         statusCycles: Record<string, TaskStatusChar[]>;
-	
+
         /** tags representing projects (root bullets) */
         projects: string[];
         /** tags that should be scoped to a project */
         projectTags: string[];
-	
-	aiConnector: string;
-	summarizeWithAi: boolean;
+
+        aiConnector: string;
+        summarizeWithAi: boolean;
+
+        /** controls how the fuzzy finder behaves when selecting tags/tasks */
+        fuzzySelectionBehavior: FuzzySelectionBehaviorSetting;
 }
 
 const DEFAULT_SETTINGS: ObsidianPlusSettings = {
@@ -57,11 +188,13 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
         subscribe: {},
         statusCycles: {},
 
-	projects: [],
-	projectTags: [],
+        projects: [],
+        projectTags: [],
 
-	aiConnector: null,
-	summarizeWithAi: false,
+        aiConnector: null,
+        summarizeWithAi: false,
+
+        fuzzySelectionBehavior: "insert",
 }
 
 interface TaskLineInfo {
@@ -1459,7 +1592,12 @@ export default class ObsidianPlus extends Plugin {
 		// this.updateFlaggedLines(this.app.workspace.getActiveFile());
 		// console.log('Settings loaded')
 
-		this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+                this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+
+                const behavior = this.settings.fuzzySelectionBehavior;
+                if (behavior !== "insert" && behavior !== "drilldown" && behavior !== "hybrid") {
+                        this.settings.fuzzySelectionBehavior = "insert";
+                }
 
 		// Explicitly reset runtime state managed by ConfigLoader
 		// This prevents loading potentially invalid data from data.json
@@ -1478,33 +1616,57 @@ export default class ObsidianPlus extends Plugin {
 		console.log('Settings loaded'); 
 	}
 
-	async saveSettings() {
-		// await this.saveData(this.settings);
-		// const loaded = await this.loadData()
-		// console.log('Settings saved', this.settings, loaded)
+        async saveSettings() {
+                const configuredBehavior = this.settings.fuzzySelectionBehavior;
+                const normalizedBehavior: FuzzySelectionBehaviorSetting =
+                        configuredBehavior === "insert" || configuredBehavior === "drilldown" || configuredBehavior === "hybrid"
+                                ? configuredBehavior
+                                : "insert";
 
-		// Create a copy of settings to avoid modifying the live object directly
-		const settingsToSave = { ...this.settings };
+                const rawSettings = {
+                        ...this.settings,
+                        fuzzySelectionBehavior: normalizedBehavior,
+                };
 
-		// Remove properties that should NOT be saved
-		delete settingsToSave.webTags;
-		delete settingsToSave.aiConnector;
-		// taskTags are derived by ConfigLoader, no need to save them
-                delete settingsToSave.taskTags;
-                delete settingsToSave.projects;
-                delete settingsToSave.projectTags;
-                delete settingsToSave.statusCycles;
+                const sanitizedSettings = sanitizeForJson(rawSettings) as Record<string, any>;
 
-		// Save only the serializable parts
-		await this.saveData(settingsToSave);
+                if (!sanitizedSettings) {
+                        console.error('Failed to sanitize settings before saving.', rawSettings);
+                        return;
+                }
 
-		// Log the object that was actually saved
-		console.log('Settings saved:', settingsToSave);
-		// Optional: Log what's currently loaded to compare
-		// const loaded = await this.loadData();
-		// console.log('Current data.json:', loaded);
-		
-	}
+		delete sanitizedSettings.webTags;
+		delete sanitizedSettings.aiConnector;
+		delete sanitizedSettings.taskTags;
+		delete sanitizedSettings.projects;
+		delete sanitizedSettings.projectTags;
+		delete sanitizedSettings.statusCycles;
+
+		try {
+			JSON.stringify(sanitizedSettings);
+		} catch (error) {
+			console.error('Settings remain non-serializable after sanitization.', error, {
+				raw: rawSettings,
+				sanitized: sanitizedSettings,
+			});
+			return;
+		}
+
+		try {
+			await this.saveData(sanitizedSettings);
+			console.log('Settings saved:', sanitizedSettings);
+		} catch (error) {
+			console.error('Failed to save settings:', error, sanitizedSettings);
+		}
+        }
+
+        resolveFuzzySelectionBehavior(): "insert" | "drilldown" {
+                const configured = this.settings?.fuzzySelectionBehavior ?? "insert";
+                if (configured === "hybrid") {
+                        return Platform.isMobileApp ? "drilldown" : "insert";
+                }
+                return configured;
+        }
 
         generateTagCSS(): string {
                 return this.settings.tagColors.map((tagColor) => {

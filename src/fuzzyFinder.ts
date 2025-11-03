@@ -56,6 +56,7 @@ export interface TreeOfThoughtOpenOptions {
 export interface TaskTagModalOptions {
   allowInsertion?: boolean;
   initialThought?: TreeOfThoughtOpenOptions | null;
+  selectionBehavior?: "insert" | "drilldown";
 }
 
 interface ThoughtViewState {
@@ -463,6 +464,7 @@ function escapeCssIdentifier(value: string): string {
     private plugin: ObsidianPlus;
     private replaceRange: { from: CodeMirror.Position; to: CodeMirror.Position } | null;
     private readonly allowInsertion: boolean;
+    private readonly selectionBehavior: "insert" | "drilldown";
 
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
@@ -504,6 +506,9 @@ function escapeCssIdentifier(value: string): string {
     private backButtonEl: HTMLButtonElement | null = null;
     private propertyButtonEl: HTMLButtonElement | null = null;
     private previousTaskSearchValue: string | null = null;
+    private get isDrilldownSelection(): boolean {
+      return this.selectionBehavior === "drilldown";
+    }
 
     constructor(app: App, plugin: ObsidianPlus,
                 range: { from: CodeMirror.Position; to: CodeMirror.Position } | null,
@@ -513,19 +518,17 @@ function escapeCssIdentifier(value: string): string {
       this.plugin = plugin;
       this.replaceRange = range ?? null;
       this.allowInsertion = options?.allowInsertion ?? true;
+      const configuredBehavior = options?.selectionBehavior
+        ?? (typeof this.plugin.resolveFuzzySelectionBehavior === "function"
+          ? this.plugin.resolveFuzzySelectionBehavior()
+          : "insert");
+      this.selectionBehavior = configuredBehavior === "drilldown" ? "drilldown" : "insert";
       this.initialThoughtRequest = options?.initialThought
         ? this.normalizeInitialThought(options.initialThought)
         : null;
       this.projectTag = this.detectProject();
 
       this.setPlaceholder("Type a tag, press ␠ to search its tasks…");
-      this.setInstructions([
-        { command: "↑↓",  purpose: "select" },
-        { command: "␠",   purpose: "drill‑down" },
-        { command: "⏎",   purpose: "insert" },
-        { command: "Esc", purpose: "cancel" }
-      ]);
-
       this.initializeHeaderControls();
 
       /* Keep mode in sync while user edits */
@@ -981,26 +984,50 @@ function escapeCssIdentifier(value: string): string {
         }
     }
 
-    private handleKeys(evt: KeyboardEvent) {
-        const list  = this.chooser;               // ul.suggestion-container
-        const item  = list?.values?.[list.selectedItem];
+    private tryHandleSelectionKey(evt: KeyboardEvent): boolean {
+        if (evt.defaultPrevented) {
+          return true;
+        }
+
+        const list = this.chooser;                // ul.suggestion-container
+        const values = list?.values ?? [];
+        const selectedIndex = list?.selectedItem ?? -1;
+        const fallbackIndex = selectedIndex >= 0 ? selectedIndex : (values.length > 0 ? 0 : null);
+        const item = fallbackIndex != null ? values[fallbackIndex] : undefined;
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
+
+        if (this.thoughtMode && evt.key === "Enter" && this.isDrilldownSelection) {
+          evt.preventDefault();
+          evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+          void this.commitThoughtSelection();
+          return true;
+        }
 
         const isTabLike = evt.key === "Tab" || evt.key === ">";
         const isSpace = evt.key === " " || evt.key === "Space" || evt.key === "Spacebar";
         const isGlobalTaskSearch = this.isGlobalTaskSearchActive();
 
+        const maybeTag = chosen as { tag?: string } | undefined;
         if (
           this.tagMode &&
+          !this.thoughtMode &&
           !isGlobalTaskSearch &&
-          typeof chosen === "object" &&
-          "tag" in chosen &&
+          maybeTag &&
+          typeof maybeTag === "object" &&
+          typeof maybeTag.tag === "string" &&
           (isTabLike || isSpace)
         ) {
           evt.preventDefault();
-          this.inputEl.value = this.normalizeTag(chosen.tag) + " ";  // autocomplete
+          evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+          this.inputEl.value = this.normalizeTag(maybeTag.tag) + " ";  // autocomplete
           this.detectMode();                                        // switches to task mode
-          return;
+          return true;
         }
 
         if ((isGlobalTaskSearch || !this.tagMode) && !this.thoughtMode && isTabLike) {
@@ -1010,62 +1037,16 @@ function escapeCssIdentifier(value: string): string {
             evt.stopImmediatePropagation();
           }
 
-          const selectedIndex = list?.selectedItem ?? 0;
-          const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
-          const suggestion = this.lastTaskSuggestions[displayIndex];
-          if (!suggestion) {
-            return;
-          }
+          const displayIndex = fallbackIndex != null && fallbackIndex >= 0 ? fallbackIndex : null;
+          this.drillIntoTask(displayIndex, null);
+          return true;
+        }
 
-          const task = suggestion.item as TaskEntry;
-          const tagFromTask = task.tagHint
-            ?? this.extractTagFromTask(task)
-            ?? (Array.isArray(task.tags) ? task.tags[0] : null)
-            ?? (this.activeTag && this.activeTag !== "#" ? this.activeTag : null);
-          if (!tagFromTask) {
-            return;
-          }
+        return false;
+    }
 
-          const normalizedTag = this.normalizeTag(tagFromTask);
-          const previousValue = this.inputEl.value;
-          this.previousTaskSearchValue = previousValue;
-
-          const nextActiveTag = normalizedTag;
-          const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(nextActiveTag)
-            ? this.projectTag
-            : null;
-          const projectScope = project ?? undefined;
-          const key = project ? `${project}|${nextActiveTag}` : nextActiveTag;
-          if (key) {
-            this.tagMode = false;
-            this.activeTag = nextActiveTag;
-          }
-          if (key && key !== this.cachedTag) {
-            this.taskCache[key] = this.collectTasks(nextActiveTag, projectScope);
-            this.cachedTag = key;
-          }
-
-          if (!key) {
-            this.inputEl.value = previousValue;
-            return;
-          }
-
-          let cacheIndex = suggestion.sourceIdx
-            ?? this.lookupTaskIndex(key, task)
-            ?? this.findTaskIndexByHint(key, task);
-          if (cacheIndex == null) {
-            cacheIndex = this.attachTaskToCache(key, task);
-          }
-
-          if (this.inputEl.value.length) {
-            this.inputEl.value = "";
-          }
-          this.enterThoughtMode(key, {
-            displayIndex,
-            cacheIndex,
-            task,
-            search: ""
-          });
+    private handleKeys(evt: KeyboardEvent) {
+        if (this.tryHandleSelectionKey(evt)) {
           return;
         }
 
@@ -1434,25 +1415,32 @@ function escapeCssIdentifier(value: string): string {
         const instructions = [] as { command: string; purpose: string }[];
 
         if (this.tagMode) {
-          if (this.allowInsertion) {
-            instructions.push({ command: "⏎", purpose: "insert new bullet · close" });
+          if (this.isDrilldownSelection) {
+            instructions.push({ command: "⏎ / Tab / ␠ / >", purpose: "drill‑down" });
           } else {
-            instructions.push({ command: "⏎", purpose: "select tag" });
+            instructions.push({ command: "Tab / ␠ / >", purpose: "autocomplete tag" });
+            instructions.push({ command: "⏎", purpose: this.allowInsertion ? "insert new bullet · close" : "select tag" });
           }
-          instructions.push({ command: "Tab / ␠ / >", purpose: "autocomplete tag" });
         } else if (this.thoughtMode) {
           instructions.push({ command: "Esc", purpose: "return to results" });
           instructions.push({ command: "Type", purpose: "search within thought" });
-          if (this.allowInsertion) {
+          if (this.isDrilldownSelection) {
+            const purpose = this.allowInsertion ? "link task · close" : "open task";
+            instructions.push({ command: "⏎", purpose });
+          } else if (this.allowInsertion) {
             instructions.push({ command: "⏎", purpose: "close" });
           }
         } else {
-          if (this.allowInsertion) {
-            instructions.push({ command: "⏎", purpose: "link task · close" });
+          if (this.isDrilldownSelection) {
+            instructions.push({ command: "⏎ / Tab / >", purpose: "expand into thought tree" });
           } else {
-            instructions.push({ command: "⏎", purpose: "open task" });
+            if (this.allowInsertion) {
+              instructions.push({ command: "⏎", purpose: "link task · close" });
+            } else {
+              instructions.push({ command: "⏎", purpose: "open task" });
+            }
+            instructions.push({ command: "Tab / >", purpose: "expand into thought tree" });
           }
-          instructions.push({ command: "Tab / >", purpose: "expand into thought tree" });
           instructions.push({ command: "Esc", purpose: "back to tags" });
         }
 
@@ -1503,6 +1491,203 @@ function escapeCssIdentifier(value: string): string {
           cacheIndex: cacheIndex ?? null,
           task: cacheIndex != null ? (suggestion.item as TaskEntry) : null
         };
+    }
+
+    private drillIntoTask(displayIndex: number | null, fallbackTask: TaskEntry | null): void {
+        const chooser = this.chooser;
+        let resolvedDisplay = displayIndex != null && displayIndex >= 0 ? displayIndex : null;
+        if (resolvedDisplay == null) {
+          const selectedIndex = chooser?.selectedItem ?? null;
+          if (selectedIndex != null && selectedIndex >= 0) {
+            resolvedDisplay = selectedIndex;
+          }
+        }
+
+        const suggestion = resolvedDisplay != null ? this.lastTaskSuggestions[resolvedDisplay] : undefined;
+        const task = suggestion ? (suggestion.item as TaskEntry) : fallbackTask;
+        if (!task) {
+          return;
+        }
+
+        const tagFromTask = task.tagHint
+          ?? this.extractTagFromTask(task)
+          ?? (Array.isArray(task.tags) ? task.tags[0] : null)
+          ?? (this.activeTag && this.activeTag !== "#" ? this.activeTag : null);
+        if (!tagFromTask) {
+          return;
+        }
+
+        const normalizedTag = this.normalizeTag(tagFromTask);
+        const previousValue = this.inputEl.value;
+        this.previousTaskSearchValue = previousValue;
+
+        const nextActiveTag = normalizedTag;
+        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(nextActiveTag)
+          ? this.projectTag
+          : null;
+        const projectScope = project ?? undefined;
+        const key = project ? `${project}|${nextActiveTag}` : nextActiveTag;
+        if (key) {
+          this.tagMode = false;
+          this.activeTag = nextActiveTag;
+        }
+        if (key && key !== this.cachedTag) {
+          this.taskCache[key] = this.collectTasks(nextActiveTag, projectScope);
+          this.cachedTag = key;
+        }
+
+        if (!key) {
+          this.inputEl.value = previousValue;
+          return;
+        }
+
+        let cacheIndex = suggestion?.sourceIdx
+          ?? this.lookupTaskIndex(key, task)
+          ?? this.findTaskIndexByHint(key, task);
+        if (cacheIndex == null) {
+          cacheIndex = this.attachTaskToCache(key, task);
+        }
+
+        if (this.inputEl.value.length) {
+          this.inputEl.value = "";
+        }
+        this.enterThoughtMode(key, {
+          displayIndex: resolvedDisplay ?? null,
+          cacheIndex,
+          task,
+          search: ""
+        });
+    }
+
+    private findDisplayIndexForSuggestion(raw: unknown): number | null {
+        if (!raw) {
+          const selected = this.chooser?.selectedItem ?? null;
+          return selected != null && selected >= 0 ? selected : null;
+        }
+
+        const task = (raw as any)?.item ?? raw;
+        for (let i = 0; i < this.lastTaskSuggestions.length; i++) {
+          const suggestion = this.lastTaskSuggestions[i];
+          if (!suggestion) {
+            continue;
+          }
+          if (suggestion === raw) {
+            return i;
+          }
+          if (suggestion.item === raw || suggestion.item === task) {
+            return i;
+          }
+        }
+
+        const fallback = this.chooser?.selectedItem ?? null;
+        return fallback != null && fallback >= 0 ? fallback : null;
+    }
+
+    private async activateTaskSelection(task: TaskEntry): Promise<void> {
+        const filePath = task.path ?? task.file?.path;
+        const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+        if (!file) {
+          this.close();
+          return;
+        }
+
+        task.file = file;
+
+        if (!this.allowInsertion || !this.replaceRange) {
+          const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
+          const line = Math.max(0, task.line ?? 0);
+
+          await this.app.workspace.openLinkText(
+            file.path,
+            sourcePath,
+            false,
+            { eState: { line } }
+          );
+
+          await this.revealTaskInFile(task);
+
+          this.close();
+          return;
+        }
+
+        const id = await ensureBlockId(this.app, task);
+        const link = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
+
+        const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+        if (!view) {
+          this.close();
+          return;
+        }
+        const ed = view.editor;
+
+        const ln = this.replaceRange.from.line;
+        const curLine = ed.getLine(ln);
+
+        let text = task.text ?? "";
+        if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
+
+        const targetTag = (task.tagHint ?? this.activeTag)?.trim() || this.activeTag;
+        const insertion = `${link} ${targetTag} *${text.trim()}*`;
+
+        const isWholeLinePrompt = /^\s*[-*+] \?\s*$/.test(curLine);
+
+        if (isWholeLinePrompt) {
+          const mIndent = curLine.match(/^(\s*)([-*+]?\s*)/)!;
+          const leadWS = mIndent[1];
+          const bullet = mIndent[2] || "- ";
+          const parentTxt = `${leadWS}${bullet}${insertion}`;
+          const childIndent = `${leadWS}    ${bullet}`;
+          const newBlock = `${parentTxt}\n${childIndent}`;
+
+          ed.replaceRange(
+            newBlock,
+            { line: ln, ch: 0 },
+            { line: ln, ch: curLine.length }
+          );
+
+          setTimeout(() => {
+            ed.setCursor({ line: ln + 1, ch: childIndent.length });
+          }, 0);
+        } else {
+          ed.replaceRange(
+            insertion,
+            this.replaceRange.from,
+            this.replaceRange.to
+          );
+
+          const ch = this.replaceRange.from.ch + insertion.length;
+          setTimeout(() => {
+            ed.setCursor({ line: ln, ch });
+          }, 0);
+        }
+
+        this.close();
+    }
+
+    private async commitThoughtSelection(): Promise<void> {
+        const key = this.thoughtCacheKey ?? this.getTaskCacheKey();
+        const index = this.thoughtTaskIndex;
+        if (!key) {
+          return;
+        }
+
+        let task: TaskEntry | null = null;
+        if (index != null && index >= 0) {
+          const list = this.taskCache[key];
+          if (Array.isArray(list) && list[index]) {
+            task = list[index];
+          }
+        }
+
+        if (!task && this.thoughtState?.task) {
+          task = this.thoughtState.task;
+        }
+
+        if (!task) {
+          return;
+        }
+
+        await this.activateTaskSelection(task);
     }
 
     private enterThoughtMode(key: string, payload: { displayIndex: number | null; cacheIndex: number | null; task?: TaskEntry; search?: string }) {
@@ -2084,6 +2269,7 @@ function escapeCssIdentifier(value: string): string {
         file = this.app.vault.getAbstractFileByPath(tag) as TFile;
         const text = desc.startsWith(tag) ? desc : `${tag} ${desc ? " " + desc : ""}`;
         await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
+        this.bindDrilldownSuggestionHandlers(el, item);
     }
 
     private sanitizeTaskTextForDisplay(task: TaskEntry, normalizedTag: string | null): { content: string; marker: string | null; hadCheckbox: boolean } {
@@ -2203,6 +2389,149 @@ function escapeCssIdentifier(value: string): string {
         await this.applyExpandModeToElement(el, metadata, suggestionIndex);
         this.scheduleExpandRefresh();
         this.bindInternalLinkHandlers(el, markdownSource);
+        this.bindDrilldownSuggestionHandlers(el, item);
+    }
+
+    private readonly drilldownSuggestionBindings = new WeakMap<
+      HTMLElement,
+      {
+        update(item: FuzzyMatch<string | TaskEntry>): void;
+        dispose(): void;
+      }
+    >();
+
+    private bindDrilldownSuggestionHandlers(el: HTMLElement, item: FuzzyMatch<string | TaskEntry>): void {
+        const suggestionItem = el.closest<HTMLElement>(".suggestion-item");
+        if (!suggestionItem) {
+          return;
+        }
+
+        const existing = this.drilldownSuggestionBindings.get(suggestionItem);
+        if (this.thoughtMode || !this.isDrilldownSelection) {
+          if (existing) {
+            existing.dispose();
+            this.drilldownSuggestionBindings.delete(suggestionItem);
+          }
+          return;
+        }
+
+        if (existing) {
+          existing.update(item);
+          return;
+        }
+
+        let current = item;
+
+        const stopPointerEvent = (evt: Event) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+
+          evt.stopPropagation();
+        };
+
+        const pointerEvents: (keyof HTMLElementEventMap)[] = [
+          "pointerdown",
+          "pointerup",
+          "mousedown",
+          "mouseup",
+        ];
+
+        const pointerOptions: AddEventListenerOptions = { capture: true, passive: true };
+
+        for (const eventName of pointerEvents) {
+          suggestionItem.addEventListener(eventName, stopPointerEvent, pointerOptions);
+        }
+
+        const stopTouchEvent = (evt: TouchEvent) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+
+          evt.stopPropagation();
+
+          if (evt.type === "touchend") {
+            evt.preventDefault();
+            this.handleDrilldownSelection(current);
+          }
+        };
+
+        const touchOptions: AddEventListenerOptions = { capture: true, passive: false };
+
+        suggestionItem.addEventListener("touchstart", stopTouchEvent, touchOptions);
+        suggestionItem.addEventListener("touchend", stopTouchEvent, touchOptions);
+
+        const handleClick = (evt: MouseEvent) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+          evt.preventDefault();
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+          evt.stopPropagation();
+          this.handleDrilldownSelection(current);
+        };
+
+        suggestionItem.addEventListener("click", handleClick, true);
+
+        this.drilldownSuggestionBindings.set(suggestionItem, {
+          update(next) {
+            current = next;
+          },
+          dispose: () => {
+            for (const eventName of pointerEvents) {
+              suggestionItem.removeEventListener(eventName, stopPointerEvent, pointerOptions);
+            }
+            suggestionItem.removeEventListener("touchstart", stopTouchEvent, touchOptions);
+            suggestionItem.removeEventListener("touchend", stopTouchEvent, touchOptions);
+            suggestionItem.removeEventListener("click", handleClick, true);
+          },
+        });
+    }
+
+    private handleDrilldownSelection(item: FuzzyMatch<string | TaskEntry>): void {
+        if (!this.isDrilldownSelection || this.thoughtMode) {
+          return;
+        }
+
+        if (this.tagMode) {
+          const raw = item?.item ?? item;
+          let tag: string | null = null;
+          if (typeof raw === "string") {
+            tag = raw;
+          } else if (raw && typeof raw === "object" && "tag" in raw && typeof (raw as any).tag === "string") {
+            tag = (raw as any).tag;
+          }
+          if (tag) {
+            this.applyTagDrilldown(tag);
+          }
+          return;
+        }
+
+        const match = item as FuzzyMatch<TaskEntry> & { sourceIdx?: number };
+        const displayIndex = this.findDisplayIndexForSuggestion(match);
+        const task = match?.item && typeof match.item === "object"
+          ? match.item as TaskEntry
+          : null;
+        this.drillIntoTask(displayIndex, task);
+    }
+
+    private applyTagDrilldown(tag: string): void {
+        const normalized = this.normalizeTag(tag);
+        const nextValue = `${normalized} `;
+        this.inputEl.value = nextValue;
+        this.detectMode();
+        this.scheduleSuggestionRefresh();
+        window.setTimeout(() => this.inputEl.focus(), 0);
     }
 
     private collectChildPreviewLines(task: TaskEntry): string[] {
@@ -2896,14 +3225,18 @@ function escapeCssIdentifier(value: string): string {
 
     /* ---------- choose behavior ---------- */
     async onChooseItem(raw) {
+        const drilldown = this.isDrilldownSelection;
         if (this.thoughtMode) {
+            if (drilldown) {
+                await this.commitThoughtSelection();
+            }
             return;
         }
 
         const item = raw.item ?? raw;
-    
+
         if ("tag" in item) {
-            if (!this.allowInsertion) {
+            if (!this.allowInsertion || drilldown) {
                 this.inputEl.value = `${item.tag} `;
                 this.detectMode();
                 this.scheduleSuggestionRefresh();
@@ -2914,83 +3247,15 @@ function escapeCssIdentifier(value: string): string {
             return;
         }
 
-        /* ─── TASK chosen ───────────────────────────────────────────── */
-        const task  = item as TaskEntry;
-        const file  = this.app.vault.getFileByPath(task.path ?? task.file.path);
-        if (!file) {
-            this.close();
+        const task = item as TaskEntry;
+
+        if (drilldown) {
+            const displayIndex = this.findDisplayIndexForSuggestion(raw);
+            this.drillIntoTask(displayIndex, task);
             return;
         }
 
-        task.file = file;
-
-        if (!this.allowInsertion || !this.replaceRange) {
-            const sourcePath = this.app.workspace.getActiveFile()?.path ?? "";
-            const line = Math.max(0, task.line ?? 0);
-
-            await this.app.workspace.openLinkText(
-                file.path,
-                sourcePath,
-                false,
-                { eState: { line } }
-            );
-
-            await this.revealTaskInFile(task);
-
-            this.close();
-            return;
-        }
-
-        const id    = await ensureBlockId(this.app, task);
-        const link  = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
-
-        const view   = this.app.workspace.getActiveViewOfType(MarkdownView)!;
-        const ed     = view.editor;
-
-        /* current-line context ------------------------------------------------ */
-        const ln        = this.replaceRange.from.line;
-        const curLine   = ed.getLine(ln);
-
-        /* parent task text cleanup */
-        let text = task.text;
-        if (text.match(/\^.*\b/)) text = text.replace(/\^.*\b/, "");
-
-        const targetTag = (task.tagHint ?? this.activeTag)?.trim() || this.activeTag;
-        const insertion = `${link} ${targetTag} *${text.trim()}*`;
-
-        const isWholeLinePrompt = /^\s*[-*+] \?\s*$/.test(curLine);
-
-        if (isWholeLinePrompt) {
-          const mIndent   = curLine.match(/^(\s*)([-*+]?\s*)/)!;
-          const leadWS    = mIndent[1];
-          const bullet    = mIndent[2] || "- ";
-          const parentTxt = `${leadWS}${bullet}${insertion}`;
-          const childIndent  = `${leadWS}    ${bullet}`;
-          const newBlock     = `${parentTxt}\n${childIndent}`;
-
-          ed.replaceRange(
-            newBlock,
-            { line: ln, ch: 0 },
-            { line: ln, ch: curLine.length }
-          );
-
-          setTimeout(() => {
-            ed.setCursor({ line: ln + 1, ch: childIndent.length });
-          }, 0);
-        } else {
-          ed.replaceRange(
-            insertion,
-            this.replaceRange.from,
-            this.replaceRange.to
-          );
-
-          const ch = this.replaceRange.from.ch + insertion.length;
-          setTimeout(() => {
-            ed.setCursor({ line: ln, ch });
-          }, 0);
-        }
-
-        this.close();
+        await this.activateTaskSelection(task);
     }
 
     private async revealTaskInFile(task: TaskEntry): Promise<void> {
