@@ -582,7 +582,7 @@ export default class ObsidianPlus extends Plugin {
                                 evt.preventDefault();
                                 evt.stopPropagation();
                                 const taskId = target.id.slice(1);
-                                const checkbox = target as HTMLElement;
+                                const checkbox = target as HTMLInputElement;
 
                                 if (!this.taskManager) {
                                         console.warn('TaskManager not ready for click event');
@@ -590,15 +590,7 @@ export default class ObsidianPlus extends Plugin {
                                         return;
                                 }
 
-                                const setDisabled = (value: boolean) => {
-                                        if (checkbox instanceof HTMLButtonElement || checkbox instanceof HTMLInputElement) {
-                                                checkbox.disabled = value;
-                                        } else {
-                                                checkbox.toggleAttribute('aria-disabled', value);
-                                        }
-                                };
-
-                                setDisabled(true);
+                                checkbox.disabled = true;
                                 try {
                                         if (evt.shiftKey) {
                                                 console.log(`Shift+Click detected for task ID: ${taskId}. Cancelling.`);
@@ -614,7 +606,7 @@ export default class ObsidianPlus extends Plugin {
                                 } catch (error) {
                                         console.error('Failed to update task status from Dataview checkbox', error);
                                 } finally {
-                                        setDisabled(false);
+                                        checkbox.disabled = false;
                                 }
                                 return;
                         }
@@ -1926,21 +1918,14 @@ export default class ObsidianPlus extends Plugin {
                 return advanceStatus(current, this.getStatusCycle(tag));
         }
 
-        applyStatusToCheckbox(element: HTMLElement | null, status: TaskStatusChar): void {
+        applyStatusToCheckbox(element: HTMLInputElement, status: TaskStatusChar): void {
                 if (!element) return;
                 element.dataset.task = status;
                 element.setAttribute('data-task', status);
-
+                element.checked = status === 'x';
+                element.indeterminate = status === '/';
                 const aria = status === 'x' ? 'true' : status === '/' ? 'mixed' : 'false';
                 element.setAttribute('aria-checked', aria);
-
-                const displayChar = status === ' ' ? '\u00a0' : status;
-                if (element instanceof HTMLInputElement) {
-                        element.checked = status === 'x';
-                        element.indeterminate = status === '/';
-                } else {
-                        element.textContent = `[${displayChar}]`;
-                }
         }
 
         async changeTaskStatus(task: Task, status: string): void {

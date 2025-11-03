@@ -5,6 +5,7 @@ import { DataviewApi, ListItem } from 'obsidian-dataview'; // Use ListItem or sp
 import { TaskManager } from './taskManager'; // Import TaskManager
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities'; // Import necessary basic utils
 import { isActiveStatus, normalizeStatusChar, parseStatusFilter } from './statusFilters';
+import type ObsidianPlus from './main';
 
 // Define structure for child/parent entries (if needed internally, or import if defined elsewhere)
 interface TaskEntry {
@@ -468,12 +469,14 @@ export class TagQuery {
 
         if (includeCheckboxes && item.task) {
             const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
-            const statusChar = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
-            const ariaChecked = statusChar === "/" ? "mixed" : statusChar === "x" ? "true" : "false";
-            const displayChar = statusChar === " " ? "\u00a0" : statusChar;
-            text = `<button type="button" class="op-toggle-task" id="i${id}" data-task="${statusChar}" role="checkbox" aria-checked="${ariaChecked}" aria-label="Toggle task status">` +
-                   `[${displayChar}]` +
-                   `</button><span>${text}</span>`;
+            const rawStatus = typeof (item as any).status === "string" ? (item as any).status : null;
+            const explicitStatus = rawStatus?.trim()?.charAt(0) ?? rawStatus?.charAt(0) ?? null;
+            const normalizedStatus = normalizeStatusChar(explicitStatus ?? (item.checked ? "x" : " "));
+            const ariaChecked = normalizedStatus === "/" ? "mixed" : normalizedStatus === "x" ? "true" : "false";
+            const checkedAttr = normalizedStatus === "x" ? " checked" : "";
+            const datasetStatus = explicitStatus ?? normalizedStatus;
+            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${datasetStatus}"${checkedAttr} aria-checked="${ariaChecked}">` +
+                   `<span>${text}</span>`;
         }
 
         if (icon.url) {
@@ -587,6 +590,7 @@ export class TagQuery {
                         }
 
                         await MarkdownRenderer.render(this.app, itemContent, parentTextContainer, c.path ?? "", dv.component); // Use this.app
+                        this.syncRenderedTaskStatuses(parentTextContainer);
 
                         const childrenUl = liEl.createEl("ul", { attr: { id: parentId }, cls: "op-expandable-children" });
                         // Set display based on expandChildren option
@@ -599,12 +603,15 @@ export class TagQuery {
                             const childLi = childrenUl.createEl("li");
                             // Render child text directly, not formatted as a top-level item
                             await MarkdownRenderer.render(this.app, child.text, childLi, c.path ?? "", dv.component); // Use this.app
+                            this.syncRenderedTaskStatuses(childLi);
                         }
                     } else {
                         // Item has no children, render directly into li
                         await MarkdownRenderer.render(this.app, itemContent, liEl, c.path ?? "", dv.component); // Use this.app
+                        this.syncRenderedTaskStatuses(liEl);
                     }
                 }
+                this.syncRenderedTaskStatuses(listEl);
             } else {
                 // Render as simple flat list if neither expandOnClick nor expandChildren is true
                 const listItems = itemsToRender.map(c => this.formatItem(c, dv, options)); // Pass dv and options
@@ -612,7 +619,9 @@ export class TagQuery {
                  for (const itemText of listItems) {
                      const liEl = listEl.createEl("li");
                      await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
+                     this.syncRenderedTaskStatuses(liEl);
                  }
+                 this.syncRenderedTaskStatuses(listEl);
             }
         };
 
@@ -723,6 +732,18 @@ export class TagQuery {
             }
         }
         // --- End renderResults Logic ---
+    }
+
+    private syncRenderedTaskStatuses(scope: HTMLElement | null): void {
+        if (!scope) {
+            return;
+        }
+
+        scope.querySelectorAll<HTMLInputElement>('input.op-toggle-task').forEach((input) => {
+            const attr = input.getAttribute('data-task');
+            const normalized = normalizeStatusChar(attr ?? (input.checked ? 'x' : ' '));
+            this.obsidianPlus.applyStatusToCheckbox(input, normalized);
+        });
     }
 
     // ... (existing private helper methods after renderResults)
