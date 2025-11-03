@@ -32,7 +32,7 @@ export const setConfigEffect = StateEffect.define<MyConfigType>();
 
 type FuzzySelectionBehaviorSetting = "insert" | "drilldown" | "hybrid";
 
-function sanitizeForJson(value: unknown, seen = new WeakSet<object>()): any {
+function sanitizeForJson(value: unknown, cache = new WeakMap<object, unknown>()): any {
         if (value === null) {
                 return null;
         }
@@ -55,46 +55,103 @@ function sanitizeForJson(value: unknown, seen = new WeakSet<object>()): any {
                 return undefined;
         }
 
-        if (Array.isArray(value)) {
-                if (seen.has(value)) {
-                        return undefined;
-                }
-
-                seen.add(value);
-                const result: any[] = [];
-                for (const entry of value) {
-                        const sanitizedEntry = sanitizeForJson(entry, seen);
-                        if (sanitizedEntry !== undefined) {
-                                result.push(sanitizedEntry);
-                        }
-                }
-                return result;
-        }
-
         if (value instanceof Date) {
                 return value.toJSON();
         }
 
-        if (valueType === "object") {
-                const objectValue = value as Record<string, unknown>;
-                if (seen.has(objectValue)) {
-                        return undefined;
+        if (Array.isArray(value)) {
+                if (cache.has(value)) {
+                        return cache.get(value);
                 }
 
-                seen.add(objectValue);
+                const result: any[] = [];
+                cache.set(value, result);
+
+                for (const entry of value) {
+                        const sanitizedEntry = sanitizeForJson(entry, cache);
+                        if (sanitizedEntry !== undefined) {
+                                result.push(sanitizedEntry);
+                        }
+                }
+
+                return result;
+        }
+
+        if (value instanceof Map) {
+                if (cache.has(value)) {
+                        return cache.get(value);
+                }
+
+                const result: Record<string, any> = {};
+                cache.set(value, result);
+
+                for (const [rawKey, rawValue] of value.entries()) {
+                        const key = typeof rawKey === "string" ? rawKey : String(rawKey);
+                        const sanitizedEntry = sanitizeForJson(rawValue, cache);
+                        if (sanitizedEntry !== undefined) {
+                                result[key] = sanitizedEntry;
+                        }
+                }
+
+                return result;
+        }
+
+        if (value instanceof Set) {
+                if (cache.has(value)) {
+                        return cache.get(value);
+                }
+
+                const result: any[] = [];
+                cache.set(value, result);
+
+                for (const entry of value.values()) {
+                        const sanitizedEntry = sanitizeForJson(entry, cache);
+                        if (sanitizedEntry !== undefined) {
+                                result.push(sanitizedEntry);
+                        }
+                }
+
+                return result;
+        }
+
+        if (ArrayBuffer.isView(value)) {
+                return Array.from((value as ArrayLike<number>));
+        }
+
+        if (value instanceof ArrayBuffer) {
+                return Array.from(new Uint8Array(value));
+        }
+
+        if (valueType === "object") {
+                const objectValue = value as Record<string, unknown>;
+                if (cache.has(objectValue)) {
+                        return cache.get(objectValue);
+                }
 
                 const prototype = Object.getPrototypeOf(objectValue);
                 if (prototype !== Object.prototype && prototype !== null) {
+                        const toJSON = (objectValue as { toJSON?: () => unknown }).toJSON;
+                        if (typeof toJSON === "function") {
+                                try {
+                                        return sanitizeForJson(toJSON.call(objectValue), cache);
+                                } catch (error) {
+                                        console.error('Failed to sanitize via toJSON()', error, objectValue);
+                                }
+                        }
+
                         return undefined;
                 }
 
                 const result: Record<string, any> = {};
+                cache.set(objectValue, result);
+
                 for (const [key, child] of Object.entries(objectValue)) {
-                        const sanitizedChild = sanitizeForJson(child, seen);
+                        const sanitizedChild = sanitizeForJson(child, cache);
                         if (sanitizedChild !== undefined) {
                                 result[key] = sanitizedChild;
                         }
                 }
+
                 return result;
         }
 
@@ -1578,19 +1635,29 @@ export default class ObsidianPlus extends Plugin {
                         return;
                 }
 
-                delete sanitizedSettings.webTags;
-                delete sanitizedSettings.aiConnector;
-                delete sanitizedSettings.taskTags;
-                delete sanitizedSettings.projects;
-                delete sanitizedSettings.projectTags;
-                delete sanitizedSettings.statusCycles;
+		delete sanitizedSettings.webTags;
+		delete sanitizedSettings.aiConnector;
+		delete sanitizedSettings.taskTags;
+		delete sanitizedSettings.projects;
+		delete sanitizedSettings.projectTags;
+		delete sanitizedSettings.statusCycles;
 
-                try {
-                        await this.saveData(sanitizedSettings);
-                        console.log('Settings saved:', sanitizedSettings);
-                } catch (error) {
-                        console.error('Failed to save settings:', error, sanitizedSettings);
-                }
+		try {
+			JSON.stringify(sanitizedSettings);
+		} catch (error) {
+			console.error('Settings remain non-serializable after sanitization.', error, {
+				raw: rawSettings,
+				sanitized: sanitizedSettings,
+			});
+			return;
+		}
+
+		try {
+			await this.saveData(sanitizedSettings);
+			console.log('Settings saved:', sanitizedSettings);
+		} catch (error) {
+			console.error('Failed to save settings:', error, sanitizedSettings);
+		}
         }
 
         resolveFuzzySelectionBehavior(): "insert" | "drilldown" {
