@@ -624,17 +624,18 @@ export class TagQuery {
                 this.syncRenderedTaskStatuses(listEl);
             } else {
                 // Render as simple flat list if neither expandOnClick nor expandChildren is true
-                const listItems = itemsToRender.map(c => this.formatItem(c, dv, options)); // Pass dv and options
                 const listEl = targetEl.createEl("ul");
                 if (itemsToRender.some(item => item.task)) {
                     listEl.addClass("contains-task-list");
                 }
-                for (const [index, itemText] of listItems.entries()) {
+                for (const item of itemsToRender) {
                     const liEl = listEl.createEl("li");
-                    if (itemsToRender[index]?.task) {
+                    if (item.task) {
                         liEl.addClass("task-list-item");
                     }
-                    await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
+                    const itemContent = this.formatItem(item, dv, options);
+                    const normalizedContent = itemContent.replace(/^\s*[-*+]\s+/, "");
+                    await MarkdownRenderer.render(this.app, normalizedContent, liEl, item.path ?? "", dv.component);
                     this.syncRenderedTaskStatuses(liEl);
                 }
                 this.syncRenderedTaskStatuses(listEl);

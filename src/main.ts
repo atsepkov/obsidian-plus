@@ -13,7 +13,7 @@ import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirr
 import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
-import { advanceStatus, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
+import { advanceStatus, DEFAULT_STATUS_CYCLE, normalizeStatusChar, type TaskStatusChar } from "./statusFilters";
 
 type ResolvedTaskSearchContext = {
         path: string;
