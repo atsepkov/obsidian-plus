@@ -471,12 +471,13 @@ export class TagQuery {
             const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
             const rawStatus = typeof (item as any).status === "string" ? (item as any).status : null;
             const explicitStatus = rawStatus?.trim()?.charAt(0) ?? rawStatus?.charAt(0) ?? null;
-            const normalizedStatus = normalizeStatusChar(explicitStatus ?? (item.checked ? "x" : " "));
+            const fallbackStatus = item.checked ? "x" : " ";
+            const displayStatus = explicitStatus ?? rawStatus ?? fallbackStatus;
+            const normalizedStatus = normalizeStatusChar(displayStatus);
             const ariaChecked = normalizedStatus === "/" ? "mixed" : normalizedStatus === "x" ? "true" : "false";
             const checkedAttr = normalizedStatus === "x" ? " checked" : "";
-            const datasetStatus = explicitStatus ?? normalizedStatus;
-            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${datasetStatus}"${checkedAttr} aria-checked="${ariaChecked}">` +
-                   `<span>${text}</span>`;
+            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${displayStatus}"${checkedAttr} aria-checked="${ariaChecked}">` +
+                   `<span class="task-list-item-label">${text}</span>`;
         }
 
         if (icon.url) {
@@ -499,7 +500,7 @@ export class TagQuery {
             text += ` (${dv.fileLink(item.path)})`; // Use dv passed into query method
         }
 
-        return isChild ? text : `- ${text}`;
+        return text;
         // --- End formatItem Logic ---
     }
 
@@ -569,8 +570,14 @@ export class TagQuery {
             // The condition for rendering nested children lists is now expandOnClick OR expandChildren
             if (expandOnClick || expandChildren) {
                 const listEl = targetEl.createEl("ul", { cls: "op-expandable-list" }); // Keep class name for potential styling
+                if (itemsToRender.some(item => item.task)) {
+                    listEl.addClass("contains-task-list");
+                }
                 for (const c of itemsToRender) {
                     const liEl = listEl.createEl("li");
+                    if (c.task) {
+                        liEl.addClass("task-list-item");
+                    }
                     // Use formatItem helper
                     const itemContent = this.formatItem(c, dv, options).replace(/^- /, ""); // Pass dv and options
 
@@ -593,6 +600,9 @@ export class TagQuery {
                         this.syncRenderedTaskStatuses(parentTextContainer);
 
                         const childrenUl = liEl.createEl("ul", { attr: { id: parentId }, cls: "op-expandable-children" });
+                        if (c.children.some(child => child.task)) {
+                            childrenUl.addClass("contains-task-list");
+                        }
                         // Set display based on expandChildren option
                         childrenUl.style.display = expandChildren ? "" : "none";
 
@@ -615,13 +625,19 @@ export class TagQuery {
             } else {
                 // Render as simple flat list if neither expandOnClick nor expandChildren is true
                 const listItems = itemsToRender.map(c => this.formatItem(c, dv, options)); // Pass dv and options
-                 const listEl = targetEl.createEl("ul");
-                 for (const itemText of listItems) {
-                     const liEl = listEl.createEl("li");
-                     await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
-                     this.syncRenderedTaskStatuses(liEl);
-                 }
-                 this.syncRenderedTaskStatuses(listEl);
+                const listEl = targetEl.createEl("ul");
+                if (itemsToRender.some(item => item.task)) {
+                    listEl.addClass("contains-task-list");
+                }
+                for (const [index, itemText] of listItems.entries()) {
+                    const liEl = listEl.createEl("li");
+                    if (itemsToRender[index]?.task) {
+                        liEl.addClass("task-list-item");
+                    }
+                    await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
+                    this.syncRenderedTaskStatuses(liEl);
+                }
+                this.syncRenderedTaskStatuses(listEl);
             }
         };
 
@@ -741,8 +757,25 @@ export class TagQuery {
 
         scope.querySelectorAll<HTMLInputElement>('input.op-toggle-task').forEach((input) => {
             const attr = input.getAttribute('data-task');
-            const normalized = normalizeStatusChar(attr ?? (input.checked ? 'x' : ' '));
-            this.obsidianPlus.applyStatusToCheckbox(input, normalized);
+            const statusChar = attr && attr.length ? attr[0] : (input.checked ? 'x' : ' ');
+
+            if (!input.classList.contains('task-list-item-checkbox')) {
+                input.classList.add('task-list-item-checkbox');
+            }
+
+            this.obsidianPlus.applyStatusToCheckbox(input, statusChar);
+
+            const listItem = input.closest('li');
+            if (listItem instanceof HTMLElement) {
+                listItem.classList.add('task-list-item');
+                listItem.dataset.task = statusChar;
+                listItem.setAttribute('data-task', statusChar);
+            }
+
+            const listContainer = input.closest('ul');
+            if (listContainer) {
+                listContainer.classList.add('contains-task-list');
+            }
         });
     }
 

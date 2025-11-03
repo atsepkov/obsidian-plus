@@ -1918,13 +1918,17 @@ export default class ObsidianPlus extends Plugin {
                 return advanceStatus(current, this.getStatusCycle(tag));
         }
 
-        applyStatusToCheckbox(element: HTMLInputElement, status: TaskStatusChar): void {
+        applyStatusToCheckbox(element: HTMLInputElement, status: string): void {
                 if (!element) return;
-                element.dataset.task = status;
-                element.setAttribute('data-task', status);
-                element.checked = status === 'x';
-                element.indeterminate = status === '/';
-                const aria = status === 'x' ? 'true' : status === '/' ? 'mixed' : 'false';
+
+                const statusChar = typeof status === 'string' && status.length ? status[0] : ' ';
+                const normalized = normalizeStatusChar(statusChar);
+
+                element.dataset.task = statusChar;
+                element.setAttribute('data-task', statusChar);
+                element.checked = normalized === 'x';
+                element.indeterminate = normalized === '/';
+                const aria = normalized === 'x' ? 'true' : normalized === '/' ? 'mixed' : 'false';
                 element.setAttribute('aria-checked', aria);
         }
 
