@@ -467,12 +467,26 @@ export class TagQuery {
         }
 
         if (includeCheckboxes && item.task) {
-            const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
-            const statusChar = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
-            const ariaChecked = statusChar === "/" ? "mixed" : statusChar === "x" ? "true" : "false";
-            const checkedAttr = statusChar === "x" ? "checked" : "";
-            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${statusChar}" ${checkedAttr} aria-checked="${ariaChecked}">` +
-                   `<span>${text}</span>`;
+            const id = this.taskManager.addTaskToCache(item);
+            const normalizedStatus = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
+
+            const statusPattern = /^(\s*)(?:[-*+]\s*)?\[[^\]]*\](\s*)/;
+            const match = text.match(statusPattern);
+            if (match) {
+                const leadingWhitespace = match[1] ?? "";
+                const trailingWhitespace = match[2] ?? "";
+                const rest = text.slice(match[0].length);
+                const spacer = trailingWhitespace.length ? trailingWhitespace : (rest.startsWith(" ") ? "" : " ");
+                text = `${leadingWhitespace}[${normalizedStatus}]${spacer}${rest}`;
+            } else {
+                const trimmed = text.trimStart();
+                const spacer = trimmed.length ? " " : "";
+                text = `[${normalizedStatus}]${spacer}${trimmed}`;
+            }
+
+            (item as any).__opTaskMeta = { id, status: normalizedStatus };
+        } else {
+            delete (item as any).__opTaskMeta;
         }
 
         if (icon.url) {
@@ -495,7 +509,13 @@ export class TagQuery {
             text += ` (${dv.fileLink(item.path)})`; // Use dv passed into query method
         }
 
-        return isChild ? text : `- ${text}`;
+        const trimmedForMarker = text.trimStart();
+        const hasListMarker = /^[-*+]\s/.test(trimmedForMarker);
+        if (!isChild && !hasListMarker) {
+            text = `- ${text}`;
+        }
+
+        return text;
         // --- End formatItem Logic ---
     }
 
@@ -567,8 +587,9 @@ export class TagQuery {
                 const listEl = targetEl.createEl("ul", { cls: "op-expandable-list" }); // Keep class name for potential styling
                 for (const c of itemsToRender) {
                     const liEl = listEl.createEl("li");
-                    // Use formatItem helper
-                    const itemContent = this.formatItem(c, dv, options).replace(/^- /, ""); // Pass dv and options
+                    const formatted = this.formatItem(c, dv, options);
+                    const needsTaskCheckbox = (options.includeCheckboxes ?? false) && !!c.task;
+                    const itemContent = needsTaskCheckbox ? formatted : formatted.replace(/^\s*[-*+]\s+/, "");
 
                     if (c.children?.length > 0) {
                         const parentId = generateId(10);
@@ -586,6 +607,9 @@ export class TagQuery {
                         }
 
                         await MarkdownRenderer.render(this.app, itemContent, parentTextContainer, c.path ?? "", dv.component); // Use this.app
+                        if (needsTaskCheckbox) {
+                            this.decorateTaskCheckbox(liEl, c);
+                        }
 
                         const childrenUl = liEl.createEl("ul", { attr: { id: parentId }, cls: "op-expandable-children" });
                         // Set display based on expandChildren option
@@ -596,22 +620,35 @@ export class TagQuery {
                             if (onlyShowMilestonesOnExpand && !(child.task && !child.tags.length)) continue;
 
                             const childLi = childrenUl.createEl("li");
-                            // Render child text directly, not formatted as a top-level item
-                            await MarkdownRenderer.render(this.app, child.text, childLi, c.path ?? "", dv.component); // Use this.app
+                            const childFormatted = this.formatItem(child, dv, options, true);
+                            const childNeedsCheckbox = (options.includeCheckboxes ?? false) && !!child.task;
+                            const childContent = childNeedsCheckbox ? childFormatted : childFormatted.replace(/^\s*[-*+]\s+/, "");
+                            await MarkdownRenderer.render(this.app, childContent, childLi, c.path ?? "", dv.component); // Use this.app
+                            if (childNeedsCheckbox) {
+                                this.decorateTaskCheckbox(childLi, child);
+                            }
                         }
                     } else {
                         // Item has no children, render directly into li
                         await MarkdownRenderer.render(this.app, itemContent, liEl, c.path ?? "", dv.component); // Use this.app
+                        if (needsTaskCheckbox) {
+                            this.decorateTaskCheckbox(liEl, c);
+                        }
                     }
                 }
             } else {
                 // Render as simple flat list if neither expandOnClick nor expandChildren is true
-                const listItems = itemsToRender.map(c => this.formatItem(c, dv, options)); // Pass dv and options
-                 const listEl = targetEl.createEl("ul");
-                 for (const itemText of listItems) {
-                     const liEl = listEl.createEl("li");
-                     await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
-                 }
+                const listEl = targetEl.createEl("ul");
+                for (const c of itemsToRender) {
+                    const liEl = listEl.createEl("li");
+                    const formatted = this.formatItem(c, dv, options);
+                    const needsTaskCheckbox = (options.includeCheckboxes ?? false) && !!c.task;
+                    const itemContent = needsTaskCheckbox ? formatted : formatted.replace(/^\s*[-*+]\s+/, "");
+                    await MarkdownRenderer.render(this.app, itemContent, liEl, c.path ?? "", dv.component); // Use this.app
+                    if (needsTaskCheckbox) {
+                        this.decorateTaskCheckbox(liEl, c);
+                    }
+                }
             }
         };
 
@@ -722,6 +759,51 @@ export class TagQuery {
             }
         }
         // --- End renderResults Logic ---
+    }
+
+    private decorateTaskCheckbox(container: HTMLElement, item: ListItem): void {
+        const meta = (item as any).__opTaskMeta as { id: string; status: string } | undefined;
+        if (!meta) {
+            return;
+        }
+
+        const firstChild = container.firstElementChild;
+        if (firstChild instanceof HTMLUListElement && firstChild.children.length === 1) {
+            const innerLi = firstChild.firstElementChild as HTMLElement | null;
+            if (innerLi) {
+                container.replaceChildren(...Array.from(innerLi.childNodes));
+            } else {
+                container.replaceChildren(...Array.from(firstChild.childNodes));
+            }
+        }
+
+        const checkbox = container.querySelector('input[type="checkbox"]') as HTMLInputElement | null;
+        if (!checkbox) {
+            delete (item as any).__opTaskMeta;
+            return;
+        }
+
+        checkbox.classList.add('op-toggle-task');
+        if (!checkbox.classList.contains('task-list-item-checkbox')) {
+            checkbox.classList.add('task-list-item-checkbox');
+        }
+
+        checkbox.id = `i${meta.id}`;
+        this.obsidianPlus.applyStatusToCheckbox(checkbox, normalizeStatusChar(meta.status));
+
+        const listItem = checkbox.closest('li');
+        if (listItem instanceof HTMLElement) {
+            listItem.classList.add('task-list-item');
+            listItem.dataset.task = meta.status;
+            listItem.setAttribute('data-task', meta.status);
+        }
+
+        const list = checkbox.closest('ul');
+        if (list instanceof HTMLElement) {
+            list.classList.add('contains-task-list');
+        }
+
+        delete (item as any).__opTaskMeta;
     }
 
     // ... (existing private helper methods after renderResults)
