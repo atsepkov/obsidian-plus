@@ -166,7 +166,7 @@ export class TagQuery {
                 throw new Error("Identifier must be a string, null, undefined, or an array of strings.");
             }
         } catch (error: any) {
-             return;
+             return Promise.reject(error);
         }
 
         // 2) Process lines into results (Adjusted Section from getSummary)
@@ -254,7 +254,7 @@ export class TagQuery {
     }
 
     async renderQuery(dv: any, identifier: string | string[] | null, options: QueryOptions = {}): Promise<void | ListItem[]> {
-        const filtered = this.query(dv, identifier, options);
+        const filtered = await this.query(dv, identifier, options);
         const searchBase = (filtered as any).__searchBase as ListItem[] | undefined;
         if (searchBase) {
             delete (filtered as any).__searchBase;
@@ -470,7 +470,7 @@ export class TagQuery {
             const id = this.taskManager.addTaskToCache(item); // Use injected taskManager
             const statusChar = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
             const ariaChecked = statusChar === "/" ? "mixed" : statusChar === "x" ? "true" : "false";
-            const checkedAttr = statusChar === "x" ? "checked" : "";
+            const checkedAttr = statusChar !== " " ? "checked" : "";
             text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${statusChar}" ${checkedAttr} aria-checked="${ariaChecked}">` +
                    `<span>${text}</span>`;
         }
@@ -610,7 +610,7 @@ export class TagQuery {
                  const listEl = targetEl.createEl("ul");
                  for (const itemText of listItems) {
                      const liEl = listEl.createEl("li");
-                     await MarkdownRenderer.render(this.app, itemText, liEl, "", dv.component); // Use this.app
+                     await MarkdownRenderer.render(this.app, itemText.replace(/^- /, ""), liEl, "", dv.component); // Use this.app
                  }
             }
         };
