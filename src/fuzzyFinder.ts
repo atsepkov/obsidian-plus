@@ -996,7 +996,7 @@ function escapeCssIdentifier(value: string): string {
         const item = fallbackIndex != null ? values[fallbackIndex] : undefined;
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
 
-        if (this.thoughtMode && evt.key === "Enter" && this.isDrilldownSelection) {
+        if (this.thoughtMode && evt.key === "Enter") {
           evt.preventDefault();
           evt.stopPropagation();
           if (typeof evt.stopImmediatePropagation === "function") {
@@ -1415,30 +1415,26 @@ function escapeCssIdentifier(value: string): string {
         const instructions = [] as { command: string; purpose: string }[];
 
         if (this.tagMode) {
+          const enterPurpose = this.allowInsertion ? "insert new bullet · close" : "select tag";
           if (this.isDrilldownSelection) {
-            instructions.push({ command: "⏎ / Tab / ␠ / >", purpose: "drill‑down" });
-          } else {
-            instructions.push({ command: "Tab / ␠ / >", purpose: "autocomplete tag" });
-            instructions.push({ command: "⏎", purpose: this.allowInsertion ? "insert new bullet · close" : "select tag" });
+            instructions.push({ command: "Click / Tap", purpose: "drill‑down" });
           }
+          instructions.push({ command: "Tab / ␠ / >", purpose: "autocomplete tag" });
+          instructions.push({ command: "⏎", purpose: enterPurpose });
         } else if (this.thoughtMode) {
           instructions.push({ command: "Esc", purpose: "return to results" });
           instructions.push({ command: "Type", purpose: "search within thought" });
-          if (this.isDrilldownSelection) {
-            const purpose = this.allowInsertion ? "link task · close" : "open task";
-            instructions.push({ command: "⏎", purpose });
-          } else if (this.allowInsertion) {
-            instructions.push({ command: "⏎", purpose: "close" });
-          }
+          const purpose = this.allowInsertion ? "link task · close" : "open task";
+          instructions.push({ command: "⏎ / Click / Tap", purpose });
         } else {
-          if (this.isDrilldownSelection) {
-            instructions.push({ command: "⏎ / Tab / >", purpose: "expand into thought tree" });
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "link task · close" });
           } else {
-            if (this.allowInsertion) {
-              instructions.push({ command: "⏎", purpose: "link task · close" });
-            } else {
-              instructions.push({ command: "⏎", purpose: "open task" });
-            }
+            instructions.push({ command: "⏎", purpose: "open task" });
+          }
+          if (this.isDrilldownSelection) {
+            instructions.push({ command: "Click / Tap / Tab / >", purpose: "expand into thought tree" });
+          } else {
             instructions.push({ command: "Tab / >", purpose: "expand into thought tree" });
           }
           instructions.push({ command: "Esc", purpose: "back to tags" });
@@ -2447,8 +2443,53 @@ function escapeCssIdentifier(value: string): string {
           suggestionItem.addEventListener(eventName, stopPointerEvent, pointerOptions);
         }
 
-        const stopTouchEvent = (evt: TouchEvent) => {
+        const touchState: { startX: number; startY: number; moved: boolean } = { startX: 0, startY: 0, moved: false };
+        const touchThreshold = 10;
+
+        const trackTouchStart = (evt: TouchEvent) => {
           if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+
+          const touch = evt.touches[0] ?? evt.changedTouches[0];
+          if (!touch) {
+            return;
+          }
+
+          touchState.startX = touch.clientX;
+          touchState.startY = touch.clientY;
+          touchState.moved = false;
+
+          if (typeof evt.stopImmediatePropagation === "function") {
+            evt.stopImmediatePropagation();
+          }
+
+          evt.stopPropagation();
+        };
+
+        const trackTouchMove = (evt: TouchEvent) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+
+          const touch = evt.touches[0] ?? evt.changedTouches[0];
+          if (!touch) {
+            return;
+          }
+
+          const dx = Math.abs(touch.clientX - touchState.startX);
+          const dy = Math.abs(touch.clientY - touchState.startY);
+          if (dx > touchThreshold || dy > touchThreshold) {
+            touchState.moved = true;
+          }
+        };
+
+        const handleTouchEnd = (evt: TouchEvent) => {
+          if (!this.isDrilldownSelection || this.thoughtMode) {
+            return;
+          }
+
+          if (touchState.moved) {
             return;
           }
 
@@ -2457,17 +2498,16 @@ function escapeCssIdentifier(value: string): string {
           }
 
           evt.stopPropagation();
-
-          if (evt.type === "touchend") {
-            evt.preventDefault();
-            this.handleDrilldownSelection(current);
-          }
+          evt.preventDefault();
+          this.handleDrilldownSelection(current);
         };
 
         const touchOptions: AddEventListenerOptions = { capture: true, passive: false };
+        const touchMoveOptions: AddEventListenerOptions = { capture: true, passive: true };
 
-        suggestionItem.addEventListener("touchstart", stopTouchEvent, touchOptions);
-        suggestionItem.addEventListener("touchend", stopTouchEvent, touchOptions);
+        suggestionItem.addEventListener("touchstart", trackTouchStart, touchOptions);
+        suggestionItem.addEventListener("touchmove", trackTouchMove, touchMoveOptions);
+        suggestionItem.addEventListener("touchend", handleTouchEnd, touchOptions);
 
         const handleClick = (evt: MouseEvent) => {
           if (!this.isDrilldownSelection || this.thoughtMode) {
@@ -2491,8 +2531,9 @@ function escapeCssIdentifier(value: string): string {
             for (const eventName of pointerEvents) {
               suggestionItem.removeEventListener(eventName, stopPointerEvent, pointerOptions);
             }
-            suggestionItem.removeEventListener("touchstart", stopTouchEvent, touchOptions);
-            suggestionItem.removeEventListener("touchend", stopTouchEvent, touchOptions);
+            suggestionItem.removeEventListener("touchstart", trackTouchStart, touchOptions);
+            suggestionItem.removeEventListener("touchmove", trackTouchMove, touchMoveOptions);
+            suggestionItem.removeEventListener("touchend", handleTouchEnd, touchOptions);
             suggestionItem.removeEventListener("click", handleClick, true);
           },
         });
@@ -3225,18 +3266,15 @@ function escapeCssIdentifier(value: string): string {
 
     /* ---------- choose behavior ---------- */
     async onChooseItem(raw) {
-        const drilldown = this.isDrilldownSelection;
         if (this.thoughtMode) {
-            if (drilldown) {
-                await this.commitThoughtSelection();
-            }
+            await this.commitThoughtSelection();
             return;
         }
 
         const item = raw.item ?? raw;
 
         if ("tag" in item) {
-            if (!this.allowInsertion || drilldown) {
+            if (!this.allowInsertion) {
                 this.inputEl.value = `${item.tag} `;
                 this.detectMode();
                 this.scheduleSuggestionRefresh();
@@ -3248,12 +3286,6 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const task = item as TaskEntry;
-
-        if (drilldown) {
-            const displayIndex = this.findDisplayIndexForSuggestion(raw);
-            this.drillIntoTask(displayIndex, task);
-            return;
-        }
 
         await this.activateTaskSelection(task);
     }
