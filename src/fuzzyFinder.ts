@@ -329,6 +329,25 @@ function escapeCssIdentifier(value: string): string {
         return trimmed.startsWith("#") ? trimmed : `#${trimmed}`;
     }
 
+    function isTaskTag(plugin: ObsidianPlus, tag: string | null | undefined): boolean {
+        const normalized = normalizeTagForSearch(plugin, tag);
+        if (!normalized) {
+            return false;
+        }
+
+        const target = normalized.toLowerCase();
+        const taskTags = plugin.settings?.taskTags ?? [];
+
+        for (const candidate of taskTags) {
+            const normalizedCandidate = normalizeTagForSearch(plugin, candidate);
+            if (normalizedCandidate && normalizedCandidate.toLowerCase() === target) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     function normalizeTaskLine(value: string): string {
         return value
             .replace(/\^\w+\b/, "")
@@ -387,7 +406,7 @@ function escapeCssIdentifier(value: string): string {
 
         /* Fetch Dataview API + user options */
         const dv  = (plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
-        const includeCheckboxes = (plugin.settings.taskTags ?? []).includes(tag);
+        const includeCheckboxes = isTaskTag(plugin, tag);
         const opt = {
           path: '""',
           onlyOpen: includeCheckboxes ? false : !plugin.settings.webTags?.[tag],
@@ -1142,11 +1161,12 @@ function escapeCssIdentifier(value: string): string {
         const ln     = this.replaceRange.from.line;
         const cur    = ed.getLine(ln);
         const indent = cur.match(/^(\s*)/)![1];
-      
-        const isTask = (this.plugin.settings.taskTags ?? []).includes(tag);
+
+        const normalizedTag = this.plugin.normalizeTag?.(tag) ?? this.normalizeTag(tag);
+        const isTask = isTaskTag(this.plugin, normalizedTag);
         const bullet = isTask ? "- [ ] " : "- ";
-        const line   = `${indent}${bullet}${tag} `;
-      
+        const line   = `${indent}${bullet}${normalizedTag} `;
+
         ed.replaceRange(line,
           { line: ln, ch: 0 },
           { line: ln, ch: cur.length }
@@ -2318,7 +2338,7 @@ function escapeCssIdentifier(value: string): string {
           textBody = displayTag;
         }
 
-        const showCheckbox = displayTag && (this.plugin.settings.taskTags ?? []).includes(displayTag);
+        const showCheckbox = displayTag ? isTaskTag(this.plugin, displayTag) : false;
         let line = textBody;
 
         if (showCheckbox) {
@@ -3747,7 +3767,7 @@ function escapeCssIdentifier(value: string): string {
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
           try {
-            const includeCheckboxes = (this.plugin.settings.taskTags ?? []).includes(tag);
+            const includeCheckboxes = isTaskTag(this.plugin, tag);
             const rows = (this.plugin as any)
               .query(dv, project ? [project, tag] : tag, {
                 path: '""',
