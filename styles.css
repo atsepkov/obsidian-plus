@@ -233,8 +233,8 @@ input[data-task="-"] {
 }
 
 .oplus-fuzzy-modal .oplus-header-button svg {
-    width: 1.1em;
-    height: 1.1em;
+    width: 1.4em;
+    height: 1.4em;
 }
 
 .oplus-fuzzy-modal .oplus-header-button:hover,
@@ -254,7 +254,7 @@ input[data-task="-"] {
 .oplus-fuzzy-modal .oplus-header-button.mod-settings {
     position: absolute;
     top: 50%;
-    right: var(--input-height, 2.2em);
+    right: 2.6em;
     transform: translateY(-50%);
     z-index: 2;
 }
