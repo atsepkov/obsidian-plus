@@ -3112,6 +3112,7 @@ function escapeCssIdentifier(value: string): string {
           try {
             await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
             await this.waitForNextFrame();
+            this.applyTreeOfThoughtBulletStyles(body, section.markdown);
           } catch (error) {
             console.error("Failed to render tree-of-thought markdown", error);
             body.createEl("pre", { text: section.markdown });
@@ -3256,6 +3257,83 @@ function escapeCssIdentifier(value: string): string {
             evt.stopPropagation();
           });
         });
+    }
+
+    private applyTreeOfThoughtBulletStyles(body: HTMLElement, markdown: string | undefined) {
+        if (!markdown?.trim()) {
+          return;
+        }
+
+        const bulletPattern = /^(\s*(?:>\s*)*)([-+*])(\s+)/;
+        const markers: string[] = [];
+        const lines = markdown.split(/\r?\n/);
+
+        let fenceChar: string | null = null;
+
+        for (const rawLine of lines) {
+          const trimmed = rawLine.trim();
+          const fenceMatch = trimmed.match(/^([`~]{3,})(.*)$/);
+          if (fenceMatch) {
+            const char = fenceMatch[1][0];
+            if (!fenceChar) {
+              fenceChar = char;
+            } else if (char === fenceChar) {
+              fenceChar = null;
+            }
+            continue;
+          }
+
+          if (fenceChar) {
+            continue;
+          }
+
+          const match = rawLine.match(bulletPattern);
+          if (match) {
+            markers.push(match[2]);
+          }
+        }
+
+        if (!markers.length) {
+          return;
+        }
+
+        const listItems = Array.from(body.querySelectorAll<HTMLLIElement>("li"));
+        const markerClasses = ["op-bullet-response", "op-bullet-error"];
+        listItems.forEach(item => {
+          item.classList.remove(...markerClasses);
+        });
+
+        let index = 0;
+        for (const item of listItems) {
+          if (item.closest("ol")) {
+            continue;
+          }
+
+          const marker = markers[index];
+          if (!marker) {
+            break;
+          }
+          index++;
+
+          if (marker === "+") {
+            item.classList.add("op-bullet-response");
+          } else if (marker === "*") {
+            item.classList.add("op-bullet-error");
+          }
+        }
+
+        const lists = Array.from(body.querySelectorAll<HTMLUListElement>("ul"));
+        lists.forEach(list => {
+          list.classList.remove("op-list-merged", "op-list-continuation");
+        });
+
+        for (const list of lists) {
+          const previous = list.previousElementSibling;
+          if (previous && previous.tagName === "UL") {
+            previous.classList.add("op-list-merged");
+            list.classList.add("op-list-continuation");
+          }
+        }
     }
 
     private async renderReferenceSegmentMarkdown(target: HTMLElement, markdown: string, filePath: string) {

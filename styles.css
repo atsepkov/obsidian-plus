@@ -399,7 +399,26 @@ input[data-task="-"] {
 }
 .modal-container .prompt .tree-of-thought__markdown ul,
 .modal-container .prompt .tree-of-thought__markdown ol {
-    margin-bottom: 0.75em !important;
+    margin: 0 0 0.75em !important;
+    padding-left: 1.4rem;
+}
+
+.modal-container .prompt .tree-of-thought__markdown ul.op-list-merged {
+    margin-bottom: 0.35em !important;
+}
+
+.modal-container .prompt .tree-of-thought__markdown ul.op-list-continuation {
+    margin-top: 0 !important;
+}
+
+.tree-of-thought__markdown li.op-bullet-response,
+.tree-of-thought__markdown li.op-bullet-response::marker {
+    color: rgb(105, 151, 236);
+}
+
+.tree-of-thought__markdown li.op-bullet-error,
+.tree-of-thought__markdown li.op-bullet-error::marker {
+    color: #f53;
 }
 
 .tree-of-thought__markdown .op-expandable-list > li,
