@@ -1351,10 +1351,32 @@ function escapeCssIdentifier(value: string): string {
           }
         }
 
-        if (typeof hint.line === "number" && Number.isFinite(hint.line) && typeof task.line === "number") {
-          if (task.line === hint.line || task.line === hint.line - 1 || task.line === hint.line + 1) {
-            return true;
+        const normalizeLineNumber = (value: unknown): number | null => {
+          if (typeof value !== "number" || !Number.isFinite(value)) {
+            return null;
           }
+          const floored = Math.floor(value);
+          return floored < 0 ? 0 : floored;
+        };
+
+        const normalizedHintLine = normalizeLineNumber(hint.line);
+        let normalizedTaskLine = normalizeLineNumber(task.line);
+
+        if (
+          normalizedTaskLine != null &&
+          normalizedHintLine != null &&
+          normalizedTaskLine === normalizedHintLine + 1 &&
+          normalizedTaskLine > 0
+        ) {
+          normalizedTaskLine -= 1;
+        }
+
+        if (
+          normalizedTaskLine != null &&
+          normalizedHintLine != null &&
+          normalizedTaskLine === normalizedHintLine
+        ) {
+          return true;
         }
 
         const normalizedHintText = hint.text ? normalizeTaskLine(hint.text) : "";
