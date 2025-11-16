@@ -1163,14 +1163,17 @@ export default class ObsidianPlus extends Plugin {
         private autoConvertTagToTask(editor: Editor) {
                 const cursor = editor.getCursor();
                 const line = editor.getLine(cursor.line);
-                const match = line.match(/^(\s*)-\s(#\S+)\s*$/);
+                if (/^(\s*)-\s\[[ xX]\]/.test(line)) return;
+
+                const match = line.match(/^(\s*)-\s(#\S+)(\s+.*)?$/);
                 if (!match) return;
 
                 const indent = match[1];
                 const tag = match[2];
+                const rest = match[3] ?? '';
                 if (!(this.settings.taskTags ?? []).includes(tag)) return;
 
-                const newLine = `${indent}- [ ] ${tag} `;
+                const newLine = `${indent}- [ ] ${tag}${rest ? rest : ' '}`;
                 editor.setLine(cursor.line, newLine);
                 editor.setCursor({ line: cursor.line, ch: newLine.length });
         }
