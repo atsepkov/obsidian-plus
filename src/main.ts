@@ -27,6 +27,10 @@ const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
 });
 
+const BULLET_MARKERS = ['-', '+', '*'] as const;
+const BULLET_MARKER_PATTERN = /^(\s*(?:>\s*)*)([-+*])(\s+)/;
+type BulletMarker = typeof BULLET_MARKERS[number];
+
 // this effect will fire whenever user updates the plugin config
 export const setConfigEffect = StateEffect.define<MyConfigType>();
 
@@ -413,23 +417,38 @@ export default class ObsidianPlus extends Plugin {
 						new TaskTagModal(this.app, this, null, { allowInsertion: false }).open();
 				}
 		});
-		this.addCommand({
-				id: 'open-tree-of-thought-under-cursor',
-				icon: 'brain',
-				name: 'Open Tree of Thought',
-				checkCallback: (checking: boolean) => {
-						const canOpen = this.canOpenTreeOfThoughtUnderCursor();
-						if (!canOpen) {
-								return false;
-						}
-						if (!checking) {
-								this.openTreeOfThoughtUnderCursor().catch(error => {
-										console.error('Failed to open tree of thought under cursor', error);
-								});
-						}
-						return true;
-				}
-		});
+                this.addCommand({
+                                id: 'open-tree-of-thought-under-cursor',
+                                icon: 'brain',
+                                name: 'Open Tree of Thought',
+                                checkCallback: (checking: boolean) => {
+                                                const canOpen = this.canOpenTreeOfThoughtUnderCursor();
+                                                if (!canOpen) {
+                                                                return false;
+                                                }
+                                                if (!checking) {
+                                                                this.openTreeOfThoughtUnderCursor().catch(error => {
+                                                                                console.error('Failed to open tree of thought under cursor', error);
+                                                                });
+                                                }
+                                                return true;
+                                }
+                });
+
+                this.addCommand({
+                                id: 'cycle-list-bullet-marker',
+                                icon: 'list',
+                                name: 'Cycle list bullet marker',
+                                editorCheckCallback: (checking: boolean, editor: Editor) => {
+                                                const canCycle = this.canCycleBulletMarker(editor);
+                                                if (checking) {
+                                                                return canCycle;
+                                                }
+                                                if (canCycle) {
+                                                                this.cycleBulletMarker(editor);
+                                                }
+                                },
+                });
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
@@ -546,13 +565,12 @@ export default class ObsidianPlus extends Plugin {
 		);
 
                 this.registerEvent(
-                this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
+                this.app.workspace.on('editor-change', (editor: Editor) => {
                         this._suggester?.resetPromptGuard();
-                        if (info instanceof MarkdownView) {
-                                this.handleBulletPreference(editor); // Keep this line
-                                this.autoConvertTagToTask(editor);
-                                this.applyTaskTagEnterBehavior(editor);
-                        }
+                        if (!editor) return;
+                        this.handleBulletPreference(editor);
+                        this.autoConvertTagToTask(editor);
+                        this.applyTaskTagEnterBehavior(editor);
                 })
                 );
 
@@ -1145,7 +1163,7 @@ export default class ObsidianPlus extends Plugin {
 	private autoConvertTagToTask(editor: Editor) {
 		const cursor = editor.getCursor();
 		const line = editor.getLine(cursor.line);
-		const match = line.match(/^(\s*)[-*+]\s(#\S+)\s$/);
+		const match = line.match(/^(\s*)-\s(#\S+)\s$/);
 		if (!match) return;
 
 		const indent = match[1];
@@ -1666,6 +1684,45 @@ export default class ObsidianPlus extends Plugin {
                         return Platform.isMobileApp ? "drilldown" : "insert";
                 }
                 return configured;
+        }
+
+        private canCycleBulletMarker(editor: Editor): boolean {
+                const cursor = editor.getCursor();
+                if (!cursor) {
+                        return false;
+                }
+                const lineText = editor.getLine(cursor.line) ?? "";
+                return BULLET_MARKER_PATTERN.test(lineText);
+        }
+
+        private cycleBulletMarker(editor: Editor): void {
+                const cursor = editor.getCursor();
+                if (!cursor) {
+                        return;
+                }
+
+                const lineText = editor.getLine(cursor.line) ?? "";
+                const bulletMatch = lineText.match(BULLET_MARKER_PATTERN);
+                if (!bulletMatch) {
+                        return;
+                }
+
+                const [, indent, currentMarker] = bulletMatch;
+                const marker = currentMarker as BulletMarker;
+                const currentIndex = BULLET_MARKERS.indexOf(marker);
+                if (currentIndex === -1) {
+                        return;
+                }
+
+                const nextMarker = BULLET_MARKERS[(currentIndex + 1) % BULLET_MARKERS.length];
+                if (nextMarker === marker) {
+                        return;
+                }
+
+                const markerStart = indent.length;
+                const from = { line: cursor.line, ch: markerStart };
+                const to = { line: cursor.line, ch: markerStart + marker.length };
+                editor.replaceRange(nextMarker, from, to);
         }
 
         generateTagCSS(): string {
