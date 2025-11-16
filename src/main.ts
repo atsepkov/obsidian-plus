@@ -1142,24 +1142,15 @@ export default class ObsidianPlus extends Plugin {
 		}
 	}
 
-	private autoConvertTagToTask(editor: Editor) {
-		const cursor = editor.getCursor();
-		const line = editor.getLine(cursor.line);
-		const match = line.match(/^(\s*)-\s(#\S+)(\s*)$/);
-		if (!match) return;
+        private autoConvertTagToTask(editor: Editor) {
+                const cursor = editor.getCursor();
+                const line = editor.getLine(cursor.line);
+                const match = line.match(/^(\s*)-\s(#\S+)(\s*)$/);
+                if (!match) return;
 
-		if (cursor.ch !== line.length || cursor.ch === 0) {
-			return;
-		}
-
-		const trailingChar = line.charAt(cursor.ch - 1);
-		if (!/\s/.test(trailingChar)) {
-			return;
-		}
-
-		const indent = match[1];
-		const tag = match[2];
-		if (!(this.settings.taskTags ?? []).includes(tag)) return;
+                const indent = match[1];
+                const tag = match[2];
+                if (!(this.settings.taskTags ?? []).includes(tag)) return;
 
 		const newLine = `${indent}- [ ] ${tag} `;
 		editor.setLine(cursor.line, newLine);
