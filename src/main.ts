@@ -1,8 +1,8 @@
 import path from 'path';
 import {
-        App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
-        Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
-} from 'obsidian';
+	App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
+	Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
+	} from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
@@ -267,12 +267,15 @@ export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	private _suggester: TaskTagTrigger;
-        public configLoader: ConfigLoader;
-        public taskManager: TaskManager;
-        public tagQuery: TagQuery;
-        public dv: any;
-        private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
-
+	public configLoader: ConfigLoader;
+	public taskManager: TaskManager;
+	public tagQuery: TagQuery;
+	public dv: any;
+	private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
+	private dataviewInitPromise: Promise<void> | null = null;
+	private dataviewFeaturesReady = false;
+	private dataviewNoticeShown = false;
+	
 	async onload() {
 		await this.loadSettings();
 		app = this.app;
@@ -297,16 +300,18 @@ export default class ObsidianPlus extends Plugin {
 
                 this.scheduleTagColorRefresh();
 
-                const pluginManager: any = this.app.plugins;
-                if (pluginManager?.on) {
-                        this.registerEvent(
-                                pluginManager.on('plugin-enabled', (pluginId: string) => {
-                                        if (pluginId === 'colored-tags') {
-                                                this.scheduleTagColorRefresh();
-                                        }
-                                })
-                        );
-                }
+		const pluginManager: any = this.app.plugins;
+		if (pluginManager?.on) {
+			this.registerEvent(
+				pluginManager.on('plugin-enabled', (pluginId: string) => {
+					if (pluginId === 'colored-tags') {
+						this.scheduleTagColorRefresh();
+					} else if (pluginId === 'dataview') {
+						void this.ensureDataviewDependentFeatures();
+					}
+				})
+			);
+		}
 
 		// render outline icon next to block IDs in both editor and preview
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
@@ -328,30 +333,8 @@ export default class ObsidianPlus extends Plugin {
 		this.configLoader = new ConfigLoader(this.app, this);
 
 		// Wait for Dataview API
-		this.app.workspace.onLayoutReady(async () => { // Use onLayoutReady
-			const dataview = this.app.plugins.plugins["dataview"]?.api;
-			if (!dataview) {
-				console.error("Dataview plugin not found or not ready.");
-				new Notice("Dataview plugin needed for task management.");
-				// Handle the case where dataview isn't ready - maybe disable features
-			} else {
-				// Instantiate TaskManager *after* dataview is ready
-				this.taskManager = new TaskManager(this.app, dataview, this);
-				console.log("TaskManager initialized.");
-
-				// getSummary configuration
-				// configure(this.app, this)
-				this.tagQuery = new TagQuery(this.app, this);
-				console.log("TagQuery initialized.");
- 
-				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
-				await this.configLoader.loadTaskTagsFromFile();
-				console.log("Loaded tags:", this.settings.taskTags);
-
-				this.pollingManager = new PollingManager(this);
-				this.pollingManager.reload();
-				console.log("PollingManager started.");
-			}
+		this.app.workspace.onLayoutReady(async () => {
+			await this.ensureDataviewDependentFeatures();
 
 			if (!this._suggester) {
 				this._suggester = new TaskTagTrigger(this.app, this);
@@ -453,20 +436,19 @@ export default class ObsidianPlus extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
 
-		// Attempt to load tags from the user-specified file
-		await this.configLoader.loadTaskTagsFromFile();
-		if (this.pollingManager) {
-			this.pollingManager.reload();
-		}
-		console.log("Loaded tags:", this.settings.taskTags);
-		
 		// Listen for changes to tags config file and checked off tasks in current file
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
 				// Listen for changes to tags config file in the vault
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
+					if (!this.dataviewFeaturesReady) {
+						await this.ensureDataviewDependentFeatures();
+						if (!this.dataviewFeaturesReady) {
+							return;
+						}
+					}
 					await this.configLoader.loadTaskTagsFromFile();
-					this.pollingManager.reload();
+					this.pollingManager?.reload();
 				}
 
 				// Listen for changes to tasks in the current file (if task was marked completed)
@@ -477,12 +459,12 @@ export default class ObsidianPlus extends Plugin {
 					}
 					let newTasks = await this.extractTaskLines(file);
 					const oldTasks = taskCache.get(file.path) ?? [];
-			  
+
 					// Compare old vs. new tasks
 					const changed = compareTaskLines(oldTasks, newTasks);
 					if (changed.length === 1) {
 						console.log(`Task changed in ${file.path}:`, changed[0]);
-					  	// console.log(`Tasks changed in ${file.path}:`, changed);
+						// console.log(`Tasks changed in ${file.path}:`, changed);
 						for (const task of changed) {
 							if (task.oldText && task.newText) {
 								// for task status to change, it has to exist in both old and new
@@ -564,15 +546,15 @@ export default class ObsidianPlus extends Plugin {
 			})
 		);
 
-                this.registerEvent(
-                this.app.workspace.on('editor-change', (editor: Editor) => {
-                        this._suggester?.resetPromptGuard();
-                        if (!editor) return;
-                        this.handleBulletPreference(editor);
-                        this.autoConvertTagToTask(editor);
-                        this.applyTaskTagEnterBehavior(editor);
-                })
-                );
+		this.registerEvent(
+			this.app.workspace.on('editor-change', (editor: Editor) => {
+				this._suggester?.resetPromptGuard();
+				if (!editor) return;
+				this.handleBulletPreference(editor);
+				this.autoConvertTagToTask(editor);
+				this.applyTaskTagEnterBehavior(editor);
+			})
+		);
 
 		function expandIfNeeded(evt: MouseEvent) {
 			const target = evt.target.closest('.op-expandable-item');
@@ -1163,8 +1145,17 @@ export default class ObsidianPlus extends Plugin {
 	private autoConvertTagToTask(editor: Editor) {
 		const cursor = editor.getCursor();
 		const line = editor.getLine(cursor.line);
-		const match = line.match(/^(\s*)-\s(#\S+)\s$/);
+		const match = line.match(/^(\s*)-\s(#\S+)(\s*)$/);
 		if (!match) return;
+
+		if (cursor.ch !== line.length || cursor.ch === 0) {
+			return;
+		}
+
+		const trailingChar = line.charAt(cursor.ch - 1);
+		if (!/\s/.test(trailingChar)) {
+			return;
+		}
 
 		const indent = match[1];
 		const tag = match[2];
@@ -1574,6 +1565,113 @@ export default class ObsidianPlus extends Plugin {
 		  start: start + 1,
 		  end: end
 		};
+	}
+
+	private getDataviewApi(): any | null {
+		return this.app.plugins.plugins["dataview"]?.api ?? null;
+	}
+
+	private waitForDataviewApi(timeoutMs = 15000): Promise<any | null> {
+		const existing = this.getDataviewApi();
+		if (existing) {
+			return Promise.resolve(existing);
+		}
+
+		const pluginManager: any = this.app.plugins;
+		if (!pluginManager?.on) {
+			return Promise.resolve(null);
+		}
+
+		return new Promise((resolve) => {
+			let settled = false;
+			let timeoutId: number | null = null;
+
+			const finish = (api: any | null) => {
+				if (settled) return;
+				settled = true;
+				if (timeoutId !== null) {
+					window.clearTimeout(timeoutId);
+				}
+				resolve(api);
+			};
+
+			const tryResolve = () => {
+				const api = this.getDataviewApi();
+				if (api) {
+					finish(api);
+				}
+			};
+
+			const ref = pluginManager.on('plugin-enabled', (pluginId: string) => {
+				if (pluginId === 'dataview') {
+					tryResolve();
+				}
+			});
+			this.registerEvent(ref);
+
+			timeoutId = window.setTimeout(() => {
+				finish(this.getDataviewApi() ?? null);
+			}, timeoutMs);
+
+			this.register(() => {
+				if (!settled && timeoutId !== null) {
+					window.clearTimeout(timeoutId);
+					settled = true;
+					resolve(null);
+				}
+			});
+
+			tryResolve();
+		});
+	}
+
+	private async ensureDataviewDependentFeatures(): Promise<void> {
+		if (this.dataviewFeaturesReady) {
+			return;
+		}
+		if (this.dataviewInitPromise) {
+			await this.dataviewInitPromise;
+			return;
+		}
+
+		this.dataviewInitPromise = (async () => {
+			const dataview = await this.waitForDataviewApi();
+			if (!dataview) {
+				console.error('Dataview plugin not found or failed to load; skipping task automation setup.');
+				if (!this.dataviewNoticeShown) {
+					this.dataviewNoticeShown = true;
+					new Notice('Obsidian Plus requires the Dataview plugin for task automations.');
+				}
+				return;
+			}
+
+			if (!this.taskManager) {
+				this.taskManager = new TaskManager(this.app, dataview, this);
+				console.log('TaskManager initialized.');
+			}
+
+			if (!this.tagQuery) {
+				this.tagQuery = new TagQuery(this.app, this);
+				console.log('TagQuery initialized.');
+			}
+
+			await this.configLoader.loadTaskTagsFromFile();
+			console.log('Loaded tags:', this.settings.taskTags);
+
+			if (!this.pollingManager) {
+				this.pollingManager = new PollingManager(this);
+				console.log('PollingManager started.');
+			}
+			this.pollingManager.reload();
+
+			this.dataviewFeaturesReady = true;
+		})();
+
+		try {
+			await this.dataviewInitPromise;
+		} finally {
+			this.dataviewInitPromise = null;
+		}
 	}
 
 	// Helper to extract lines that contain a checkbox
