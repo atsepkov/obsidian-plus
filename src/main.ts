@@ -565,13 +565,12 @@ export default class ObsidianPlus extends Plugin {
 		);
 
                 this.registerEvent(
-                this.app.workspace.on('editor-change', (editor: Editor, info: any) => {
+                this.app.workspace.on('editor-change', (editor: Editor) => {
                         this._suggester?.resetPromptGuard();
-                        if (info instanceof MarkdownView) {
-                                this.handleBulletPreference(editor); // Keep this line
-                                this.autoConvertTagToTask(editor);
-                                this.applyTaskTagEnterBehavior(editor);
-                        }
+                        if (!editor) return;
+                        this.handleBulletPreference(editor);
+                        this.autoConvertTagToTask(editor);
+                        this.applyTaskTagEnterBehavior(editor);
                 })
                 );
 
@@ -1164,7 +1163,7 @@ export default class ObsidianPlus extends Plugin {
 	private autoConvertTagToTask(editor: Editor) {
 		const cursor = editor.getCursor();
 		const line = editor.getLine(cursor.line);
-		const match = line.match(/^(\s*)[-*+]\s(#\S+)\s$/);
+		const match = line.match(/^(\s*)-\s(#\S+)\s$/);
 		if (!match) return;
 
 		const indent = match[1];
