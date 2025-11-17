@@ -327,37 +327,10 @@ export default class ObsidianPlus extends Plugin {
 		// Instantiate ConfigLoader
 		this.configLoader = new ConfigLoader(this.app, this);
 
-		// Wait for Dataview API
-		this.app.workspace.onLayoutReady(async () => { // Use onLayoutReady
-			const dataview = this.app.plugins.plugins["dataview"]?.api;
-			if (!dataview) {
-				console.error("Dataview plugin not found or not ready.");
-				new Notice("Dataview plugin needed for task management.");
-				// Handle the case where dataview isn't ready - maybe disable features
-			} else {
-				// Instantiate TaskManager *after* dataview is ready
-				this.taskManager = new TaskManager(this.app, dataview, this);
-				console.log("TaskManager initialized.");
-
-				// getSummary configuration
-				// configure(this.app, this)
-				this.tagQuery = new TagQuery(this.app, this);
-				console.log("TagQuery initialized.");
- 
-				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
-				await this.configLoader.loadTaskTagsFromFile();
-				console.log("Loaded tags:", this.settings.taskTags);
-
-				this.pollingManager = new PollingManager(this);
-				this.pollingManager.reload();
-				console.log("PollingManager started.");
-			}
-
-			if (!this._suggester) {
-				this._suggester = new TaskTagTrigger(this.app, this);
-				this.registerEditorSuggest(this._suggester);
-			}
-		});
+                // Wait for Dataview API
+                this.app.workspace.onLayoutReady(async () => {
+                        await this.initializeDataviewDependentFeatures();
+                });
 
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus Search', (evt: MouseEvent) => {
@@ -453,12 +426,7 @@ export default class ObsidianPlus extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
 
-		// Attempt to load tags from the user-specified file
-		await this.configLoader.loadTaskTagsFromFile();
-		if (this.pollingManager) {
-			this.pollingManager.reload();
-		}
-		console.log("Loaded tags:", this.settings.taskTags);
+                await this.initializeDataviewDependentFeatures();
 		
 		// Listen for changes to tags config file and checked off tasks in current file
 		this.registerEvent(
@@ -1604,11 +1572,11 @@ export default class ObsidianPlus extends Plugin {
 		// The ViewPlugin's destroy method will handle its scroll listener removal.
 	}
 
-	async loadSettings() {
-		// this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-		// this.updateTagStyles();
-		// this.updateFlaggedLines(this.app.workspace.getActiveFile());
-		// console.log('Settings loaded')
+        async loadSettings() {
+                // this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+                // this.updateTagStyles();
+                // this.updateFlaggedLines(this.app.workspace.getActiveFile());
+                // console.log('Settings loaded')
 
                 this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
 
@@ -1630,9 +1598,59 @@ export default class ObsidianPlus extends Plugin {
  
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
-		this.updateFlaggedLines(this.app.workspace.getActiveFile());
-		console.log('Settings loaded'); 
-	}
+                this.updateFlaggedLines(this.app.workspace.getActiveFile());
+                console.log('Settings loaded');
+        }
+
+        private async waitForDataviewApi(timeoutMs = 10000, intervalMs = 250) {
+                const start = Date.now();
+
+                while (Date.now() - start < timeoutMs) {
+                        const dataview = this.app.plugins.plugins["dataview"]?.api;
+                        if (dataview) {
+                                return dataview;
+                        }
+
+                        await new Promise((resolve) => setTimeout(resolve, intervalMs));
+                }
+
+                return null;
+        }
+
+        private async initializeDataviewDependentFeatures() {
+                const dataview = await this.waitForDataviewApi();
+
+                if (!dataview) {
+                        console.error("Dataview plugin not found or not ready.");
+                        new Notice("Dataview plugin needed for task management.");
+                        return;
+                }
+
+                if (!this.taskManager) {
+                        this.taskManager = new TaskManager(this.app, dataview, this);
+                        console.log("TaskManager initialized.");
+                }
+
+                if (!this.tagQuery) {
+                        this.tagQuery = new TagQuery(this.app, this);
+                        console.log("TagQuery initialized.");
+                }
+
+                await this.configLoader.loadTaskTagsFromFile();
+                console.log("Loaded tags:", this.settings.taskTags);
+
+                if (!this.pollingManager) {
+                        this.pollingManager = new PollingManager(this);
+                        console.log("PollingManager started.");
+                }
+
+                this.pollingManager.reload();
+
+                if (!this._suggester) {
+                        this._suggester = new TaskTagTrigger(this.app, this);
+                        this.registerEditorSuggest(this._suggester);
+                }
+        }
 
         async saveSettings() {
                 const configuredBehavior = this.settings.fuzzySelectionBehavior;
