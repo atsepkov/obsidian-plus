@@ -1161,21 +1161,34 @@ export default class ObsidianPlus extends Plugin {
 	}
 
         private autoConvertTagToTask(editor: Editor) {
-                const cursor = editor.getCursor();
-                const line = editor.getLine(cursor.line);
-                if (/^(\s*)-\s\[[ xX]\]/.test(line)) return;
+                const initialCursor = editor.getCursor();
+                const initialLine = editor.getLine(initialCursor.line);
 
-                const match = line.match(/^(\s*)-\s(#\S+)(\s+.*)?$/);
-                if (!match) return;
+                // Quick exit if the current line is unlikely to become a task
+                if (!/^\s*-\s#/.test(initialLine)) return;
 
-                const indent = match[1];
-                const tag = match[2];
-                const rest = match[3] ?? '';
-                if (!(this.settings.taskTags ?? []).includes(tag)) return;
+                // Delay conversion to run after Obsidian finishes applying the tag suggestion.
+                // Without the delay, mobile can overwrite our changes when the dropdown inserts
+                // the completed tag text.
+                window.setTimeout(() => {
+                        const cursor = editor.getCursor();
+                        if (cursor.line !== initialCursor.line) return;
 
-                const newLine = `${indent}- [ ] ${tag}${rest ? rest : ' '}`;
-                editor.setLine(cursor.line, newLine);
-                editor.setCursor({ line: cursor.line, ch: newLine.length });
+                        const line = editor.getLine(cursor.line);
+                        if (/^(\s*)-\s\[[ xX]\]/.test(line)) return;
+
+                        const match = line.match(/^(\s*)-\s(#\S+)(\s+.*)?$/);
+                        if (!match) return;
+
+                        const indent = match[1];
+                        const tag = match[2];
+                        const rest = match[3] ?? '';
+                        if (!(this.settings.taskTags ?? []).includes(tag)) return;
+
+                        const newLine = `${indent}- [ ] ${tag}${rest ? rest : ' '}`;
+                        editor.setLine(cursor.line, newLine);
+                        editor.setCursor({ line: cursor.line, ch: newLine.length });
+                }, 0);
         }
 
 	private applyTaskTagEnterBehavior(editor: Editor) {
