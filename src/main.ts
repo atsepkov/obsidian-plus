@@ -327,10 +327,6 @@ export default class ObsidianPlus extends Plugin {
 		// Instantiate ConfigLoader
 		this.configLoader = new ConfigLoader(this.app, this);
 
-                // Wait for Dataview API
-                this.app.workspace.onLayoutReady(async () => {
-                        await this.initializeDataviewDependentFeatures();
-                });
 
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus Search', (evt: MouseEvent) => {
@@ -426,7 +422,16 @@ export default class ObsidianPlus extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
 
-                await this.initializeDataviewDependentFeatures();
+                // Kick off Dataview-dependent setup without blocking the main load path
+                const startDataviewInitialization = () => {
+                        void this.initializeDataviewDependentFeatures();
+                };
+
+                if (this.app.workspace.layoutReady) {
+                        startDataviewInitialization();
+                } else {
+                        this.app.workspace.onLayoutReady(startDataviewInitialization);
+                }
 		
 		// Listen for changes to tags config file and checked off tasks in current file
 		this.registerEvent(
