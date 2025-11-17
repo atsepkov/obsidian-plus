@@ -1602,6 +1602,19 @@ export default class ObsidianPlus extends Plugin {
                 console.log('Settings loaded');
         }
 
+        private async waitForMetadataCache(timeoutMs = 10000, pollIntervalMs = 250) {
+                const start = Date.now();
+
+                while (Date.now() - start < timeoutMs) {
+                        const fileCache = this.app.metadataCache?.fileCache;
+                        if (fileCache && Object.keys(fileCache).length > 0) {
+                                return;
+                        }
+
+                        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+                }
+        }
+
         private async waitForDataviewApi(timeoutMs = 10000, intervalMs = 250) {
                 const start = Date.now();
 
@@ -1636,8 +1649,25 @@ export default class ObsidianPlus extends Plugin {
                         console.log("TagQuery initialized.");
                 }
 
+                // Ensure vault metadata is ready before querying Dataview; this avoids
+                // empty results on cold start (especially mobile) when the cache is
+                // still warming up.
+                await this.waitForMetadataCache();
                 await this.configLoader.loadTaskTagsFromFile();
                 console.log("Loaded tags:", this.settings.taskTags);
+
+                // If tags failed to populate on the first attempt, retry once after
+                // a short delay. This mirrors the manual disable/enable workaround
+                // users have been performing when the app is freshly launched.
+                if (!this.settings.taskTags.length) {
+                        console.warn("Task tags empty after initial load; retrying shortly.");
+                        setTimeout(async () => {
+                                await this.waitForMetadataCache();
+                                await this.configLoader.loadTaskTagsFromFile();
+                                this.pollingManager?.reload();
+                                console.log("Retried loading tags:", this.settings.taskTags);
+                        }, 1500);
+                }
 
                 if (!this.pollingManager) {
                         this.pollingManager = new PollingManager(this);
