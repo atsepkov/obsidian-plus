@@ -272,6 +272,7 @@ export default class ObsidianPlus extends Plugin {
         public tagQuery: TagQuery;
         public dv: any;
         private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
+        private hasInitializedAfterDataview = false;
 
 	async onload() {
 		await this.loadSettings();
@@ -303,6 +304,8 @@ export default class ObsidianPlus extends Plugin {
                                 pluginManager.on('plugin-enabled', (pluginId: string) => {
                                         if (pluginId === 'colored-tags') {
                                                 this.scheduleTagColorRefresh();
+                                        } else if (pluginId === 'dataview') {
+                                                this.initializeAfterDataviewReady();
                                         }
                                 })
                         );
@@ -328,36 +331,14 @@ export default class ObsidianPlus extends Plugin {
 		this.configLoader = new ConfigLoader(this.app, this);
 
 		// Wait for Dataview API
-		this.app.workspace.onLayoutReady(async () => { // Use onLayoutReady
-			const dataview = this.app.plugins.plugins["dataview"]?.api;
-			if (!dataview) {
-				console.error("Dataview plugin not found or not ready.");
-				new Notice("Dataview plugin needed for task management.");
-				// Handle the case where dataview isn't ready - maybe disable features
-			} else {
-				// Instantiate TaskManager *after* dataview is ready
-				this.taskManager = new TaskManager(this.app, dataview, this);
-				console.log("TaskManager initialized.");
+                this.app.workspace.onLayoutReady(async () => { // Use onLayoutReady
+                        await this.initializeAfterDataviewReady();
 
-				// getSummary configuration
-				// configure(this.app, this)
-				this.tagQuery = new TagQuery(this.app, this);
-				console.log("TagQuery initialized.");
- 
-				// Load tags *after* TaskManager is ready (if ConfigLoader needs it indirectly)
-				await this.configLoader.loadTaskTagsFromFile();
-				console.log("Loaded tags:", this.settings.taskTags);
-
-				this.pollingManager = new PollingManager(this);
-				this.pollingManager.reload();
-				console.log("PollingManager started.");
-			}
-
-			if (!this._suggester) {
-				this._suggester = new TaskTagTrigger(this.app, this);
-				this.registerEditorSuggest(this._suggester);
-			}
-		});
+                        if (!this._suggester) {
+                                this._suggester = new TaskTagTrigger(this.app, this);
+                                this.registerEditorSuggest(this._suggester);
+                        }
+                });
 
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon('tags', 'Obsidian Plus Search', (evt: MouseEvent) => {
@@ -453,12 +434,12 @@ export default class ObsidianPlus extends Plugin {
 		// This adds a settings tab so the user can configure various aspects of the plugin
 		this.addSettingTab(new SettingTab(this.app, this));
 
-		// Attempt to load tags from the user-specified file
-		await this.configLoader.loadTaskTagsFromFile();
-		if (this.pollingManager) {
-			this.pollingManager.reload();
-		}
-		console.log("Loaded tags:", this.settings.taskTags);
+                // Attempt to load tags from the user-specified file
+                await this.configLoader.loadTaskTagsFromFile();
+                if (this.pollingManager) {
+                        this.pollingManager.reload();
+                }
+                console.log("Loaded tags:", this.settings.taskTags);
 		
 		// Listen for changes to tags config file and checked off tasks in current file
 		this.registerEvent(
@@ -733,18 +714,53 @@ export default class ObsidianPlus extends Plugin {
 			taskCache.set(currentFile.path, oldTasks);
 		}
 
-		// this.registerEditorSuggest(new TaskTagTrigger(this.app, this));
-	}
+                // this.registerEditorSuggest(new TaskTagTrigger(this.app, this));
+        }
 
-	// --- Additions for Sticky Header ---
+        private async initializeAfterDataviewReady(): Promise<void> {
+                if (this.hasInitializedAfterDataview) {
+                        if (this.settings?.taskTags?.length === 0) {
+                                await this.configLoader.loadTaskTagsFromFile();
+                                if (this.pollingManager) {
+                                        this.pollingManager.reload();
+                                }
+                        }
+                        return;
+                }
 
-	/**
-	 * Creates and appends the sticky header element if it doesn't exist for the view.
-	 */
-	private setupStickyHeaderForView(view: MarkdownView): void {
-		// if (!view?.editor?.cm?.scrollDOM) return; // Ensure view and CM elements are ready
-		if (!view.editor?.cm) return; // Need CodeMirror instance
-		// Target the parent of the CodeMirror editor element within the view's container
+                const dataview = this.app.plugins.plugins["dataview"]?.api;
+                if (!dataview) {
+                        console.error("Dataview plugin not found or not ready.");
+                        new Notice("Dataview plugin needed for task management.");
+                        return;
+                }
+
+                // Instantiate TaskManager *after* dataview is ready
+                this.taskManager = new TaskManager(this.app, dataview, this);
+                console.log("TaskManager initialized.");
+
+                this.tagQuery = new TagQuery(this.app, this);
+                console.log("TagQuery initialized.");
+
+                await this.configLoader.loadTaskTagsFromFile();
+                console.log("Loaded tags:", this.settings.taskTags);
+
+                this.pollingManager = new PollingManager(this);
+                this.pollingManager.reload();
+                console.log("PollingManager started.");
+
+                this.hasInitializedAfterDataview = true;
+        }
+
+        // --- Additions for Sticky Header ---
+
+        /**
+         * Creates and appends the sticky header element if it doesn't exist for the view.
+         */
+        private setupStickyHeaderForView(view: MarkdownView): void {
+                // if (!view?.editor?.cm?.scrollDOM) return; // Ensure view and CM elements are ready
+                if (!view.editor?.cm) return; // Need CodeMirror instance
+                // Target the parent of the CodeMirror editor element within the view's container
         const editorParentEl = view.containerEl.querySelector('.cm-editor')?.parentElement;
         if (!editorParentEl) {
             // console.warn('Could not find editor parent element for sticky header in view:', view.file?.path);
