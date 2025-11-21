@@ -147,16 +147,16 @@ export class ConfigLoader {
     public async loadTaskTagsFromFile(): Promise<void> {
         const path = this.plugin.settings.tagListFilePath;
 
-        // Reset relevant parts of plugin settings before loading
-        this.plugin.settings.taskTags = [];
-        this.plugin.settings.webTags = {};
-        this.plugin.settings.tagDescriptions = {};
-        this.plugin.settings.aiConnector = null;
-        this.plugin.settings.projects = [];
-        this.plugin.settings.projectTags = [];
-        this.plugin.settings.statusCycles = {};
-
         if (!path) {
+            // If no path is configured, clear derived tag state to avoid stale connectors
+            this.plugin.settings.taskTags = [];
+            this.plugin.settings.webTags = {};
+            this.plugin.settings.tagDescriptions = {};
+            this.plugin.settings.aiConnector = null;
+            this.plugin.settings.projects = [];
+            this.plugin.settings.projectTags = [];
+            this.plugin.settings.statusCycles = {};
+
             console.log("No tag list file specified, reset tags to empty");
             // Trigger update for editor enhancer if needed (will be handled in main.ts)
             // this.plugin.editorEnhancer?.updateDecorations(); // Example if enhancer existed
@@ -171,6 +171,15 @@ export class ConfigLoader {
             this.plugin.updateFlaggedLines(this.app.workspace.getActiveFile()); // Update flags even on error
             return;
         }
+
+        // Reset relevant parts of plugin settings before loading
+        this.plugin.settings.taskTags = [];
+        this.plugin.settings.webTags = {};
+        this.plugin.settings.tagDescriptions = {};
+        this.plugin.settings.aiConnector = null;
+        this.plugin.settings.projects = [];
+        this.plugin.settings.projectTags = [];
+        this.plugin.settings.statusCycles = {};
 
         try {
             const file = this.app.vault.getAbstractFileByPath(path);
