@@ -1,6 +1,6 @@
 import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
-  Menu, prepareFuzzySearch, FuzzyMatch, TFile, setIcon
+  Menu, prepareFuzzySearch, FuzzyMatch, ListItemCache, TagCache, TFile, setIcon
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
@@ -90,16 +90,46 @@ function escapeCssIdentifier(value: string): string {
   /*                              HELPERS                               */
   /* ------------------------------------------------------------------ */
   
-  /** Gather every tag across the vault and return them
+  /** Gather tags that start a bullet list item and return them
  *  sorted by descending occurrence count, then A→Z  */
-    function getAllTags(app: App): string[] {
-        /* Obsidian ≥ 1.4:  getTags()  →  Record<#tag, { count: number }>   */
-        const tagInfo = app.metadataCache.getTags?.() as Record<string, {count: number}>;
-    
-        if (!tagInfo) return [];
-    
-        return Object
-            .entries(tagInfo)
+    function getAllTags(app: App): { tag: string; count: number }[] {
+        const cache = app.metadataCache;
+        const counts = new Map<string, number>();
+
+        const cachedFiles = app.vault.getMarkdownFiles();
+        for (const file of cachedFiles) {
+            const fileCache = cache.getFileCache(file);
+            const tags = fileCache?.tags as TagCache[] | undefined;
+            const listItems = fileCache?.listItems as ListItemCache[] | undefined;
+
+            if (!tags?.length || !listItems?.length) continue;
+
+            const listItemsByLine = new Map<number, ListItemCache>();
+            for (const item of listItems) {
+                listItemsByLine.set(item.position.start.line, item);
+            }
+
+            for (const tag of tags) {
+                const line = tag.position?.start?.line;
+                if (line == null) continue;
+
+                const listItem = listItemsByLine.get(line);
+                if (!listItem) continue;
+
+                const tagCol = tag.position?.start?.col ?? Number.POSITIVE_INFINITY;
+                const bulletCol = listItem.position?.start?.col ?? 0;
+                const offset = tagCol - bulletCol;
+
+                const allowedOffset = listItem.task ? 8 : 4;
+                if (offset < 0 || offset > allowedOffset) continue;
+
+                const current = counts.get(tag.tag) ?? 0;
+                counts.set(tag.tag, current + 1);
+            }
+        }
+
+        return Array
+            .from(counts.entries())
             .sort((a, b) => {
                 const diff = b[1] - a[1];     // larger count ⇒ earlier
                 return diff !== 0 ? diff : a[0].localeCompare(b[0]);  // tie → alpha
