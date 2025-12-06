@@ -1441,6 +1441,17 @@ function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | nu
     }
   }
 
+  const subtopic = extractThoughtSubtopic(outline.rootText);
+  if (subtopic) {
+    const last = segments[segments.length - 1];
+    if (!last || last.text !== subtopic) {
+      segments.push({
+        text: subtopic,
+        type: "subtopic"
+      });
+    }
+  }
+
   const summary = segments.map(segment => segment.text).join(" > ").trim();
   if (!summary) {
     return null;
@@ -1607,6 +1618,25 @@ function extractDateToken(value: string | null | undefined): string | null {
 
   const match = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   return match ? match[1] : null;
+}
+
+function extractThoughtSubtopic(rootText: string | null | undefined): string | null {
+  if (!rootText) {
+    return null;
+  }
+
+  const match = rootText.match(/\*[^*]+\*\s+(.+)$/);
+  if (!match) {
+    return null;
+  }
+
+  const raw = (match[1] ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const cleaned = cleanReferenceText(raw).replace(/^:\s*/, "").trim();
+  return cleaned || null;
 }
 
 function formatThoughtLabel(app: App, file: TFile): string {
