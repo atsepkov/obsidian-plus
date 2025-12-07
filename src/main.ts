@@ -1370,17 +1370,32 @@ export default class ObsidianPlus extends Plugin {
                                 continue;
                         }
 
-                        const tags: string[] = [];
+                        const contentAfterBullet = trimmed.replace(/^[-*+]\s*(\[[^\]]*\]\s*)?/, "");
+
+                        const tags: { tag: string; index: number }[] = [];
                         const tagPattern = /#[^\s#]+/g;
                         let match: RegExpExecArray | null;
-                        while ((match = tagPattern.exec(trimmed)) !== null) {
+                        while ((match = tagPattern.exec(contentAfterBullet)) !== null) {
                                 const index = match.index;
-                                if (index === 0 || /\s/.test(trimmed[index - 1])) {
-                                        tags.push(match[0]);
+                                if (index === 0 || /\s/.test(contentAfterBullet[index - 1])) {
+                                        tags.push({ tag: match[0], index });
                                 }
                         }
 
-                        const usableTags = tags.filter(candidate => !/^#\d/.test(candidate));
+                        const usableTags = tags
+                                .filter(candidate => {
+                                        if (/^#\d/.test(candidate.tag)) {
+                                                return false;
+                                        }
+
+                                        const prefix = contentAfterBullet.slice(0, candidate.index).trim();
+                                        if (!prefix) {
+                                                return true;
+                                        }
+
+                                        return /^!?\[\[[^\]]+\]\]$/.test(prefix);
+                                })
+                                .map(candidate => candidate.tag);
                         if (usableTags.length === 0) {
                                 continue;
                         }
