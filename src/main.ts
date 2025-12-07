@@ -1380,11 +1380,12 @@ export default class ObsidianPlus extends Plugin {
                                 }
                         }
 
-                        if (tags.length === 0) {
+                        const usableTags = tags.filter(candidate => !/^#\d/.test(candidate));
+                        if (usableTags.length === 0) {
                                 continue;
                         }
 
-                        const tag = tags.find(candidate => !/^#\d/.test(candidate)) ?? tags[tags.length - 1];
+                        const tag = usableTags[0];
                         const blockMatch = rawLine.match(/\^([A-Za-z0-9-]+)/);
 
                         return {
