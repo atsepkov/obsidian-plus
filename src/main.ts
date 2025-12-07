@@ -1370,7 +1370,7 @@ export default class ObsidianPlus extends Plugin {
                                 continue;
                         }
 
-                        const contentAfterBullet = trimmed.replace(/^[-*+]\s*(\[[^\]]*\]\s*)?/, "");
+                        const contentAfterBullet = trimmed.replace(/^[-*+]\s*(\[[ xX-]\]\s*)?/, "");
 
                         const tags: { tag: string; index: number }[] = [];
                         const tagPattern = /#[^\s#]+/g;
@@ -1393,7 +1393,7 @@ export default class ObsidianPlus extends Plugin {
                                                 return true;
                                         }
 
-                                        return /^!?\[\[[^\]]+\]\]$/.test(prefix);
+                                        return this.isContinuationLink(prefix);
                                 })
                                 .map(candidate => candidate.tag);
                         if (usableTags.length === 0) {
@@ -1510,6 +1510,21 @@ export default class ObsidianPlus extends Plugin {
                 const filtered = tokens.filter(token => token.toLowerCase() !== lowerTag);
                 const result = filtered.join(" ").trim();
                 return result || null;
+        }
+
+        private isContinuationLink(prefix: string): boolean {
+                const match = prefix.match(/^!?\[\[([^\]|#]*?)(?:#\^([^\]|]+))?(?:\|([^\]]+))?\]\]$/);
+                if (!match) {
+                        return false;
+                }
+
+                const blockId = (match[2] ?? '').trim();
+                const display = (match[3] ?? '').trim();
+                if (!blockId) {
+                        return false;
+                }
+
+                return display === '⇠';
         }
 
         private getLineIndentation(line: string | undefined): number {
