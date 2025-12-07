@@ -848,26 +848,51 @@ function findTaskLine(task: TaskEntry, lines: string[], blockId: string): number
     return Math.floor(task.line!);
   }
 
-  const normalized = normalizeTaskLine(task.text ?? "");
-  if (!normalized) {
+  const needles = collectTaskSearchNeedles(task);
+  if (!needles.length) {
     return null;
   }
 
   for (let i = 0; i < lines.length; i++) {
-    const normalizedLine = normalizeTaskLine(lines[i]);
-    if (!normalizedLine.includes(normalized)) {
-      continue;
-    }
-
     const rawLine = normalizeSnippet(lines[i]);
     if (!isListItem(rawLine)) {
       continue;
     }
 
-    return i;
+    const normalizedLine = normalizeTaskLine(lines[i]);
+    if (!normalizedLine) {
+      continue;
+    }
+
+    if (needles.some(needle => normalizedLine.includes(needle))) {
+      return i;
+    }
   }
 
   return null;
+}
+
+function collectTaskSearchNeedles(task: TaskEntry): string[] {
+  const needles: string[] = [];
+
+  const primary = normalizeTaskLine(task.text ?? "");
+  if (primary && !primary.startsWith("#")) {
+    needles.push(primary);
+  }
+
+  if (Array.isArray(task.lines)) {
+    for (const line of task.lines) {
+      const normalized = normalizeTaskLine(line ?? "");
+      if (!normalized || normalized.startsWith("#")) {
+        continue;
+      }
+      needles.push(normalized);
+      break;
+    }
+  }
+
+  const unique = Array.from(new Set(needles.filter(Boolean)));
+  return unique;
 }
 
 function extractListSubtree(lines: string[], startLine: number): string;
