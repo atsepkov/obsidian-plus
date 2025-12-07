@@ -1625,7 +1625,7 @@ function extractThoughtSubtopic(rootText: string | null | undefined): string | n
     return null;
   }
 
-  const match = rootText.match(/\*[^*]+\*\s+(.+)$/);
+  const match = rootText.match(/\*[^*]+\*[\s:;\-–—]+(.+)$/);
   if (!match) {
     return null;
   }
