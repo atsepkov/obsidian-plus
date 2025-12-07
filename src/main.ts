@@ -1361,7 +1361,7 @@ export default class ObsidianPlus extends Plugin {
                         }
 
                         const indent = this.getLineIndentation(rawLine);
-                        if (indent > currentIndent) {
+                        if (line !== startLine && indent >= currentIndent) {
                                 continue;
                         }
 
