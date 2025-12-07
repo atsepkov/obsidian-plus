@@ -854,9 +854,17 @@ function findTaskLine(task: TaskEntry, lines: string[], blockId: string): number
   }
 
   for (let i = 0; i < lines.length; i++) {
-    if (normalizeTaskLine(lines[i]).includes(normalized)) {
-      return i;
+    const normalizedLine = normalizeTaskLine(lines[i]);
+    if (!normalizedLine.includes(normalized)) {
+      continue;
     }
+
+    const rawLine = normalizeSnippet(lines[i]);
+    if (!isListItem(rawLine)) {
+      continue;
+    }
+
+    return i;
   }
 
   return null;
