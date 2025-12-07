@@ -1384,7 +1384,7 @@ export default class ObsidianPlus extends Plugin {
                                 continue;
                         }
 
-                        const tag = tags[tags.length - 1];
+                        const tag = tags.find(candidate => !/^#\d/.test(candidate)) ?? tags[tags.length - 1];
                         const blockMatch = rawLine.match(/\^([A-Za-z0-9-]+)/);
 
                         return {

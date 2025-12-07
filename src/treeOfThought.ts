@@ -876,14 +876,14 @@ function collectTaskSearchNeedles(task: TaskEntry): string[] {
   const needles: string[] = [];
 
   const primary = normalizeTaskLine(task.text ?? "");
-  if (primary && !primary.startsWith("#")) {
+  if (primary) {
     needles.push(primary);
   }
 
   if (Array.isArray(task.lines)) {
     for (const line of task.lines) {
       const normalized = normalizeTaskLine(line ?? "");
-      if (!normalized || normalized.startsWith("#")) {
+      if (!normalized) {
         continue;
       }
       needles.push(normalized);
