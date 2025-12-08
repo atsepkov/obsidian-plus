@@ -137,6 +137,8 @@ export function applyThoughtFilter(
   const filteredReferences = references.filter(reference =>
     reference.summary.toLowerCase().includes(filter) ||
     reference.linktext.toLowerCase().includes(filter) ||
+    reference.label.toLowerCase().includes(filter) ||
+    reference.tooltip?.toLowerCase().includes(filter) ||
     reference.segments?.some(segment => segment.text?.toLowerCase().includes(filter))
   );
 
@@ -317,7 +319,16 @@ function matchesThoughtSection(section: ThoughtSection, filter: string): boolean
   if (section.label?.toLowerCase().includes(lower)) {
     return true;
   }
+  if (section.linktext?.toLowerCase().includes(lower)) {
+    return true;
+  }
   if (section.sourceMarkdown?.toLowerCase().includes(lower)) {
+    return true;
+  }
+  if (section.tooltip?.toLowerCase().includes(lower)) {
+    return true;
+  }
+  if (section.targetAnchor?.toLowerCase().includes(lower)) {
     return true;
   }
   if (section.segments?.some(segment => segment.text?.toLowerCase().includes(lower))) {
