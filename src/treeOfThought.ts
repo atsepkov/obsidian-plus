@@ -246,14 +246,18 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
   }
 
   const filter = (searchQuery ?? "").trim().toLowerCase();
+
   const filteredSections = filter
-    ? enrichedSections.filter(section => section.markdown.toLowerCase().includes(filter))
+    ? enrichedSections
+        .map(section => filterThoughtSection(section, filter))
+        .filter((section): section is ThoughtSection => Boolean(section))
     : enrichedSections;
 
   const filteredReferences = filter
     ? references.filter(reference =>
         reference.summary.toLowerCase().includes(filter) ||
-        reference.linktext.toLowerCase().includes(filter)
+        reference.linktext.toLowerCase().includes(filter) ||
+        reference.segments?.some(segment => segment.text?.toLowerCase().includes(filter))
       )
     : references;
 
@@ -273,6 +277,136 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
     references: filteredReferences,
     headerMarkdown
   };
+}
+
+function filterThoughtSection(section: ThoughtSection, filter: string): ThoughtSection | null {
+  const matches = matchesThoughtSection(section, filter);
+  if (!matches) {
+    return null;
+  }
+
+  const hasContentMatch = section.markdown?.toLowerCase().includes(filter);
+  const pruned = hasContentMatch ? pruneSectionMarkdown(section.markdown, filter) : null;
+  const markdown = pruned?.trim() ? pruned : section.markdown;
+
+  return {
+    ...section,
+    markdown
+  };
+}
+
+function matchesThoughtSection(section: ThoughtSection, filter: string): boolean {
+  const lower = filter.toLowerCase();
+  if (section.markdown?.toLowerCase().includes(lower)) {
+    return true;
+  }
+  if (section.label?.toLowerCase().includes(lower)) {
+    return true;
+  }
+  if (section.sourceMarkdown?.toLowerCase().includes(lower)) {
+    return true;
+  }
+  if (section.segments?.some(segment => segment.text?.toLowerCase().includes(lower))) {
+    return true;
+  }
+  return false;
+}
+
+function pruneSectionMarkdown(markdown: string, filter: string): string {
+  const normalized = normalizeSnippet(markdown);
+  const lines = normalized.split(/\r?\n/);
+  if (!lines.length) {
+    return markdown;
+  }
+
+  type OutlineNode = {
+    line: string;
+    indent: number;
+    children: OutlineNode[];
+    match: boolean;
+    include: boolean;
+  };
+
+  const stack: OutlineNode[] = [
+    { line: "", indent: -1, children: [], match: false, include: false }
+  ];
+
+  const trimmedFilter = filter.trim().toLowerCase();
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    const indent = leadingSpace(line);
+    const searchable = extractSearchableText(line).toLowerCase();
+    const match = Boolean(trimmedFilter && searchable.includes(trimmedFilter));
+
+    const node: OutlineNode = {
+      line: line.replace(/\s+$/, ""),
+      indent,
+      children: [],
+      match,
+      include: false
+    };
+
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
+      stack.pop();
+    }
+
+    stack[stack.length - 1].children.push(node);
+    stack.push(node);
+  }
+
+  function propagate(node: OutlineNode): boolean {
+    let childIncluded = false;
+    for (const child of node.children) {
+      childIncluded = propagate(child) || childIncluded;
+    }
+    node.include = node.match || childIncluded;
+    return node.include;
+  }
+
+  propagate(stack[0]);
+
+  const result: string[] = [];
+
+  function emit(node: OutlineNode): void {
+    if (!node.include) {
+      return;
+    }
+
+    if (node.line.trim()) {
+      result.push(node.line);
+    }
+
+    for (const child of node.children) {
+      emit(child);
+    }
+  }
+
+  for (const child of stack[0].children) {
+    emit(child);
+  }
+
+  return result.join("\n");
+}
+
+function extractSearchableText(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (isListItem(trimmed)) {
+    return stripListMarker(trimmed).trim();
+  }
+
+  if (isHeading(trimmed)) {
+    return stripHeadingMarker(trimmed).trim();
+  }
+
+  return trimmed;
 }
 
 async function buildOriginSection(
