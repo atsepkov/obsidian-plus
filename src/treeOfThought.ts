@@ -129,18 +129,15 @@ export function applyThoughtFilter(
   }
 
   const filter = trimmedQuery.toLowerCase();
+  const wantsReferences = filter.includes("reference");
 
   const filteredSections = sections
     .map(section => filterThoughtSection(section, filter))
     .filter((section): section is ThoughtSection => Boolean(section));
 
-  const filteredReferences = references.filter(reference =>
-    reference.summary.toLowerCase().includes(filter) ||
-    reference.linktext.toLowerCase().includes(filter) ||
-    reference.label.toLowerCase().includes(filter) ||
-    reference.tooltip?.toLowerCase().includes(filter) ||
-    reference.segments?.some(segment => segment.text?.toLowerCase().includes(filter))
-  );
+  const filteredReferences = wantsReferences
+    ? references
+    : references.filter(reference => matchesThoughtReference(reference, filter));
 
   if (filteredSections.length === 0 && filteredReferences.length === 0) {
     return {
@@ -312,29 +309,46 @@ function filterThoughtSection(section: ThoughtSection, filter: string): ThoughtS
 }
 
 function matchesThoughtSection(section: ThoughtSection, filter: string): boolean {
-  const lower = filter.toLowerCase();
-  if (section.markdown?.toLowerCase().includes(lower)) {
-    return true;
+  const searchables = collectThoughtSectionSearchables(section);
+  return searchables.some(entry => entry.includes(filter));
+}
+
+function matchesThoughtReference(reference: ThoughtReference, filter: string): boolean {
+  const searchables: string[] = [];
+
+  if (reference.summary) searchables.push(reference.summary.toLowerCase());
+  if (reference.linktext) searchables.push(reference.linktext.toLowerCase());
+  if (reference.label) searchables.push(reference.label.toLowerCase());
+  if (reference.tooltip) searchables.push(reference.tooltip.toLowerCase());
+
+  if (Array.isArray(reference.segments)) {
+    for (const segment of reference.segments) {
+      if (segment?.text) searchables.push(segment.text.toLowerCase());
+      if (segment?.anchor) searchables.push(segment.anchor.toLowerCase());
+    }
   }
-  if (section.label?.toLowerCase().includes(lower)) {
-    return true;
+
+  return searchables.some(entry => entry.includes(filter));
+}
+
+function collectThoughtSectionSearchables(section: ThoughtSection): string[] {
+  const searchables: string[] = [];
+
+  if (section.markdown) searchables.push(section.markdown.toLowerCase());
+  if (section.label) searchables.push(section.label.toLowerCase());
+  if (section.linktext) searchables.push(section.linktext.toLowerCase());
+  if (section.sourceMarkdown) searchables.push(section.sourceMarkdown.toLowerCase());
+  if (section.tooltip) searchables.push(section.tooltip.toLowerCase());
+  if (section.targetAnchor) searchables.push(section.targetAnchor.toLowerCase());
+
+  if (Array.isArray(section.segments)) {
+    for (const segment of section.segments) {
+      if (segment?.text) searchables.push(segment.text.toLowerCase());
+      if (segment?.anchor) searchables.push(segment.anchor.toLowerCase());
+    }
   }
-  if (section.linktext?.toLowerCase().includes(lower)) {
-    return true;
-  }
-  if (section.sourceMarkdown?.toLowerCase().includes(lower)) {
-    return true;
-  }
-  if (section.tooltip?.toLowerCase().includes(lower)) {
-    return true;
-  }
-  if (section.targetAnchor?.toLowerCase().includes(lower)) {
-    return true;
-  }
-  if (section.segments?.some(segment => segment.text?.toLowerCase().includes(lower))) {
-    return true;
-  }
-  return false;
+
+  return searchables;
 }
 
 function pruneSectionMarkdown(markdown: string, filter: string): string {
