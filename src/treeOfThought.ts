@@ -118,6 +118,39 @@ export interface TreeOfThoughtResult {
   headerMarkdown?: string;
 }
 
+export function applyThoughtFilter(
+  sections: ThoughtSection[] = [],
+  references: ThoughtReference[] = [],
+  searchQuery: string
+): { sections: ThoughtSection[]; references: ThoughtReference[]; message?: string } {
+  const trimmedQuery = (searchQuery ?? "").trim();
+  if (!trimmedQuery) {
+    return { sections, references };
+  }
+
+  const filter = trimmedQuery.toLowerCase();
+
+  const filteredSections = sections
+    .map(section => filterThoughtSection(section, filter))
+    .filter((section): section is ThoughtSection => Boolean(section));
+
+  const filteredReferences = references.filter(reference =>
+    reference.summary.toLowerCase().includes(filter) ||
+    reference.linktext.toLowerCase().includes(filter) ||
+    reference.segments?.some(segment => segment.text?.toLowerCase().includes(filter))
+  );
+
+  if (filteredSections.length === 0 && filteredReferences.length === 0) {
+    return {
+      sections: [],
+      references: [],
+      message: `No matches for “${trimmedQuery}” in this thought.`
+    };
+  }
+
+  return { sections: filteredSections, references: filteredReferences };
+}
+
 export interface ThoughtPreviewResult {
   sourceFile: TFile | null;
   section: ThoughtSection | null;
@@ -245,36 +278,17 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
     };
   }
 
-  const filter = (searchQuery ?? "").trim().toLowerCase();
-
-  const filteredSections = filter
-    ? enrichedSections
-        .map(section => filterThoughtSection(section, filter))
-        .filter((section): section is ThoughtSection => Boolean(section))
-    : enrichedSections;
-
-  const filteredReferences = filter
-    ? references.filter(reference =>
-        reference.summary.toLowerCase().includes(filter) ||
-        reference.linktext.toLowerCase().includes(filter) ||
-        reference.segments?.some(segment => segment.text?.toLowerCase().includes(filter))
-      )
-    : references;
-
-  if (filter && filteredSections.length === 0 && filteredReferences.length === 0) {
-    return {
-      sourceFile,
-      sections: [],
-      references: [],
-      message: `No matches for “${searchQuery?.trim()}” in this thought.`,
-      headerMarkdown
-    };
-  }
+  const { sections: filteredSections, references: filteredReferences, message } = applyThoughtFilter(
+    enrichedSections,
+    references,
+    searchQuery ?? ""
+  );
 
   return {
     sourceFile,
     sections: filteredSections,
     references: filteredReferences,
+    message,
     headerMarkdown
   };
 }
