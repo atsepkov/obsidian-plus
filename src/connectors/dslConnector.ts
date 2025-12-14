@@ -79,7 +79,12 @@ export default class DSLConnector extends TagConnector {
      * Check if a trigger is defined in the config
      */
     hasTrigger(triggerType: TriggerType): boolean {
-        return this.getEngine().hasTrigger(this.dslConfig, triggerType);
+        // return this.getEngine().hasTrigger(this.dslConfig, triggerType);
+        console.log(`[DSLConnector] hasTrigger called for ${this.tag}, triggerType: ${triggerType}`);
+        console.log(`[DSLConnector] dslConfig.triggers:`, this.dslConfig.triggers?.map(t => t.type) || 'undefined');
+        const result = this.getEngine().hasTrigger(this.dslConfig, triggerType);
+        console.log(`[DSLConnector] hasTrigger result:`, result);
+        return result;
     }
     
     /**
