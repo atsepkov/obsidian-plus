@@ -268,23 +268,46 @@ export class ConfigLoader {
                 const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
                 const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
                 
-                // Try both level 2 and level 3 headers for Tag Triggers
-                console.log('[ConfigLoader] Querying for ### Tag Triggers...');
-                let tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || [];
+                // Tag Triggers section:
+                // IMPORTANT: We must NOT query by "#" here, because that would return nested tag *usages*
+                // (e.g. "#podcast {{meta.title}}" inside a transform block), which are not tag trigger definitions.
+                //
+                // Instead, fetch *all* list items under the header (identifier = null), then only treat the
+                // TOP-LEVEL bullets (minimum indentation inside this header) as tag definitions.
+                // This supports "tag + description" on the same line (e.g. "#podcast fetch metadata")
+                // while ensuring content nested under actions like `transform` stays literal/template-only.
+                const tagTriggersOptions = { currentFile: file.path, onlyReturn: true };
+                console.log('[ConfigLoader] Querying for ### Tag Triggers (all list items)...');
+                let tagTriggersSection = this.plugin.query(dataview, null, { ...tagTriggersOptions, header: '### Tag Triggers' }) || [];
                 console.log('[ConfigLoader] First query (### Tag Triggers) returned:', tagTriggersSection.length, 'items');
                 if (tagTriggersSection.length === 0) {
-                    console.log('[ConfigLoader] First query empty, trying ## Tag Triggers...');
-                    tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '## Tag Triggers' }) || [];
+                    console.log('[ConfigLoader] First query empty, trying ## Tag Triggers (all list items)...');
+                    tagTriggersSection = this.plugin.query(dataview, null, { ...tagTriggersOptions, header: '## Tag Triggers' }) || [];
                     console.log('[ConfigLoader] Second query (## Tag Triggers) returned:', tagTriggersSection.length, 'items');
                 }
-                console.log('[ConfigLoader] Final Tag Triggers section found:', tagTriggersSection.length, 'items');
+                console.log('[ConfigLoader] Final Tag Triggers section found:', tagTriggersSection.length, 'items (raw list items)');
                 if (tagTriggersSection.length > 0) {
-                    console.log('[ConfigLoader] Tag Triggers items:', tagTriggersSection.map((item: any) => ({
+                    console.log('[ConfigLoader] Tag Triggers raw items:', tagTriggersSection.map((item: any) => ({
                         text: item.text,
                         tags: item.tags,
-                        line: item.line || item.position?.start?.line
+                        line: item.line || item.position?.start?.line,
+                        childCount: item.children?.length ?? 0
                     })));
                 }
+
+                // Compute the minimum indentation column inside the Tag Triggers header.
+                // We'll only consider items at this indentation as tag trigger definitions.
+                const tagTriggersMinCol = (() => {
+                    let min = Number.POSITIVE_INFINITY;
+                    for (const item of tagTriggersSection as any[]) {
+                        const col = item?.position?.start?.col;
+                        if (typeof col === 'number') {
+                            min = Math.min(min, col);
+                        }
+                    }
+                    return Number.isFinite(min) ? min : 0;
+                })();
+                console.log('[ConfigLoader] Tag Triggers min indentation col:', tagTriggersMinCol);
 
                 // Process Tag Descriptions
                 [
@@ -417,19 +440,29 @@ export class ConfigLoader {
                 // Process Tag Triggers section (DSL triggers without config: wrapper)
                 console.log('[ConfigLoader] Processing Tag Triggers section, found', tagTriggersSection.length, 'lines');
                 for (const line of tagTriggersSection) {
-                    if (!line.tags || line.tags.length === 0) {
-                        console.log('[ConfigLoader] Skipping line with no tags:', line.text);
+                    const rawText = (line?.text ?? '').split('\n')[0];
+                    const col = line?.position?.start?.col;
+
+                    // Skip non-top-level items under the Tag Triggers header. This is the key guard
+                    // that prevents treating tags inside `transform` output as new tag definitions.
+                    if (typeof col === 'number' && col !== tagTriggersMinCol) {
                         continue;
                     }
+
+                    if (!line.tags || line.tags.length === 0) {
+                        // This will skip lines like "onEnter:" or "read:" etc.
+                        continue;
+                    }
+
                     const tag = line.tags[0];
-                    console.log('[ConfigLoader] Processing tag:', tag, 'from line:', line.text);
-                    
+                    console.log('[ConfigLoader] Processing tag trigger definition for:', tag, 'from line:', rawText, 'col:', col);
+
                     // Parse triggers directly from children (no config: wrapper needed)
                     const config = this.parseTriggersForLine(tag, line);
                     console.log('[ConfigLoader] Parsed config for', tag, ':', config);
                     console.log('[ConfigLoader] Config keys:', Object.keys(config));
-                    console.log('[ConfigLoader] Config.onEnter:', config.onEnter);
-                    
+                    console.log('[ConfigLoader] Config.onEnter:', (config as any).onEnter);
+
                     // Only process if we found any triggers
                     const hasTriggers = hasDSLTriggers(config);
                     console.log('[ConfigLoader] hasDSLTriggers result for', tag, ':', hasTriggers);
@@ -440,12 +473,12 @@ export class ConfigLoader {
                             console.log('[ConfigLoader] Storing connector in webTags with key:', tag, 'typeof:', typeof tag, 'length:', tag.length);
                             this.plugin.settings.webTags[tag] = connector;
                             console.log('[ConfigLoader] Stored. webTags keys now:', Object.keys(this.plugin.settings.webTags));
-                            
+
                             // Add to taskTags only if it has task-promoting triggers (not just onEnter)
                             if (this.hasTaskTriggers(config)) {
                                 addTaskTag(tag);
                             }
-                            
+
                             console.log(`[ConfigLoader] Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));
                         } else {
                             console.error(`[ConfigLoader] Failed to create DSL connector for tag "${tag}"`);
