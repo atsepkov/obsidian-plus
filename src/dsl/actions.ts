@@ -41,6 +41,28 @@ export type ActionHandler<T extends ActionNode = ActionNode> = (
     executeAction: (action: ActionNode, ctx: DSLContext) => Promise<DSLContext>
 ) => Promise<DSLContext>;
 
+function stripMarkdownListPrefix(line: string): { indent: string; bullet: '-' | null; content: string } {
+    const indentMatch = line.match(/^(\s*)/);
+    const indent = indentMatch?.[1] ?? '';
+
+    // Matches:
+    // - "- text"
+    // - "- [ ] text"
+    // - "- [x] text"
+    // - "- [/] text"
+    // - "- [-] text"
+    // - "- [!] text"
+    //
+    // IMPORTANT: we intentionally do NOT match "*" or "+" bullets here; those have other meaning in this plugin.
+    const m = line.match(/^(\s*)-\s+(?:\[[ xX\/!\-]\]\s+)?(.*)$/);
+    if (!m) {
+        // Return the original line so patterns like "#tag {{x}}" won't accidentally match "* #tag ..." or "+ #tag ..."
+        return { indent, bullet: null, content: line };
+    }
+
+    return { indent: m[1] ?? indent, bullet: '-', content: m[2] ?? '' };
+}
+
 /**
  * Read action handler
  * Reads content and extracts variables based on pattern
@@ -48,10 +70,14 @@ export type ActionHandler<T extends ActionNode = ActionNode> = (
 export const readAction: ActionHandler<ReadActionNode> = async (action, context) => {
     const source = action.source || 'line';
     let text: string;
+    let textForMatching: string | null = null;
     
     switch (source) {
         case 'line':
             text = context.line || '';
+            // For matching patterns like "#podcast {{url}}", ignore list prefix/checkbox.
+            // This allows matching both "- #podcast ..." and indented variants.
+            textForMatching = stripMarkdownListPrefix(text).content;
             break;
         case 'file':
             if (context.file) {
@@ -83,7 +109,8 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
     // Extract variables from text using pattern
     if (action.pattern) {
         const pattern = interpolate(action.pattern, context.vars);
-        const result = extractValues(text, pattern);
+        const haystack = textForMatching ?? text;
+        const result = extractValues(haystack, pattern);
         
         if (result.success) {
             // Merge extracted values into context
@@ -95,6 +122,9 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
     
     // Always store the raw text
     context.vars.text = text;
+    if (textForMatching !== null) {
+        context.vars.textContent = textForMatching;
+    }
     
     return context;
 };
@@ -259,21 +289,44 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
     const cursor = editor.getCursor();
     const currentLine = editor.getLine(cursor.line);
     const indent = currentLine.match(/^(\s*)/)?.[1] || '';
+    // Only preserve "-" bullets for transform output. If the line isn't a "-" bullet, default to "-".
+    const bulletMatch = currentLine.match(/^(\s*)-\s+/);
+    const bullet = bulletMatch ? '-' : '-';
     
     // Build the new content
     let newLines: string[] = [];
     
-    if (action.template) {
+    // If no inline template was provided, treat the FIRST child template as the replacement line.
+    // This matches the intended DSL UX:
+    // - transform:
+    //   - #podcast {{meta.title}}
+    //     - url: ...
+    //     - channel: ...
+    //     - {{cursor}}
+    let childTemplates = action.childTemplates ?? [];
+    if (!action.template && childTemplates.length > 0) {
+        const first = childTemplates[0];
+        const firstText = interpolate(first.template, context.vars);
+        // Replace current line with first child as the "main" line
+        newLines.push(`${indent}${bullet} ${firstText.replace('{{cursor}}', '')}`);
+        // Remaining children become appended under it. Also include any nested children of the first child.
+        const rest: TransformChild[] = [];
+        if (first.children && first.children.length > 0) {
+            rest.push(...first.children);
+        }
+        rest.push(...childTemplates.slice(1));
+        childTemplates = rest;
+    } else if (action.template) {
         const newText = interpolate(action.template, context.vars);
-        newLines.push(`${indent}- ${newText}`);
+        newLines.push(`${indent}${bullet} ${newText.replace('{{cursor}}', '')}`);
     } else {
-        // Keep the current line if no template
+        // Keep the current line if no template and no children
         newLines.push(currentLine);
     }
     
     // Add children
-    if (action.childTemplates && action.childTemplates.length > 0) {
-        const childLines = buildTransformChildrenAsLines(action.childTemplates, context, indent);
+    if (childTemplates && childTemplates.length > 0) {
+        const childLines = buildTransformChildrenAsLines(childTemplates, context, indent);
         newLines.push(...childLines);
     }
     
@@ -295,10 +348,9 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
         newLines = fullText.replace('{{cursor}}', '').split('\n');
     }
     
-    // Replace current line with new content
+    // Replace current line with new content (single-line replace)
     const startPos = { line: cursor.line, ch: 0 };
     const endPos = { line: cursor.line, ch: currentLine.length };
-    
     editor.replaceRange(newLines.join('\n'), startPos, endPos);
     
     // Set cursor position

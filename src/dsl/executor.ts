@@ -106,6 +106,36 @@ async function defaultErrorHandler(
             console.error('[DSL] Failed to update task with error:', updateError);
         }
     }
+
+    // If we have an editor context (e.g. onEnter), append an error child bullet under the current line
+    if (!context.task && context.editor) {
+        try {
+            const editor = context.editor;
+            const cursor = editor.getCursor();
+            const currentLine = editor.getLine(cursor.line);
+            const baseIndent = currentLine.match(/^(\s*)/)?.[1] || '';
+            const indentUnit = '  ';
+            const childIndent = baseIndent + indentUnit;
+            const errorLine = `${childIndent}* Error: ${error.message}`;
+
+            // Insert after existing children of this line (scan forward until indent resets)
+            let insertLine = cursor.line;
+            const totalLines = editor.lineCount();
+            for (let i = cursor.line + 1; i < totalLines; i++) {
+                const line = editor.getLine(i);
+                const lineIndent = line.match(/^(\s*)/)?.[1] || '';
+                if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
+                    break;
+                }
+                insertLine = i;
+            }
+
+            const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
+            editor.replaceRange('\n' + errorLine, insertPos);
+        } catch (e) {
+            console.error('[DSL] Failed to append editor error line:', e);
+        }
+    }
 }
 
 /**
@@ -169,6 +199,12 @@ async function executeActionSequence(
         }
         
         context = await executeActionSafe(action, context);
+
+        // Stop the sequence on the first error.
+        // This prevents running downstream actions (e.g. transform) with missing vars when read/fetch failed.
+        if (context.error) {
+            break;
+        }
     }
     
     return context;
