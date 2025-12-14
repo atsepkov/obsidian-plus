@@ -557,9 +557,14 @@ export default class ObsidianPlus extends Plugin {
                         // Don't interfere with modified Enter (Shift+Enter, Ctrl+Enter, etc.)
                         if (evt.shiftKey || evt.ctrlKey || evt.altKey || evt.metaKey) return;
                         
+                        console.log('[DSL] Enter key pressed');
+                        
                         // Get the active editor
                         const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-                        if (!activeView || !activeView.editor) return;
+                        if (!activeView || !activeView.editor) {
+                                console.log('[DSL] No active markdown view or editor');
+                                return;
+                        }
                         
                         const editor = activeView.editor;
                         
@@ -568,8 +573,11 @@ export default class ObsidianPlus extends Plugin {
                         
                         // If DSL handled it, prevent default behavior
                         if (handled) {
+                                console.log('[DSL] DSL handled Enter, preventing default');
                                 evt.preventDefault();
                                 evt.stopPropagation();
+                        } else {
+                                console.log('[DSL] DSL did not handle Enter');
                         }
                 });
 
@@ -1207,35 +1215,56 @@ export default class ObsidianPlus extends Plugin {
 		const cursor = editor.getCursor();
 		const currentLine = editor.getLine(cursor.line);
 		
+		console.log('[DSL] handleDSLOnEnter called, line:', currentLine, 'cursor.ch:', cursor.ch, 'line.length:', currentLine.length);
+		
 		// Check if cursor is at the end of a line with a tag
-		if (cursor.ch !== currentLine.length) return false;
+		if (cursor.ch !== currentLine.length) {
+			console.log('[DSL] Cursor not at end of line, skipping');
+			return false;
+		}
 		
 		// Find tags in the line
 		const tagMatches = currentLine.match(/#[^\s#]+/g);
-		if (!tagMatches || tagMatches.length === 0) return false;
+		if (!tagMatches || tagMatches.length === 0) {
+			console.log('[DSL] No tags found in line');
+			return false;
+		}
+		
+		console.log('[DSL] Found tags:', tagMatches);
+		console.log('[DSL] Available connectors:', Object.keys(this.settings.webTags));
 		
 		// Check each tag for DSL onEnter handlers
 		for (const tag of tagMatches) {
 			const connector = this.settings.webTags[tag];
+			console.log('[DSL] Checking tag:', tag, 'connector:', connector ? connector.constructor.name : 'none');
 			
-			if (isDSLConnector(connector) && connector.hasTrigger('onEnter')) {
-				const activeFile = this.app.workspace.getActiveFile();
-				if (!activeFile) continue;
-				
-				try {
-					const result = await connector.onEnter(
-						currentLine,
-						activeFile,
-						editor
-					);
-					
-					if (result && result.success) {
-						// DSL handled the enter - return true to indicate we consumed the event
-						console.log('[DSL] onEnter triggered for', tag);
-						return true;
+			if (isDSLConnector(connector)) {
+				console.log('[DSL] Found DSL connector for', tag, 'hasTrigger(onEnter):', connector.hasTrigger('onEnter'));
+				if (connector.hasTrigger('onEnter')) {
+					const activeFile = this.app.workspace.getActiveFile();
+					if (!activeFile) {
+						console.log('[DSL] No active file, skipping');
+						continue;
 					}
-				} catch (error) {
-					console.error(`[DSL] onEnter failed for ${tag}:`, error);
+					
+					try {
+						console.log('[DSL] Calling onEnter for', tag);
+						const result = await connector.onEnter(
+							currentLine,
+							activeFile,
+							editor
+						);
+						
+						if (result && result.success) {
+							// DSL handled the enter - return true to indicate we consumed the event
+							console.log('[DSL] onEnter triggered for', tag);
+							return true;
+						} else {
+							console.log('[DSL] onEnter returned unsuccessful result for', tag, result);
+						}
+					} catch (error) {
+						console.error(`[DSL] onEnter failed for ${tag}:`, error);
+					}
 				}
 			}
 		}

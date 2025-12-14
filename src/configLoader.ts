@@ -155,19 +155,25 @@ export class ConfigLoader {
             'onCancelled', 'onReset', 'onEnter', 'onData'
         ];
         
+        console.log('[ConfigLoader] Parsing triggers for tag:', tag, 'children:', line.children?.length || 0);
+        
         for (const prop of line.children || []) {
             const text = prop.text?.trim() || '';
+            console.log('[ConfigLoader] Checking child:', text);
             // Check if this is a trigger line (e.g., "onEnter:")
             const triggerMatch = text.match(/^(on[A-Za-z]+):?\s*$/);
             if (triggerMatch) {
                 const triggerName = triggerMatch[1] as TriggerType;
+                console.log('[ConfigLoader] Found trigger:', triggerName);
                 if (triggerNames.includes(triggerName)) {
                     // Parse the trigger's children as actions
                     config[triggerName] = this.parseActionsFromChildren(prop.children || []);
+                    console.log('[ConfigLoader] Parsed', config[triggerName].length, 'actions for', triggerName);
                 }
             }
         }
         
+        console.log('[ConfigLoader] Final config for', tag, ':', Object.keys(config));
         return config;
     }
 
@@ -242,7 +248,11 @@ export class ConfigLoader {
                 const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
                 const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
                 const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
-                const tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || [];
+                // Try both level 2 and level 3 headers for Tag Triggers
+                const tagTriggersSection = 
+                    this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || 
+                    this.plugin.query(dataview, '#', { ...commonOptions, header: '## Tag Triggers' }) || [];
+                console.log('[ConfigLoader] Tag Triggers section found:', tagTriggersSection.length, 'items');
 
                 // Process Tag Descriptions
                 [
@@ -373,15 +383,21 @@ export class ConfigLoader {
                 }
 
                 // Process Tag Triggers section (DSL triggers without config: wrapper)
+                console.log('[ConfigLoader] Processing Tag Triggers section, found', tagTriggersSection.length, 'lines');
                 for (const line of tagTriggersSection) {
-                    if (!line.tags || line.tags.length === 0) continue;
+                    if (!line.tags || line.tags.length === 0) {
+                        console.log('[ConfigLoader] Skipping line with no tags:', line.text);
+                        continue;
+                    }
                     const tag = line.tags[0];
+                    console.log('[ConfigLoader] Processing tag:', tag, 'from line:', line.text);
                     
                     // Parse triggers directly from children (no config: wrapper needed)
                     const config = this.parseTriggersForLine(tag, line);
                     
                     // Only process if we found any triggers
                     if (hasDSLTriggers(config)) {
+                        console.log('[ConfigLoader] Config has DSL triggers, creating connector for', tag);
                         const connector = createConnector(tag, config, this.plugin);
                         if (connector) {
                             this.plugin.settings.webTags[tag] = connector;
@@ -391,10 +407,12 @@ export class ConfigLoader {
                                 addTaskTag(tag);
                             }
                             
-                            console.log(`Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));
+                            console.log(`[ConfigLoader] Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));
                         } else {
-                            console.error(`Failed to create DSL connector for tag "${tag}"`);
+                            console.error(`[ConfigLoader] Failed to create DSL connector for tag "${tag}"`);
                         }
+                    } else {
+                        console.log('[ConfigLoader] No DSL triggers found in config for', tag);
                     }
                 }
 
