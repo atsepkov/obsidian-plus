@@ -598,18 +598,41 @@ export default class ObsidianPlus extends Plugin {
                     
                     // Check if any tag has DSL onEnter handler
                     let hasDSLHandler = false;
+                    let matchedTag: string | null = null;
                     for (const tag of tagMatches) {
+                        console.log('[DSL] Checking tag:', tag);
                         const connector = this.settings.webTags[tag];
-                        if (isDSLConnector(connector) && connector.hasTrigger('onEnter')) {
-                            hasDSLHandler = true;
-                            break;
+                        console.log('[DSL] Connector for', tag, ':', connector ? connector.constructor.name : 'null/undefined');
+                        
+                        if (!connector) {
+                            console.log('[DSL] No connector found for tag:', tag);
+                            continue;
+                        }
+                        
+                        const isDSL = isDSLConnector(connector);
+                        console.log('[DSL] isDSLConnector(', tag, '):', isDSL);
+                        
+                        if (isDSL) {
+                            const hasTrigger = connector.hasTrigger('onEnter');
+                            console.log('[DSL] hasTrigger("onEnter") for', tag, ':', hasTrigger);
+                            
+                            if (hasTrigger) {
+                                hasDSLHandler = true;
+                                matchedTag = tag;
+                                console.log('[DSL] Found DSL handler for tag:', tag);
+                                break;
+                            }
                         }
                     }
                     
                     if (!hasDSLHandler) {
                         console.log('[DSL] No DSL onEnter handlers found, allowing default behavior');
+                        console.log('[DSL] Checked tags:', tagMatches);
+                        console.log('[DSL] Available connectors:', Object.keys(this.settings.webTags));
                         return;
                     }
+                    
+                    console.log('[DSL] Using DSL handler for tag:', matchedTag);
                     
                     // We have a DSL handler - prevent default immediately
                     console.log('[DSL] DSL handler found, preventing default Enter behavior');
