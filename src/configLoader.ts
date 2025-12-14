@@ -426,9 +426,14 @@ export class ConfigLoader {
                     
                     // Parse triggers directly from children (no config: wrapper needed)
                     const config = this.parseTriggersForLine(tag, line);
+                    console.log('[ConfigLoader] Parsed config for', tag, ':', config);
+                    console.log('[ConfigLoader] Config keys:', Object.keys(config));
+                    console.log('[ConfigLoader] Config.onEnter:', config.onEnter);
                     
                     // Only process if we found any triggers
-                    if (hasDSLTriggers(config)) {
+                    const hasTriggers = hasDSLTriggers(config);
+                    console.log('[ConfigLoader] hasDSLTriggers result for', tag, ':', hasTriggers);
+                    if (hasTriggers) {
                         console.log('[ConfigLoader] Config has DSL triggers, creating connector for', tag);
                         const connector = createConnector(tag, config, this.plugin);
                         if (connector) {
@@ -447,6 +452,7 @@ export class ConfigLoader {
                         }
                     } else {
                         console.log('[ConfigLoader] No DSL triggers found in config for', tag);
+                        console.log('[ConfigLoader] Config object:', JSON.stringify(config, null, 2));
                     }
                 }
 
