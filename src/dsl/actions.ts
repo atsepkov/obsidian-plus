@@ -54,7 +54,9 @@ function stripMarkdownListPrefix(line: string): { indent: string; bullet: '-' | 
     // - "- [!] text"
     //
     // IMPORTANT: we intentionally do NOT match "*" or "+" bullets here; those have other meaning in this plugin.
-    const m = line.match(/^(\s*)-\s+(?:\[[ xX\/!\-]\]\s+)?(.*)$/);
+    // Be permissive about whitespace: Obsidian/editor can yield tabs or unusual spacing.
+    // Still only match "-" bullets (not "*" or "+").
+    const m = line.match(/^(\s*)-\s*(?:\[[ xX\/!\-]\]\s*)?(.*)$/);
     if (!m) {
         // Return the original line so patterns like "#tag {{x}}" won't accidentally match "* #tag ..." or "+ #tag ..."
         return { indent, bullet: null, content: line };
@@ -77,7 +79,10 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             text = context.line || '';
             // For matching patterns like "#podcast {{url}}", ignore list prefix/checkbox.
             // This allows matching both "- #podcast ..." and indented variants.
-            textForMatching = stripMarkdownListPrefix(text).content;
+            {
+                const stripped = stripMarkdownListPrefix(text);
+                textForMatching = stripped.bullet === '-' ? stripped.content : null;
+            }
             break;
         case 'file':
             if (context.file) {
@@ -116,6 +121,14 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             // Merge extracted values into context
             context.vars = { ...context.vars, ...result.values };
         } else {
+            // High-signal debug to diagnose unexpected mismatches
+            console.warn('[DSL][read] Pattern mismatch', {
+                pattern,
+                haystack,
+                rawLine: text,
+                haystackPrefixCodes: haystack.slice(0, 8).split('').map(c => c.charCodeAt(0)),
+                rawPrefixCodes: text.slice(0, 8).split('').map(c => c.charCodeAt(0))
+            });
             throw new Error(result.error || 'Pattern extraction failed');
         }
     }
