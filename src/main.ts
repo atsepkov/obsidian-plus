@@ -3,7 +3,7 @@ import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
         Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
 } from 'obsidian';
-import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin, keymap } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
@@ -549,76 +549,91 @@ export default class ObsidianPlus extends Plugin {
                 })
                 );
 
-                // Register keydown handler for DSL onEnter triggers
-                this.registerDomEvent(document, 'keydown', async (evt: KeyboardEvent) => {
-                        // Only handle Enter key
-                        if (evt.key !== 'Enter') return;
-                        
-                        // Don't interfere with modified Enter (Shift+Enter, Ctrl+Enter, etc.)
-                        if (evt.shiftKey || evt.ctrlKey || evt.altKey || evt.metaKey) return;
-                        
-                        // Get the active editor SYNCHRONOUSLY before any default behavior
-                        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
-                        if (!activeView || !activeView.editor) {
-                                return;
-                        }
-                        
-                        const editor = activeView.editor;
-                        const cursor = editor.getCursor();
-                        
-                        // Capture line state SYNCHRONOUSLY before default Enter behavior
-                        const currentLine = editor.getLine(cursor.line);
-                        const lineLength = currentLine.length;
-                        
-                        console.log('[DSL] Enter key pressed, current line:', currentLine, 'cursor.ch:', cursor.ch, 'line.length:', lineLength);
-                        
-                        // Only process if cursor is at the end of the line (before Enter creates new line)
-                        if (cursor.ch !== lineLength) {
-                                console.log('[DSL] Cursor not at end of line, allowing default behavior');
-                                return;
-                        }
-                        
-                        // Check for tags SYNCHRONOUSLY
-                        const tagMatches = currentLine.match(/#[^\s#]+/g);
-                        if (!tagMatches || tagMatches.length === 0) {
-                                console.log('[DSL] No tags found, allowing default behavior');
-                                return;
-                        }
-                        
-                        console.log('[DSL] Found tags:', tagMatches);
-                        
-                        // Check if any tag has DSL onEnter handler
-                        let hasDSLHandler = false;
-                        for (const tag of tagMatches) {
+                // Create DSL onEnter keymap extension using CodeMirror's keymap system
+                // This runs BEFORE CodeMirror processes the Enter key, so we can capture the line state correctly
+                const dslOnEnterKeymap = keymap.of([
+                    {
+                        key: "Enter",
+                        run: (view: EditorView) => {
+                            const state = view.state;
+                            const selection = state.selection.main;
+                            const line = state.doc.lineAt(selection.head);
+                            const lineText = line.text;
+                            const cursorPos = selection.head - line.from;
+                            
+                            console.log('[DSL] CodeMirror Enter handler, line:', lineText, 'cursorPos:', cursorPos, 'lineLength:', lineText.length, 'lineNumber:', line.number);
+                            
+                            // Don't interfere with modified Enter (Shift+Enter, Ctrl+Enter, etc.)
+                            // Note: We can't check modifiers here easily, but CodeMirror handles this
+                            
+                            // Only process if cursor is at the end of the line
+                            if (cursorPos !== lineText.length) {
+                                console.log('[DSL] Cursor not at end of line, allowing default');
+                                return false; // Allow default behavior
+                            }
+                            
+                            // Check for tags
+                            const tagMatches = lineText.match(/#[^\s#]+/g);
+                            if (!tagMatches || tagMatches.length === 0) {
+                                console.log('[DSL] No tags found, allowing default');
+                                return false;
+                            }
+                            
+                            console.log('[DSL] Found tags:', tagMatches);
+                            
+                            // Check if any tag has DSL onEnter handler
+                            let hasDSLHandler = false;
+                            for (const tag of tagMatches) {
                                 const connector = this.settings.webTags[tag];
                                 if (isDSLConnector(connector) && connector.hasTrigger('onEnter')) {
-                                        hasDSLHandler = true;
-                                        break;
+                                    hasDSLHandler = true;
+                                    break;
                                 }
+                            }
+                            
+                            if (!hasDSLHandler) {
+                                console.log('[DSL] No DSL handler, allowing default');
+                                return false;
+                            }
+                            
+                            // We have a handler - process it asynchronously
+                            // Note: keymap run function can't be async, so we use setTimeout
+                            console.log('[DSL] DSL handler found, processing...');
+                            
+                            // Get the Obsidian Editor instance
+                            const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                            if (!activeView || !activeView.editor) {
+                                return false;
+                            }
+                            
+                            const editor = activeView.editor;
+                            const activeFile = this.app.workspace.getActiveFile();
+                            if (!activeFile) {
+                                return false;
+                            }
+                            
+                            // Process asynchronously - use setTimeout to process after this function returns
+                            // This allows us to prevent default (return true) while still processing async
+                            setTimeout(async () => {
+                                const handled = await this.handleDSLOnEnter(editor, lineText, line.number - 1);
+                                if (!handled) {
+                                    // If DSL didn't handle it, insert newline manually
+                                    console.log('[DSL] DSL did not handle, inserting newline manually');
+                                    const indent = lineText.match(/^(\s*)/)?.[1] || '';
+                                    const newLine = `${indent}- `;
+                                    const cursor = editor.getCursor();
+                                    editor.replaceRange('\n' + newLine, cursor);
+                                    editor.setCursor({ line: cursor.line + 1, ch: newLine.length });
+                                }
+                            }, 0);
+                            
+                            return true; // Prevent default Enter behavior
                         }
-                        
-                        if (!hasDSLHandler) {
-                                console.log('[DSL] No DSL onEnter handlers found, allowing default behavior');
-                                return;
-                        }
-                        
-                        // We have a DSL handler - prevent default immediately
-                        console.log('[DSL] DSL handler found, preventing default Enter behavior');
-                        evt.preventDefault();
-                        evt.stopPropagation();
-                        
-                        // Now process asynchronously with the captured line state
-                        const handled = await this.handleDSLOnEnter(editor, currentLine, cursor.line);
-                        
-                        if (!handled) {
-                                // If DSL didn't handle it, manually insert the newline
-                                console.log('[DSL] DSL did not handle, inserting newline manually');
-                                const indent = currentLine.match(/^(\s*)/)?.[1] || '';
-                                const newLine = `${indent}- `;
-                                editor.replaceRange('\n' + newLine, cursor);
-                                editor.setCursor({ line: cursor.line + 1, ch: newLine.length });
-                        }
-                });
+                    }
+                ]);
+                
+                // Register the keymap as an editor extension
+                this.registerEditorExtension(dslOnEnterKeymap);
 
 		function expandIfNeeded(evt: MouseEvent) {
 			const target = evt.target.closest('.op-expandable-item');
