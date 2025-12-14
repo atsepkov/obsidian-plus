@@ -6,7 +6,11 @@ import AiConnector from './connectors/aiConnector';
 import DummyConnector from './connectors/dummyConnector';
 import HttpConnector from './connectors/httpConnector';
 import WebhookConnector from './connectors/webhookConnector';
+import DSLConnector from './connectors/dslConnector';
 // import WebConnector from './connectors/webConnector'; // Uncomment if used
+
+// Import DSL utilities for detecting DSL config
+import { hasDSLTriggers, parseDSLConfig } from './dsl';
 
 // Define a type for the connector constructor
 type ConnectorConstructor = new (tag: string, obsidianPlus: ObsidianPlus, config: any) => TagConnector;
@@ -22,6 +26,7 @@ interface ConnectorConfig {
     webhookUrl?: string;
     url?: string;
     provider?: string;
+    dslConfig?: any; // DSL configuration
     // Add other potential config properties
     [key: string]: any; // Allow arbitrary properties
 }
@@ -31,6 +36,7 @@ const connectorMap: ConnectorMap = {
     'ai': AiConnector,
     'basic': TagConnector,
     'dummy': DummyConnector,
+    'dsl': DSLConnector,
     'http': HttpConnector,
     'webhook': WebhookConnector,
     // 'web': WebConnector, // Uncomment if WebConnector is used
@@ -45,6 +51,25 @@ const connectorMap: ConnectorMap = {
  */
 export function createConnector(tag: string, config: ConnectorConfig, obsidianPlusInstance: ObsidianPlus): TagConnector | null {
     let connectorName = config.connector;
+
+    // Check for DSL triggers first (highest priority)
+    if (!connectorName && hasDSLTriggers(config)) {
+        connectorName = 'dsl';
+        
+        // Parse DSL config and attach to config object
+        const parseResult = parseDSLConfig(config, tag);
+        if (parseResult.success && parseResult.config) {
+            config.dslConfig = parseResult.config;
+            console.log(`Detected DSL config for tag ${tag}:`, parseResult.config.triggers.map(t => t.type));
+            if (parseResult.warnings?.length) {
+                console.warn(`DSL parsing warnings for ${tag}:`, parseResult.warnings);
+            }
+        } else {
+            console.error(`Failed to parse DSL config for tag ${tag}:`, parseResult.error);
+            // Fall back to basic connector
+            connectorName = 'basic';
+        }
+    }
 
     // Determine connector type if not explicitly set
     if (!connectorName) {
@@ -81,4 +106,11 @@ export function createConnector(tag: string, config: ConnectorConfig, obsidianPl
              return null; // Return null on fallback failure
         }
     }
+}
+
+/**
+ * Check if a connector is a DSL connector
+ */
+export function isDSLConnector(connector: TagConnector | null): connector is DSLConnector {
+    return connector instanceof DSLConnector;
 }

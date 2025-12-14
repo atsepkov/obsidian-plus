@@ -14,6 +14,8 @@ import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyF
 import { PollingManager } from './pollingManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 import { advanceStatus, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
+import { isDSLConnector } from './connectorFactory';
+import DSLConnector from './connectors/dslConnector';
 
 type ResolvedTaskSearchContext = {
         path: string;
@@ -546,6 +548,30 @@ export default class ObsidianPlus extends Plugin {
                         this.applyTaskTagEnterBehavior(editor);
                 })
                 );
+
+                // Register keydown handler for DSL onEnter triggers
+                this.registerDomEvent(document, 'keydown', async (evt: KeyboardEvent) => {
+                        // Only handle Enter key
+                        if (evt.key !== 'Enter') return;
+                        
+                        // Don't interfere with modified Enter (Shift+Enter, Ctrl+Enter, etc.)
+                        if (evt.shiftKey || evt.ctrlKey || evt.altKey || evt.metaKey) return;
+                        
+                        // Get the active editor
+                        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                        if (!activeView || !activeView.editor) return;
+                        
+                        const editor = activeView.editor;
+                        
+                        // Check if DSL wants to handle this Enter key
+                        const handled = await this.handleDSLOnEnter(editor);
+                        
+                        // If DSL handled it, prevent default behavior
+                        if (handled) {
+                                evt.preventDefault();
+                                evt.stopPropagation();
+                        }
+                });
 
 		function expandIfNeeded(evt: MouseEvent) {
 			const target = evt.target.closest('.op-expandable-item');
@@ -1171,6 +1197,50 @@ export default class ObsidianPlus extends Plugin {
 		const newLine = `${prevIndent}- `;
 		editor.setLine(cursor.line, newLine);
 		editor.setCursor({ line: cursor.line, ch: newLine.length });
+	}
+
+	/**
+	 * Handle DSL onEnter triggers when user presses Enter at end of a tagged line
+	 * This fires before the default Enter behavior so DSL can modify the line
+	 */
+	private async handleDSLOnEnter(editor: Editor): Promise<boolean> {
+		const cursor = editor.getCursor();
+		const currentLine = editor.getLine(cursor.line);
+		
+		// Check if cursor is at the end of a line with a tag
+		if (cursor.ch !== currentLine.length) return false;
+		
+		// Find tags in the line
+		const tagMatches = currentLine.match(/#[^\s#]+/g);
+		if (!tagMatches || tagMatches.length === 0) return false;
+		
+		// Check each tag for DSL onEnter handlers
+		for (const tag of tagMatches) {
+			const connector = this.settings.webTags[tag];
+			
+			if (isDSLConnector(connector) && connector.hasTrigger('onEnter')) {
+				const activeFile = this.app.workspace.getActiveFile();
+				if (!activeFile) continue;
+				
+				try {
+					const result = await connector.onEnter(
+						currentLine,
+						activeFile,
+						editor
+					);
+					
+					if (result && result.success) {
+						// DSL handled the enter - return true to indicate we consumed the event
+						console.log('[DSL] onEnter triggered for', tag);
+						return true;
+					}
+				} catch (error) {
+					console.error(`[DSL] onEnter failed for ${tag}:`, error);
+				}
+			}
+		}
+		
+		return false;
 	}
 
         private highlightFlaggedLinesExtension(getFlaggedLines: () => number[]) {

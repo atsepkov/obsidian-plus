@@ -1,0 +1,468 @@
+/**
+ * DSL Type Definitions
+ * 
+ * This module defines TypeScript interfaces for the DSL system including:
+ * - AST nodes for parsed DSL actions
+ * - Pattern tokens for variable extraction
+ * - Execution context for runtime
+ * - Trigger definitions
+ */
+
+import { App, TFile, Editor } from 'obsidian';
+import { Task } from 'obsidian-dataview';
+import { TaskManager } from '../taskManager';
+import { TagQuery } from '../tagQuery';
+
+// ============================================================================
+// Pattern Types
+// ============================================================================
+
+/**
+ * Types of pattern tokens that can be extracted from text
+ */
+export type PatternTokenType = 
+    | 'simple'      // {{var}} - simple capture
+    | 'list'        // {{var+}} or {{var+;}} - list with delimiter
+    | 'greedy'      // {{var*}} - greedy match (rest of line)
+    | 'regex'       // {{var:pattern}} - regex-validated capture
+    | 'optional';   // {{var?}} - optional capture (no error if missing)
+
+/**
+ * A parsed pattern token from a template string
+ */
+export interface PatternToken {
+    /** Variable name to store the extracted value */
+    name: string;
+    /** Type of pattern matching to use */
+    type: PatternTokenType;
+    /** Delimiter for list types (default: ',') */
+    delimiter?: string;
+    /** Regex pattern for validated captures */
+    regex?: RegExp;
+    /** Original raw token string */
+    raw: string;
+    /** Whether this token is optional */
+    optional: boolean;
+}
+
+/**
+ * Result of pattern extraction from text
+ */
+export interface PatternExtractionResult {
+    /** Whether extraction was successful */
+    success: boolean;
+    /** Extracted variable values */
+    values: Record<string, any>;
+    /** Error message if extraction failed */
+    error?: string;
+    /** Unmatched portion of the text */
+    remainder?: string;
+}
+
+// ============================================================================
+// AST Node Types
+// ============================================================================
+
+/**
+ * Base interface for all AST action nodes
+ */
+export interface BaseActionNode {
+    /** The action type (read, fetch, transform, etc.) */
+    type: ActionType;
+    /** Child actions (for nested structures) */
+    children?: ActionNode[];
+    /** Error handler actions */
+    onError?: ActionNode[];
+    /** Source line number for debugging */
+    sourceLine?: number;
+}
+
+/**
+ * All supported action types
+ */
+export type ActionType = 
+    | 'read'
+    | 'fetch'
+    | 'transform'
+    | 'build'
+    | 'query'
+    | 'set'
+    | 'match'
+    | 'if'
+    | 'else'
+    | 'log'
+    | 'notify'
+    | 'extract'
+    | 'foreach'
+    | 'return';
+
+/**
+ * Read action - reads line, file, or selection
+ */
+export interface ReadActionNode extends BaseActionNode {
+    type: 'read';
+    /** Pattern to match against (e.g., `#podcast {{url}}`) */
+    pattern: string;
+    /** Source to read from: 'line', 'file', 'selection', 'children' */
+    source?: 'line' | 'file' | 'selection' | 'children';
+}
+
+/**
+ * Fetch action - makes HTTP requests
+ */
+export interface FetchActionNode extends BaseActionNode {
+    type: 'fetch';
+    /** URL template */
+    url: string;
+    /** HTTP method */
+    method?: 'GET' | 'POST' | 'PUT' | 'DELETE' | 'PATCH';
+    /** Request headers */
+    headers?: Record<string, string>;
+    /** Request body template */
+    body?: string;
+    /** Variable name to store response */
+    as?: string;
+    /** Authentication configuration */
+    auth?: AuthConfig;
+}
+
+/**
+ * Authentication configuration for fetch
+ */
+export interface AuthConfig {
+    type: 'basic' | 'bearer' | 'apiKey';
+    /** For basic auth */
+    username?: string;
+    password?: string;
+    /** For bearer auth */
+    token?: string;
+    /** For API key auth */
+    apiKey?: string;
+    /** Header name for API key (default: 'X-API-Key') */
+    headerName?: string;
+}
+
+/**
+ * Transform action - modifies current line/adds children
+ */
+export interface TransformActionNode extends BaseActionNode {
+    type: 'transform';
+    /** Template for the new line content */
+    template?: string;
+    /** Child bullet templates */
+    childTemplates?: TransformChild[];
+    /** Whether to replace or append */
+    mode?: 'replace' | 'append' | 'prepend';
+}
+
+/**
+ * A child bullet in a transform action
+ */
+export interface TransformChild {
+    /** Template string for this child */
+    template: string;
+    /** Nested children */
+    children?: TransformChild[];
+    /** Indentation level */
+    indent: number;
+}
+
+/**
+ * Build action - constructs JSON objects
+ */
+export interface BuildActionNode extends BaseActionNode {
+    type: 'build';
+    /** Variable name to store the built object */
+    name: string;
+    /** Key-value pairs to build */
+    properties?: Record<string, string>;
+}
+
+/**
+ * Query action - queries tasks via TagQuery
+ */
+export interface QueryActionNode extends BaseActionNode {
+    type: 'query';
+    /** Tag or identifier to query */
+    identifier: string;
+    /** Variable name to store results */
+    as?: string;
+    /** Query options */
+    options?: Record<string, any>;
+}
+
+/**
+ * Set action - sets a variable in context
+ */
+export interface SetActionNode extends BaseActionNode {
+    type: 'set';
+    /** Variable name */
+    name: string;
+    /** Value template */
+    value: string;
+}
+
+/**
+ * Match action - extracts patterns from text
+ */
+export interface MatchActionNode extends BaseActionNode {
+    type: 'match';
+    /** Pattern to match */
+    pattern: string;
+    /** Text to match against (template) */
+    in: string;
+}
+
+/**
+ * If action - conditional execution
+ */
+export interface IfActionNode extends BaseActionNode {
+    type: 'if';
+    /** Condition template (truthy/falsy check) */
+    condition: string;
+    /** Actions to execute if true */
+    then: ActionNode[];
+    /** Actions to execute if false */
+    else?: ActionNode[];
+}
+
+/**
+ * Else action - else branch (used during parsing)
+ */
+export interface ElseActionNode extends BaseActionNode {
+    type: 'else';
+}
+
+/**
+ * Log action - debug logging
+ */
+export interface LogActionNode extends BaseActionNode {
+    type: 'log';
+    /** Message template */
+    message: string;
+}
+
+/**
+ * Notify action - shows Obsidian notice
+ */
+export interface NotifyActionNode extends BaseActionNode {
+    type: 'notify';
+    /** Message template */
+    message: string;
+    /** Duration in milliseconds */
+    duration?: number;
+}
+
+/**
+ * Extract action - regex extraction
+ */
+export interface ExtractActionNode extends BaseActionNode {
+    type: 'extract';
+    /** Regex pattern */
+    pattern: string;
+    /** Text to extract from (template) */
+    from: string;
+    /** Variable name for match groups */
+    as?: string;
+}
+
+/**
+ * Foreach action - iterate over arrays
+ */
+export interface ForeachActionNode extends BaseActionNode {
+    type: 'foreach';
+    /** Variable containing the array */
+    items: string;
+    /** Variable name for current item */
+    as: string;
+    /** Actions to execute for each item */
+    do: ActionNode[];
+}
+
+/**
+ * Return action - early exit from execution
+ */
+export interface ReturnActionNode extends BaseActionNode {
+    type: 'return';
+    /** Optional return value template */
+    value?: string;
+}
+
+/**
+ * Union type of all action nodes
+ */
+export type ActionNode = 
+    | ReadActionNode
+    | FetchActionNode
+    | TransformActionNode
+    | BuildActionNode
+    | QueryActionNode
+    | SetActionNode
+    | MatchActionNode
+    | IfActionNode
+    | ElseActionNode
+    | LogActionNode
+    | NotifyActionNode
+    | ExtractActionNode
+    | ForeachActionNode
+    | ReturnActionNode;
+
+// ============================================================================
+// Trigger Types
+// ============================================================================
+
+/**
+ * Trigger types that can initiate DSL execution
+ */
+export type TriggerType = 
+    | 'onTrigger'    // User checks off the task
+    | 'onDone'       // Task marked as done (x)
+    | 'onError'      // Task marked with error (!)
+    | 'onInProgress' // Task marked in progress (/)
+    | 'onCancelled'  // Task marked cancelled (-)
+    | 'onReset'      // Task unchecked
+    | 'onEnter'      // User presses Enter at end of line
+    | 'onData';      // Receives data from polling
+
+/**
+ * A parsed trigger with its action sequence
+ */
+export interface DSLTrigger {
+    /** Type of trigger */
+    type: TriggerType;
+    /** Sequence of actions to execute */
+    actions: ActionNode[];
+}
+
+/**
+ * Complete DSL configuration for a tag
+ */
+export interface DSLConfig {
+    /** All configured triggers */
+    triggers: DSLTrigger[];
+    /** Tag this config is for */
+    tag: string;
+    /** Raw config object for reference */
+    rawConfig?: Record<string, any>;
+}
+
+// ============================================================================
+// Execution Context
+// ============================================================================
+
+/**
+ * Cursor position for {{cursor}} placeholder
+ */
+export interface CursorPosition {
+    line: number;
+    ch: number;
+}
+
+/**
+ * Runtime execution context for DSL actions
+ */
+export interface DSLContext {
+    // Task context
+    /** The task being operated on */
+    task?: Task;
+    /** Current line text */
+    line: string;
+    /** Current file */
+    file: TFile;
+    /** Editor instance (if available) */
+    editor?: Editor;
+    
+    // Variable storage
+    /** Extracted and computed variables */
+    vars: Record<string, any>;
+    
+    // Special variables (also accessible via vars)
+    /** Last fetch response */
+    response?: any;
+    /** Last error */
+    error?: Error;
+    /** Cursor position for transform */
+    cursor?: CursorPosition;
+    
+    // Services
+    /** Obsidian App instance */
+    app: App;
+    /** TaskManager for task operations */
+    taskManager: TaskManager;
+    /** TagQuery for querying tasks */
+    tagQuery: TagQuery;
+    /** Dataview API */
+    dv?: any;
+    
+    // Execution state
+    /** Whether execution should stop (return was called) */
+    shouldReturn: boolean;
+    /** Return value if any */
+    returnValue?: any;
+    /** Current trigger type */
+    triggerType?: TriggerType;
+    /** Tag being processed */
+    tag?: string;
+}
+
+/**
+ * Options for creating a new execution context
+ */
+export interface CreateContextOptions {
+    task?: Task;
+    line?: string;
+    file: TFile;
+    editor?: Editor;
+    app: App;
+    taskManager: TaskManager;
+    tagQuery: TagQuery;
+    dv?: any;
+    triggerType?: TriggerType;
+    tag?: string;
+    initialVars?: Record<string, any>;
+}
+
+/**
+ * Result of DSL execution
+ */
+export interface DSLExecutionResult {
+    /** Whether execution completed successfully */
+    success: boolean;
+    /** Any return value */
+    value?: any;
+    /** Error if execution failed */
+    error?: Error;
+    /** Final context state */
+    context: DSLContext;
+}
+
+// ============================================================================
+// Parser Types
+// ============================================================================
+
+/**
+ * A raw bullet item from config parsing
+ */
+export interface RawConfigItem {
+    /** The text content */
+    text: string;
+    /** Child items */
+    children?: RawConfigItem[];
+    /** Indentation level */
+    indent?: number;
+}
+
+/**
+ * Result of parsing DSL config
+ */
+export interface ParseResult {
+    /** Whether parsing was successful */
+    success: boolean;
+    /** Parsed DSL config */
+    config?: DSLConfig;
+    /** Error message if parsing failed */
+    error?: string;
+    /** Warnings during parsing */
+    warnings?: string[];
+}
+
