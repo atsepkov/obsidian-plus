@@ -249,9 +249,10 @@ export class ConfigLoader {
                 const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
                 const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
                 // Try both level 2 and level 3 headers for Tag Triggers
-                const tagTriggersSection = 
-                    this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || 
-                    this.plugin.query(dataview, '#', { ...commonOptions, header: '## Tag Triggers' }) || [];
+                let tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || [];
+                if (tagTriggersSection.length === 0) {
+                    tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '## Tag Triggers' }) || [];
+                }
                 console.log('[ConfigLoader] Tag Triggers section found:', tagTriggersSection.length, 'items');
 
                 // Process Tag Descriptions
