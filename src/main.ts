@@ -1213,20 +1213,32 @@ export default class ObsidianPlus extends Plugin {
 	 */
 	private async handleDSLOnEnter(editor: Editor): Promise<boolean> {
 		const cursor = editor.getCursor();
-		const currentLine = editor.getLine(cursor.line);
+		let currentLine = editor.getLine(cursor.line);
+		let lineToProcess = currentLine;
+		let lineNumber = cursor.line;
 		
 		console.log('[DSL] handleDSLOnEnter called, line:', currentLine, 'cursor.ch:', cursor.ch, 'line.length:', currentLine.length);
 		
-		// Check if cursor is at the end of a line with a tag
-		if (cursor.ch !== currentLine.length) {
-			console.log('[DSL] Cursor not at end of line, skipping');
-			return false;
+		// If we're at the start of a new empty/minimal line (just created by Enter),
+		// use the previous line instead
+		if (cursor.ch === 0 && (currentLine.trim() === '' || currentLine.trim() === '-')) {
+			if (lineNumber > 0) {
+				lineNumber = lineNumber - 1;
+				lineToProcess = editor.getLine(lineNumber);
+				console.log('[DSL] Detected new line, using previous line:', lineToProcess);
+			}
+		} else {
+			// Check if cursor is at the end of a line with a tag
+			if (cursor.ch !== currentLine.length) {
+				console.log('[DSL] Cursor not at end of line, skipping');
+				return false;
+			}
 		}
 		
-		// Find tags in the line
-		const tagMatches = currentLine.match(/#[^\s#]+/g);
+		// Find tags in the line we're processing
+		const tagMatches = lineToProcess.match(/#[^\s#]+/g);
 		if (!tagMatches || tagMatches.length === 0) {
-			console.log('[DSL] No tags found in line');
+			console.log('[DSL] No tags found in line:', lineToProcess);
 			return false;
 		}
 		
@@ -1248,9 +1260,9 @@ export default class ObsidianPlus extends Plugin {
 					}
 					
 					try {
-						console.log('[DSL] Calling onEnter for', tag);
+						console.log('[DSL] Calling onEnter for', tag, 'with line:', lineToProcess);
 						const result = await connector.onEnter(
-							currentLine,
+							lineToProcess,  // Use the line we determined (previous line if on new line)
 							activeFile,
 							editor
 						);
