@@ -5,12 +5,12 @@
  * interpolation of templates with context values.
  * 
  * Supported patterns:
- * - {{var}}       - Simple variable capture
- * - {{var+}}      - Comma-separated list to array
- * - {{var+;}}     - Custom delimiter list (e.g., semicolon)
- * - {{var*}}      - Greedy match (rest of line)
- * - {{var:regex}} - Regex-validated capture
- * - {{var?}}      - Optional capture (no error if missing)
+ * - {{var}}        - Simple variable capture
+ * - {{var+}}       - Space-separated list to array
+ * - {{var+:, }}    - Custom delimiter list (colon followed by delimiter)
+ * - {{var*}}       - Greedy match (rest of line)
+ * - {{var:regex}}  - Regex-validated capture
+ * - {{var?}}       - Optional capture (no error if missing)
  */
 
 import type { PatternToken, PatternTokenType, PatternExtractionResult } from './types';
@@ -58,8 +58,14 @@ export function parsePattern(pattern: string): PatternToken[] {
             switch (modifier) {
                 case '+':
                     type = 'list';
-                    // Extra contains the delimiter if specified (e.g., ";" for {{var+;}})
-                    delimiter = extra?.trim() || ',';
+                    // Delimiter can be specified after colon: {{var+:, }} for ", " delimiter
+                    // If no colon, default to space
+                    if (extra && extra.startsWith(':')) {
+                        // Extract delimiter after the colon (don't trim - delimiter may be spaces)
+                        delimiter = extra.slice(1);
+                    } else {
+                        delimiter = ' '; // Default to space-separated
+                    }
                     break;
                 case '*':
                     type = 'greedy';

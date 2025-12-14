@@ -27,6 +27,7 @@ export type {
     ExtractActionNode,
     ForeachActionNode,
     ReturnActionNode,
+    AppendActionNode,
     AuthConfig,
     TriggerType,
     DSLTrigger,
@@ -75,7 +76,8 @@ export {
     notifyAction,
     extractAction,
     foreachAction,
-    returnAction
+    returnAction,
+    appendAction
 } from './actions';
 export type { ActionHandler } from './actions';
 

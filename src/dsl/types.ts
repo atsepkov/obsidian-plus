@@ -94,7 +94,8 @@ export type ActionType =
     | 'notify'
     | 'extract'
     | 'foreach'
-    | 'return';
+    | 'return'
+    | 'append';
 
 /**
  * Read action - reads line, file, or selection
@@ -289,6 +290,17 @@ export interface ReturnActionNode extends BaseActionNode {
 }
 
 /**
+ * Append action - appends a child bullet to the current task/line
+ */
+export interface AppendActionNode extends BaseActionNode {
+    type: 'append';
+    /** Template for the content to append */
+    template: string;
+    /** Indentation level relative to parent (default: 1) */
+    indent?: number;
+}
+
+/**
  * Union type of all action nodes
  */
 export type ActionNode = 
@@ -305,7 +317,8 @@ export type ActionNode =
     | NotifyActionNode
     | ExtractActionNode
     | ForeachActionNode
-    | ReturnActionNode;
+    | ReturnActionNode
+    | AppendActionNode;
 
 // ============================================================================
 // Trigger Types

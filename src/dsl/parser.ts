@@ -27,6 +27,7 @@ import type {
     ExtractActionNode,
     ForeachActionNode,
     ReturnActionNode,
+    AppendActionNode,
     AuthConfig
 } from './types';
 import { cleanTemplate } from './patternMatcher';
@@ -62,7 +63,8 @@ const ACTION_TYPES: ActionType[] = [
     'notify',
     'extract',
     'foreach',
-    'return'
+    'return',
+    'append'
 ];
 
 /**
@@ -257,6 +259,8 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
             return parseForeachAction(mainKV.value, inlineKV, regularChildren, onError);
         case 'return':
             return parseReturnAction(mainKV.value, onError);
+        case 'append':
+            return parseAppendAction(mainKV.value, regularChildren, onError);
         default:
             return null;
     }
@@ -554,6 +558,24 @@ function parseReturnAction(value: string, onError?: ActionNode[]): ReturnActionN
     return {
         type: 'return',
         value: value ? cleanTemplate(value) : undefined,
+        onError
+    };
+}
+
+/**
+ * Parse an append action
+ */
+function parseAppendAction(
+    template: string,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): AppendActionNode {
+    const options = parseChildrenAsRecord(children);
+    
+    return {
+        type: 'append',
+        template: cleanTemplate(template),
+        indent: options.indent ? parseInt(options.indent, 10) : undefined,
         onError
     };
 }

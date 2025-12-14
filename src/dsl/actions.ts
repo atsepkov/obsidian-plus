@@ -22,6 +22,7 @@ import type {
     ExtractActionNode,
     ForeachActionNode,
     ReturnActionNode,
+    AppendActionNode,
     TransformChild
 } from './types';
 import { 
@@ -590,6 +591,62 @@ export const returnAction: ActionHandler<ReturnActionNode> = async (action, cont
 };
 
 /**
+ * Append action handler
+ * Appends a child bullet to the current task/line
+ */
+export const appendAction: ActionHandler<AppendActionNode> = async (action, context) => {
+    const content = interpolate(action.template, context.vars);
+    const indentLevel = action.indent ?? 1;
+    
+    // If we have a task context, use taskManager to append child
+    if (context.task && context.taskManager) {
+        await context.taskManager.updateDvTask(context.task, {
+            appendChildren: [{
+                indent: indentLevel - 1, // taskManager uses 0-based indent
+                text: content
+            }]
+        });
+        return context;
+    }
+    
+    // For editor context (like onEnter), append directly
+    if (context.editor) {
+        const editor = context.editor;
+        const cursor = editor.getCursor();
+        const currentLine = editor.getLine(cursor.line);
+        const baseIndent = currentLine.match(/^(\s*)/)?.[1] || '';
+        const indentUnit = '  '; // 2 spaces per indent level
+        const childIndent = baseIndent + indentUnit.repeat(indentLevel);
+        
+        // Find the end of the current block (last child or current line)
+        let insertLine = cursor.line;
+        const totalLines = editor.lineCount();
+        
+        // Scan forward to find the last child at this or deeper indentation
+        for (let i = cursor.line + 1; i < totalLines; i++) {
+            const line = editor.getLine(i);
+            const lineIndent = line.match(/^(\s*)/)?.[1] || '';
+            if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
+                break;
+            }
+            insertLine = i;
+        }
+        
+        // Insert the new child line after the last child
+        const newLine = `${childIndent}- ${content}`;
+        const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
+        editor.replaceRange('\n' + newLine, insertPos);
+        
+        // Update cursor to end of new line
+        context.cursor = { line: insertLine + 1, ch: newLine.length };
+        
+        return context;
+    }
+    
+    throw new Error('No task or editor available for append action');
+};
+
+/**
  * Registry of all action handlers
  */
 export const actionHandlers: Record<string, ActionHandler<any>> = {
@@ -605,7 +662,8 @@ export const actionHandlers: Record<string, ActionHandler<any>> = {
     notify: notifyAction,
     extract: extractAction,
     foreach: foreachAction,
-    return: returnAction
+    return: returnAction,
+    append: appendAction
 };
 
 /**

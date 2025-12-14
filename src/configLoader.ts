@@ -5,6 +5,7 @@ import { createConnector } from './connectorFactory';
 import AiConnector from './connectors/aiConnector';
 // import WebConnector from './connectors/webConnector'; // Uncomment if used
 import { parseStatusCycleConfig } from "./statusFilters";
+import { hasDSLTriggers, TriggerType } from './dsl';
 
 // Define ConnectorConfig interface locally for now
 interface ConnectorConfig {
@@ -143,6 +144,52 @@ export class ConfigLoader {
         return config;
     }
 
+    /**
+     * Parse DSL triggers directly from tag children in Tag Triggers section
+     * In this section, triggers are direct children without 'config:' wrapper
+     */
+    private parseTriggersForLine(tag: string, line: any): ConnectorConfig {
+        const config: ConnectorConfig = {};
+        const triggerNames: TriggerType[] = [
+            'onTrigger', 'onDone', 'onError', 'onInProgress', 
+            'onCancelled', 'onReset', 'onEnter', 'onData'
+        ];
+        
+        for (const prop of line.children || []) {
+            const text = prop.text?.trim() || '';
+            // Check if this is a trigger line (e.g., "onEnter:")
+            const triggerMatch = text.match(/^(on[A-Za-z]+):?\s*$/);
+            if (triggerMatch) {
+                const triggerName = triggerMatch[1] as TriggerType;
+                if (triggerNames.includes(triggerName)) {
+                    // Parse the trigger's children as actions
+                    config[triggerName] = this.parseActionsFromChildren(prop.children || []);
+                }
+            }
+        }
+        
+        return config;
+    }
+
+    /**
+     * Convert child nodes to action format for DSL parser
+     */
+    private parseActionsFromChildren(children: any[]): any[] {
+        return children.map(child => ({
+            text: child.text || '',
+            children: child.children ? this.parseActionsFromChildren(child.children) : []
+        }));
+    }
+
+    /**
+     * Check if a config has task-promoting triggers (not onEnter)
+     * Tags with these triggers should be added to taskTags
+     */
+    private hasTaskTriggers(config: ConnectorConfig): boolean {
+        const taskTriggers: TriggerType[] = ['onTrigger', 'onDone', 'onError', 'onInProgress', 'onCancelled', 'onReset'];
+        return taskTriggers.some(trigger => trigger in config && config[trigger]);
+    }
+
     // Moved from main.ts
     public async loadTaskTagsFromFile(): Promise<void> {
         const path = this.plugin.settings.tagListFilePath;
@@ -195,6 +242,7 @@ export class ConfigLoader {
                 const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
                 const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
                 const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
+                const tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || [];
 
                 // Process Tag Descriptions
                 [
@@ -321,6 +369,32 @@ export class ConfigLoader {
                         addTaskTag(tag);
                         const config = await this.resolveConfigForLine(tag, line);
                         this.applyStatusCycle(tag, config);
+                    }
+                }
+
+                // Process Tag Triggers section (DSL triggers without config: wrapper)
+                for (const line of tagTriggersSection) {
+                    if (!line.tags || line.tags.length === 0) continue;
+                    const tag = line.tags[0];
+                    
+                    // Parse triggers directly from children (no config: wrapper needed)
+                    const config = this.parseTriggersForLine(tag, line);
+                    
+                    // Only process if we found any triggers
+                    if (hasDSLTriggers(config)) {
+                        const connector = createConnector(tag, config, this.plugin);
+                        if (connector) {
+                            this.plugin.settings.webTags[tag] = connector;
+                            
+                            // Add to taskTags only if it has task-promoting triggers (not just onEnter)
+                            if (this.hasTaskTriggers(config)) {
+                                addTaskTag(tag);
+                            }
+                            
+                            console.log(`Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));
+                        } else {
+                            console.error(`Failed to create DSL connector for tag "${tag}"`);
+                        }
                     }
                 }
 
