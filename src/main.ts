@@ -551,10 +551,14 @@ export default class ObsidianPlus extends Plugin {
 
                 // Create DSL onEnter keymap extension using CodeMirror's keymap system
                 // This runs BEFORE CodeMirror processes the Enter key, so we can capture the line state correctly
+                const plugin = this; // Capture plugin instance for use in keymap
                 const dslOnEnterKeymap = keymap.of([
                     {
                         key: "Enter",
                         run: (view: EditorView) => {
+                            // Log immediately to verify keymap is being called
+                            console.log('[DSL] CodeMirror keymap Enter handler triggered');
+                            
                             const state = view.state;
                             const selection = state.selection.main;
                             const line = state.doc.lineAt(selection.head);
@@ -584,7 +588,7 @@ export default class ObsidianPlus extends Plugin {
                             // Check if any tag has DSL onEnter handler
                             let hasDSLHandler = false;
                             for (const tag of tagMatches) {
-                                const connector = this.settings.webTags[tag];
+                                const connector = plugin.settings.webTags[tag]; // Use captured plugin instance
                                 if (isDSLConnector(connector) && connector.hasTrigger('onEnter')) {
                                     hasDSLHandler = true;
                                     break;
@@ -601,21 +605,23 @@ export default class ObsidianPlus extends Plugin {
                             console.log('[DSL] DSL handler found, processing...');
                             
                             // Get the Obsidian Editor instance
-                            const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                            const activeView = plugin.app.workspace.getActiveViewOfType(MarkdownView); // Use captured plugin instance
                             if (!activeView || !activeView.editor) {
+                                console.log('[DSL] No active view or editor found');
                                 return false;
                             }
                             
                             const editor = activeView.editor;
-                            const activeFile = this.app.workspace.getActiveFile();
+                            const activeFile = plugin.app.workspace.getActiveFile(); // Use captured plugin instance
                             if (!activeFile) {
+                                console.log('[DSL] No active file found');
                                 return false;
                             }
                             
                             // Process asynchronously - use setTimeout to process after this function returns
                             // This allows us to prevent default (return true) while still processing async
                             setTimeout(async () => {
-                                const handled = await this.handleDSLOnEnter(editor, lineText, line.number - 1);
+                                const handled = await plugin.handleDSLOnEnter(editor, lineText, line.number - 1); // Use captured plugin instance
                                 if (!handled) {
                                     // If DSL didn't handle it, insert newline manually
                                     console.log('[DSL] DSL did not handle, inserting newline manually');
