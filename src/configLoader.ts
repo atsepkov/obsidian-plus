@@ -198,7 +198,9 @@ export class ConfigLoader {
 
     // Moved from main.ts
     public async loadTaskTagsFromFile(): Promise<void> {
+        console.log('[ConfigLoader] ===== loadTaskTagsFromFile called =====');
         const path = this.plugin.settings.tagListFilePath;
+        console.log('[ConfigLoader] Tag list file path:', path);
 
         if (!path) {
             // If no path is configured, clear derived tag state to avoid stale connectors
@@ -210,7 +212,7 @@ export class ConfigLoader {
             this.plugin.settings.projectTags = [];
             this.plugin.settings.statusCycles = {};
 
-            console.log("No tag list file specified, reset tags to empty");
+            console.log("[ConfigLoader] No tag list file specified, reset tags to empty");
             // Trigger update for editor enhancer if needed (will be handled in main.ts)
             // this.plugin.editorEnhancer?.updateDecorations(); // Example if enhancer existed
             this.plugin.updateFlaggedLines(this.app.workspace.getActiveFile()); // Call existing update method
@@ -219,11 +221,12 @@ export class ConfigLoader {
 
         const dataview = (this.app.plugins.plugins as any)["dataview"]?.api;
         if (!dataview) {
-            console.error("Dataview plugin not found or not ready. Cannot load tags.");
+            console.error("[ConfigLoader] Dataview plugin not found or not ready. Cannot load tags.");
             new Notice("Dataview plugin needed to load tags.");
             this.plugin.updateFlaggedLines(this.app.workspace.getActiveFile()); // Update flags even on error
             return;
         }
+        console.log('[ConfigLoader] Dataview API found');
 
         // Reset relevant parts of plugin settings before loading
         this.plugin.settings.taskTags = [];
@@ -237,9 +240,25 @@ export class ConfigLoader {
         try {
             const file = this.app.vault.getAbstractFileByPath(path);
             if (file && file instanceof TFile) {
+                console.log('[ConfigLoader] Loading file:', file.path);
+
+                // Log all headings in the file to debug header matching
+                const cache = this.app.metadataCache.getFileCache(file);
+                if (cache && cache.headings) {
+                    console.log('[ConfigLoader] Headings found in file:', cache.headings.map(h => `${'#'.repeat(h.level)} ${h.heading}`));
+                } else {
+                    console.log('[ConfigLoader] No headings cache found for file');
+                }
 
                 // Use DataviewQuery to get summary data, requesting onlyReturn
                 const commonOptions = { currentFile: file.path, onlyPrefixTags: true, onlyReturn: true };
+
+                // Test query: try to find #podcast without header filter to see if it exists at all
+                const testPodcastQuery = this.plugin.query(dataview, '#podcast', { ...commonOptions, onlyReturn: true }) || [];
+                console.log('[ConfigLoader] Test query for #podcast (no header filter):', testPodcastQuery.length, 'items');
+                if (testPodcastQuery.length > 0) {
+                    console.log('[ConfigLoader] Found #podcast at lines:', testPodcastQuery.map((item: any) => item.line || item.position?.start?.line));
+                }
 
                 const basicTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
                 const autoTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
@@ -248,12 +267,24 @@ export class ConfigLoader {
                 const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
                 const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
                 const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
+                
                 // Try both level 2 and level 3 headers for Tag Triggers
+                console.log('[ConfigLoader] Querying for ### Tag Triggers...');
                 let tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Tag Triggers' }) || [];
+                console.log('[ConfigLoader] First query (### Tag Triggers) returned:', tagTriggersSection.length, 'items');
                 if (tagTriggersSection.length === 0) {
+                    console.log('[ConfigLoader] First query empty, trying ## Tag Triggers...');
                     tagTriggersSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '## Tag Triggers' }) || [];
+                    console.log('[ConfigLoader] Second query (## Tag Triggers) returned:', tagTriggersSection.length, 'items');
                 }
-                console.log('[ConfigLoader] Tag Triggers section found:', tagTriggersSection.length, 'items');
+                console.log('[ConfigLoader] Final Tag Triggers section found:', tagTriggersSection.length, 'items');
+                if (tagTriggersSection.length > 0) {
+                    console.log('[ConfigLoader] Tag Triggers items:', tagTriggersSection.map((item: any) => ({
+                        text: item.text,
+                        tags: item.tags,
+                        line: item.line || item.position?.start?.line
+                    })));
+                }
 
                 // Process Tag Descriptions
                 [
@@ -420,14 +451,16 @@ export class ConfigLoader {
                 this.plugin.settings.projects = projects;
                 this.plugin.settings.projectTags = projectTags;
                 this.plugin.settings.taskTags = taskTags;
-                console.log("Loaded tags from file:", this.plugin.settings.taskTags);
-                console.log("Configured connectors:", Object.keys(this.plugin.settings.webTags));
+                console.log("[ConfigLoader] Loaded tags from file:", this.plugin.settings.taskTags);
+                console.log("[ConfigLoader] Configured connectors:", Object.keys(this.plugin.settings.webTags));
+                console.log("[ConfigLoader] ===== loadTaskTagsFromFile completed successfully ===== ");
 
             } else {
-                 console.warn(`Tag list file not found or not a TFile: "${path}"`);
+                 console.warn(`[ConfigLoader] Tag list file not found or not a TFile: "${path}"`);
             }
         } catch (err) {
-            console.error(`Error processing tag list file at "${path}":`, err);
+            console.error(`[ConfigLoader] Error processing tag list file at "${path}":`, err);
+            console.error('[ConfigLoader] Error stack:', err instanceof Error ? err.stack : String(err));
         }
 
         // Trigger update for editor enhancer after loading/error
