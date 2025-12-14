@@ -1361,7 +1361,7 @@ export default class ObsidianPlus extends Plugin {
                         }
 
                         const indent = this.getLineIndentation(rawLine);
-                        if (indent > currentIndent) {
+                        if (line !== startLine && indent >= currentIndent) {
                                 continue;
                         }
 
@@ -1370,21 +1370,37 @@ export default class ObsidianPlus extends Plugin {
                                 continue;
                         }
 
-                        const tags: string[] = [];
+                        const contentAfterBullet = trimmed.replace(/^[-*+]\s*(\[[ xX-]\]\s*)?/, "");
+
+                        const tags: { tag: string; index: number }[] = [];
                         const tagPattern = /#[^\s#]+/g;
                         let match: RegExpExecArray | null;
-                        while ((match = tagPattern.exec(trimmed)) !== null) {
+                        while ((match = tagPattern.exec(contentAfterBullet)) !== null) {
                                 const index = match.index;
-                                if (index === 0 || /\s/.test(trimmed[index - 1])) {
-                                        tags.push(match[0]);
+                                if (index === 0 || /\s/.test(contentAfterBullet[index - 1])) {
+                                        tags.push({ tag: match[0], index });
                                 }
                         }
 
-                        if (tags.length === 0) {
+                        const usableTags = tags
+                                .filter(candidate => {
+                                        if (/^#\d/.test(candidate.tag)) {
+                                                return false;
+                                        }
+
+                                        const prefix = contentAfterBullet.slice(0, candidate.index).trim();
+                                        if (!prefix) {
+                                                return true;
+                                        }
+
+                                        return this.isContinuationLink(prefix);
+                                })
+                                .map(candidate => candidate.tag);
+                        if (usableTags.length === 0) {
                                 continue;
                         }
 
-                        const tag = tags[tags.length - 1];
+                        const tag = usableTags[0];
                         const blockMatch = rawLine.match(/\^([A-Za-z0-9-]+)/);
 
                         return {
@@ -1494,6 +1510,21 @@ export default class ObsidianPlus extends Plugin {
                 const filtered = tokens.filter(token => token.toLowerCase() !== lowerTag);
                 const result = filtered.join(" ").trim();
                 return result || null;
+        }
+
+        private isContinuationLink(prefix: string): boolean {
+                const match = prefix.match(/^!?\[\[([^\]|#]*?)(?:#\^([^\]|]+))?(?:\|([^\]]+))?\]\]$/);
+                if (!match) {
+                        return false;
+                }
+
+                const blockId = (match[2] ?? '').trim();
+                const display = (match[3] ?? '').trim();
+                if (!blockId) {
+                        return false;
+                }
+
+                return display === '⇠';
         }
 
         private getLineIndentation(line: string | undefined): number {

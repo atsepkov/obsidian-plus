@@ -118,6 +118,38 @@ export interface TreeOfThoughtResult {
   headerMarkdown?: string;
 }
 
+export function applyThoughtFilter(
+  sections: ThoughtSection[] = [],
+  references: ThoughtReference[] = [],
+  searchQuery: string
+): { sections: ThoughtSection[]; references: ThoughtReference[]; message?: string } {
+  const trimmedQuery = (searchQuery ?? "").trim();
+  if (!trimmedQuery) {
+    return { sections, references };
+  }
+
+  const filter = trimmedQuery.toLowerCase();
+  const wantsReferences = filter.includes("reference");
+
+  const filteredSections = sections
+    .map(section => filterThoughtSection(section, filter))
+    .filter((section): section is ThoughtSection => Boolean(section));
+
+  const filteredReferences = wantsReferences
+    ? references
+    : references.filter(reference => matchesThoughtReference(reference, filter));
+
+  if (filteredSections.length === 0 && filteredReferences.length === 0) {
+    return {
+      sections: [],
+      references: [],
+      message: `No matches for “${trimmedQuery}” in this thought.`
+    };
+  }
+
+  return { sections: filteredSections, references: filteredReferences };
+}
+
 export interface ThoughtPreviewResult {
   sourceFile: TFile | null;
   section: ThoughtSection | null;
@@ -245,34 +277,175 @@ export async function loadTreeOfThought(options: TreeOfThoughtOptions): Promise<
     };
   }
 
-  const filter = (searchQuery ?? "").trim().toLowerCase();
-  const filteredSections = filter
-    ? enrichedSections.filter(section => section.markdown.toLowerCase().includes(filter))
-    : enrichedSections;
-
-  const filteredReferences = filter
-    ? references.filter(reference =>
-        reference.summary.toLowerCase().includes(filter) ||
-        reference.linktext.toLowerCase().includes(filter)
-      )
-    : references;
-
-  if (filter && filteredSections.length === 0 && filteredReferences.length === 0) {
-    return {
-      sourceFile,
-      sections: [],
-      references: [],
-      message: `No matches for “${searchQuery?.trim()}” in this thought.`,
-      headerMarkdown
-    };
-  }
+  const { sections: filteredSections, references: filteredReferences, message } = applyThoughtFilter(
+    enrichedSections,
+    references,
+    searchQuery ?? ""
+  );
 
   return {
     sourceFile,
     sections: filteredSections,
     references: filteredReferences,
+    message,
     headerMarkdown
   };
+}
+
+function filterThoughtSection(section: ThoughtSection, filter: string): ThoughtSection | null {
+  const matches = matchesThoughtSection(section, filter);
+  if (!matches) {
+    return null;
+  }
+
+  const hasContentMatch = section.markdown?.toLowerCase().includes(filter);
+  const pruned = hasContentMatch ? pruneSectionMarkdown(section.markdown, filter) : null;
+  const markdown = pruned?.trim() ? pruned : section.markdown;
+
+  return {
+    ...section,
+    markdown
+  };
+}
+
+function matchesThoughtSection(section: ThoughtSection, filter: string): boolean {
+  const searchables = collectThoughtSectionSearchables(section);
+  return searchables.some(entry => entry.includes(filter));
+}
+
+function matchesThoughtReference(reference: ThoughtReference, filter: string): boolean {
+  const searchables: string[] = [];
+
+  if (reference.summary) searchables.push(reference.summary.toLowerCase());
+  if (reference.linktext) searchables.push(reference.linktext.toLowerCase());
+  if (reference.label) searchables.push(reference.label.toLowerCase());
+  if (reference.tooltip) searchables.push(reference.tooltip.toLowerCase());
+
+  if (Array.isArray(reference.segments)) {
+    for (const segment of reference.segments) {
+      if (segment?.text) searchables.push(segment.text.toLowerCase());
+      if (segment?.anchor) searchables.push(segment.anchor.toLowerCase());
+    }
+  }
+
+  return searchables.some(entry => entry.includes(filter));
+}
+
+function collectThoughtSectionSearchables(section: ThoughtSection): string[] {
+  const searchables: string[] = [];
+
+  if (section.markdown) searchables.push(section.markdown.toLowerCase());
+  if (section.label) searchables.push(section.label.toLowerCase());
+  if (section.linktext) searchables.push(section.linktext.toLowerCase());
+  if (section.sourceMarkdown) searchables.push(section.sourceMarkdown.toLowerCase());
+  if (section.tooltip) searchables.push(section.tooltip.toLowerCase());
+  if (section.targetAnchor) searchables.push(section.targetAnchor.toLowerCase());
+
+  if (Array.isArray(section.segments)) {
+    for (const segment of section.segments) {
+      if (segment?.text) searchables.push(segment.text.toLowerCase());
+      if (segment?.anchor) searchables.push(segment.anchor.toLowerCase());
+    }
+  }
+
+  return searchables;
+}
+
+function pruneSectionMarkdown(markdown: string, filter: string): string {
+  const normalized = normalizeSnippet(markdown);
+  const lines = normalized.split(/\r?\n/);
+  if (!lines.length) {
+    return markdown;
+  }
+
+  type OutlineNode = {
+    line: string;
+    indent: number;
+    children: OutlineNode[];
+    match: boolean;
+    include: boolean;
+  };
+
+  const stack: OutlineNode[] = [
+    { line: "", indent: -1, children: [], match: false, include: false }
+  ];
+
+  const trimmedFilter = filter.trim().toLowerCase();
+
+  for (const line of lines) {
+    if (!line.trim()) {
+      continue;
+    }
+
+    const indent = leadingSpace(line);
+    const searchable = extractSearchableText(line).toLowerCase();
+    const match = Boolean(trimmedFilter && searchable.includes(trimmedFilter));
+
+    const node: OutlineNode = {
+      line: line.replace(/\s+$/, ""),
+      indent,
+      children: [],
+      match,
+      include: false
+    };
+
+    while (stack.length > 1 && indent <= stack[stack.length - 1].indent) {
+      stack.pop();
+    }
+
+    stack[stack.length - 1].children.push(node);
+    stack.push(node);
+  }
+
+  function propagate(node: OutlineNode): boolean {
+    let childIncluded = false;
+    for (const child of node.children) {
+      childIncluded = propagate(child) || childIncluded;
+    }
+    node.include = node.match || childIncluded;
+    return node.include;
+  }
+
+  propagate(stack[0]);
+
+  const result: string[] = [];
+
+  function emit(node: OutlineNode): void {
+    if (!node.include) {
+      return;
+    }
+
+    if (node.line.trim()) {
+      result.push(node.line);
+    }
+
+    for (const child of node.children) {
+      emit(child);
+    }
+  }
+
+  for (const child of stack[0].children) {
+    emit(child);
+  }
+
+  return result.join("\n");
+}
+
+function extractSearchableText(line: string): string {
+  const trimmed = line.trim();
+  if (!trimmed) {
+    return "";
+  }
+
+  if (isListItem(trimmed)) {
+    return stripListMarker(trimmed).trim();
+  }
+
+  if (isHeading(trimmed)) {
+    return stripHeadingMarker(trimmed).trim();
+  }
+
+  return trimmed;
 }
 
 async function buildOriginSection(
@@ -848,18 +1021,51 @@ function findTaskLine(task: TaskEntry, lines: string[], blockId: string): number
     return Math.floor(task.line!);
   }
 
-  const normalized = normalizeTaskLine(task.text ?? "");
-  if (!normalized) {
+  const needles = collectTaskSearchNeedles(task);
+  if (!needles.length) {
     return null;
   }
 
   for (let i = 0; i < lines.length; i++) {
-    if (normalizeTaskLine(lines[i]).includes(normalized)) {
+    const rawLine = normalizeSnippet(lines[i]);
+    if (!isListItem(rawLine)) {
+      continue;
+    }
+
+    const normalizedLine = normalizeTaskLine(lines[i]);
+    if (!normalizedLine) {
+      continue;
+    }
+
+    if (needles.some(needle => normalizedLine.includes(needle))) {
       return i;
     }
   }
 
   return null;
+}
+
+function collectTaskSearchNeedles(task: TaskEntry): string[] {
+  const needles: string[] = [];
+
+  const primary = normalizeTaskLine(task.text ?? "");
+  if (primary) {
+    needles.push(primary);
+  }
+
+  if (Array.isArray(task.lines)) {
+    for (const line of task.lines) {
+      const normalized = normalizeTaskLine(line ?? "");
+      if (!normalized) {
+        continue;
+      }
+      needles.push(normalized);
+      break;
+    }
+  }
+
+  const unique = Array.from(new Set(needles.filter(Boolean)));
+  return unique;
 }
 
 function extractListSubtree(lines: string[], startLine: number): string;
@@ -1441,6 +1647,17 @@ function createReferenceSummary(outline: BacklinkOutline): ReferenceSummary | nu
     }
   }
 
+  const subtopic = extractThoughtSubtopic(outline.rootText);
+  if (subtopic) {
+    const last = segments[segments.length - 1];
+    if (!last || last.text !== subtopic) {
+      segments.push({
+        text: subtopic,
+        type: "subtopic"
+      });
+    }
+  }
+
   const summary = segments.map(segment => segment.text).join(" > ").trim();
   if (!summary) {
     return null;
@@ -1607,6 +1824,25 @@ function extractDateToken(value: string | null | undefined): string | null {
 
   const match = value.match(/\b(\d{4}-\d{2}-\d{2})\b/);
   return match ? match[1] : null;
+}
+
+function extractThoughtSubtopic(rootText: string | null | undefined): string | null {
+  if (!rootText) {
+    return null;
+  }
+
+  const match = rootText.match(/\*[^*]+\*[\s:;\-–—]+(.+)$/);
+  if (!match) {
+    return null;
+  }
+
+  const raw = (match[1] ?? "").trim();
+  if (!raw) {
+    return null;
+  }
+
+  const cleaned = cleanReferenceText(raw).replace(/^:\s*/, "").trim();
+  return cleaned || null;
 }
 
 function formatThoughtLabel(app: App, file: TFile): string {

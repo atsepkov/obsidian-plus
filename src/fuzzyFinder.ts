@@ -4,6 +4,7 @@ import {
 } from "obsidian";
 import type ObsidianPlus from "./main";
 import {
+  applyThoughtFilter,
   loadTreeOfThought,
   collectThoughtPreview,
   type ThoughtReference,
@@ -2200,46 +2201,7 @@ function escapeCssIdentifier(value: string): string {
         references: ThoughtReference[] = [],
         search: string
     ): { sections: ThoughtSection[]; references: ThoughtReference[]; message?: string } {
-        const trimmed = search.trim();
-        if (!trimmed) {
-          return { sections, references };
-        }
-
-        const needle = trimmed.toLowerCase();
-        const sectionMatches = (section: ThoughtSection): boolean => {
-          if (!section) return false;
-          if (section.markdown?.toLowerCase().includes(needle)) return true;
-          if (section.label?.toLowerCase().includes(needle)) return true;
-          if (section.linktext?.toLowerCase().includes(needle)) return true;
-          if (Array.isArray(section.segments)) {
-            return section.segments.some(segment => segment?.text?.toLowerCase().includes(needle));
-          }
-          return false;
-        };
-
-        const referenceMatches = (reference: ThoughtReference): boolean => {
-          if (!reference) return false;
-          if (reference.summary?.toLowerCase().includes(needle)) return true;
-          if (reference.label?.toLowerCase().includes(needle)) return true;
-          if (reference.linktext?.toLowerCase().includes(needle)) return true;
-          if (Array.isArray(reference.segments)) {
-            return reference.segments.some(segment => segment?.text?.toLowerCase().includes(needle));
-          }
-          return false;
-        };
-
-        const filteredSections = sections.filter(sectionMatches);
-        const filteredReferences = references.filter(referenceMatches);
-
-        if (!filteredSections.length && !filteredReferences.length) {
-          return {
-            sections: [],
-            references: [],
-            message: `No matches for “${trimmed}” in this thought.`
-          };
-        }
-
-        return { sections: filteredSections, references: filteredReferences };
+        return applyThoughtFilter(sections, references, search);
     }
 
     private resolveThoughtBlockId(
