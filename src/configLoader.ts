@@ -432,7 +432,9 @@ export class ConfigLoader {
                         console.log('[ConfigLoader] Config has DSL triggers, creating connector for', tag);
                         const connector = createConnector(tag, config, this.plugin);
                         if (connector) {
+                            console.log('[ConfigLoader] Storing connector in webTags with key:', tag, 'typeof:', typeof tag, 'length:', tag.length);
                             this.plugin.settings.webTags[tag] = connector;
+                            console.log('[ConfigLoader] Stored. webTags keys now:', Object.keys(this.plugin.settings.webTags));
                             
                             // Add to taskTags only if it has task-promoting triggers (not just onEnter)
                             if (this.hasTaskTriggers(config)) {

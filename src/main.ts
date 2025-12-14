@@ -600,9 +600,17 @@ export default class ObsidianPlus extends Plugin {
                     let hasDSLHandler = false;
                     let matchedTag: string | null = null;
                     for (const tag of tagMatches) {
-                        console.log('[DSL] Checking tag:', tag);
-                        const connector = this.settings.webTags[tag];
-                        console.log('[DSL] Connector for', tag, ':', connector ? connector.constructor.name : 'null/undefined');
+                        console.log('[DSL] Checking tag:', tag, 'typeof:', typeof tag, 'length:', tag.length);
+                        console.log('[DSL] First char:', tag[0], 'charCode:', tag.charCodeAt(0));
+                        
+                        // Try both with and without # to see which one works
+                        const connectorWithHash = this.settings.webTags[tag];
+                        const connectorWithoutHash = tag.startsWith('#') ? this.settings.webTags[tag.substring(1)] : null;
+                        
+                        console.log('[DSL] Connector with hash:', connectorWithHash ? connectorWithHash.constructor.name : 'null');
+                        console.log('[DSL] Connector without hash:', connectorWithoutHash ? connectorWithoutHash.constructor.name : 'null');
+                        
+                        const connector = connectorWithHash || connectorWithoutHash;
                         
                         if (!connector) {
                             console.log('[DSL] No connector found for tag:', tag);
