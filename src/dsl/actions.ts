@@ -54,9 +54,7 @@ function stripMarkdownListPrefix(line: string): { indent: string; bullet: '-' | 
     // - "- [!] text"
     //
     // IMPORTANT: we intentionally do NOT match "*" or "+" bullets here; those have other meaning in this plugin.
-    // Be permissive about whitespace: Obsidian/editor can yield tabs or unusual spacing.
-    // Still only match "-" bullets (not "*" or "+").
-    const m = line.match(/^(\s*)-\s*(?:\[[ xX\/!\-]\]\s*)?(.*)$/);
+    const m = line.match(/^(\s*)-\s+(?:\[[ xX\/!\-]\]\s+)?(.*)$/);
     if (!m) {
         // Return the original line so patterns like "#tag {{x}}" won't accidentally match "* #tag ..." or "+ #tag ..."
         return { indent, bullet: null, content: line };
@@ -113,7 +111,10 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
     
     // Extract variables from text using pattern
     if (action.pattern) {
-        const pattern = interpolate(action.pattern, context.vars);
+        // IMPORTANT: Do NOT interpolate patterns used for extraction.
+        // Interpolation would delete capture tokens (e.g. {{url}}) when vars are unset,
+        // turning "#podcast {{url}}" into "#podcast " and causing false mismatches.
+        const pattern = action.pattern;
         const haystack = textForMatching ?? text;
         const result = extractValues(haystack, pattern);
         

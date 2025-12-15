@@ -574,15 +574,11 @@ export default class ObsidianPlus extends Plugin {
                     
                     console.log('[DSL] Current line:', currentLine, 'cursor.ch:', cursor.ch, 'line.length:', currentLine.length, 'lineNumber:', lineNumber);
                     
-                    // If we're at the start of a new empty/minimal line (just created by Enter),
-                    // use the previous line instead
-                    if (cursor.ch === 0 && lineNumber > 0 && (currentLine.trim() === '' || currentLine.trim() === '-')) {
-                        lineNumber = lineNumber - 1;
-                        lineToProcess = editor.getLine(lineNumber);
-                        console.log('[DSL] Detected new line, using previous line:', lineToProcess, 'from lineNumber:', lineNumber);
-                    } else if (cursor.ch !== currentLine.length) {
-                        // Cursor not at end of line and not at start of new line
-                        console.log('[DSL] Cursor not at end/start of line, skipping');
+                    // Only handle when user presses Enter at end of the line they are editing.
+                    // Do NOT "fall back" to previous line: that causes re-triggers on subsequent lines
+                    // and makes error insertion/newline insertion land in the wrong place.
+                    if (cursor.ch !== currentLine.length) {
+                        console.log('[DSL] Cursor not at end of line, skipping');
                         return;
                     }
                     
@@ -661,9 +657,19 @@ export default class ObsidianPlus extends Plugin {
                         console.log('[DSL] DSL did not handle, inserting newline manually');
                         const indent = lineToProcess.match(/^(\s*)/)?.[1] || '';
                         const newLine = `${indent}- `;
-                        const finalCursor = editor.getCursor();
-                        editor.replaceRange('\n' + newLine, finalCursor);
-                        editor.setCursor({ line: finalCursor.line + 1, ch: newLine.length });
+                        // Insert AFTER the current block (so we don't split the parent line from any appended children, e.g. "* Error: ...")
+                        const baseIndent = indent;
+                        let insertLine = lineNumber;
+                        const totalLines = editor.lineCount();
+                        for (let i = lineNumber + 1; i < totalLines; i++) {
+                            const l = editor.getLine(i);
+                            const lIndent = l.match(/^(\s*)/)?.[1] || '';
+                            if (lIndent.length <= baseIndent.length && l.trim() !== '') break;
+                            insertLine = i;
+                        }
+                        const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
+                        editor.replaceRange('\n' + newLine, insertPos);
+                        editor.setCursor({ line: insertLine + 1, ch: newLine.length });
                     }
                 }, { capture: true }); // Use capture phase
 
