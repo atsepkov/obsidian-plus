@@ -215,6 +215,11 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
         console.warn(`Unknown action type: ${actionType}`);
         return null;
     }
+
+    // IMPORTANT: When the action line contains multiple inline backticked segments (e.g. "fetch: `url` as: `meta`"),
+    // parseKeyValue() alone can produce a corrupted main value (because it trims backticks on the full remainder).
+    // In those cases, parseInlineKeyValues() is the source of truth for the main value.
+    const mainValue = inlineKV[actionType] ?? mainKV.value;
     
     // Parse children for options and error handlers
     let onError: ActionNode[] | undefined;
@@ -234,33 +239,33 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
     // Build the action node based on type
     switch (actionType) {
         case 'read':
-            return parseReadAction(mainKV.value, regularChildren, onError);
+            return parseReadAction(mainValue, regularChildren, onError);
         case 'fetch':
-            return parseFetchAction(mainKV.value, inlineKV, regularChildren, onError);
+            return parseFetchAction(mainValue, inlineKV, regularChildren, onError);
         case 'transform':
-            return parseTransformAction(mainKV.value, regularChildren, onError);
+            return parseTransformAction(mainValue, regularChildren, onError);
         case 'build':
-            return parseBuildAction(mainKV.value, regularChildren, onError);
+            return parseBuildAction(mainValue, regularChildren, onError);
         case 'query':
-            return parseQueryAction(mainKV.value, inlineKV, regularChildren, onError);
+            return parseQueryAction(mainValue, inlineKV, regularChildren, onError);
         case 'set':
-            return parseSetAction(mainKV.value, inlineKV, regularChildren, onError);
+            return parseSetAction(mainValue, inlineKV, regularChildren, onError);
         case 'match':
-            return parseMatchAction(mainKV.value, inlineKV, regularChildren, onError);
+            return parseMatchAction(mainValue, inlineKV, regularChildren, onError);
         case 'if':
-            return parseIfAction(mainKV.value, regularChildren, onError);
+            return parseIfAction(mainValue, regularChildren, onError);
         case 'log':
-            return parseLogAction(mainKV.value, onError);
+            return parseLogAction(mainValue, onError);
         case 'notify':
-            return parseNotifyAction(mainKV.value, regularChildren, onError);
+            return parseNotifyAction(mainValue, regularChildren, onError);
         case 'extract':
-            return parseExtractAction(mainKV.value, inlineKV, regularChildren, onError);
+            return parseExtractAction(mainValue, inlineKV, regularChildren, onError);
         case 'foreach':
-            return parseForeachAction(mainKV.value, inlineKV, regularChildren, onError);
+            return parseForeachAction(mainValue, inlineKV, regularChildren, onError);
         case 'return':
-            return parseReturnAction(mainKV.value, onError);
+            return parseReturnAction(mainValue, onError);
         case 'append':
-            return parseAppendAction(mainKV.value, regularChildren, onError);
+            return parseAppendAction(mainValue, regularChildren, onError);
         default:
             return null;
     }
@@ -296,7 +301,7 @@ function parseFetchAction(
     const node: FetchActionNode = {
         type: 'fetch',
         url: cleanTemplate(url),
-        as: inlineKV.as,
+        as: inlineKV.as ? cleanTemplate(inlineKV.as) : undefined,
         onError
     };
     
