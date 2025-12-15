@@ -152,9 +152,15 @@ async function executeActionSafe(
         return context;
     }
     
+    // Log action start for debugging
+    console.log(`[DSL] Executing action: ${action.type}`, {
+        actionDetails: JSON.stringify(action, null, 2).slice(0, 500)
+    });
+    
     try {
         // Execute the action
         context = await handler(action, context, executeActionSafe);
+        console.log(`[DSL] Action ${action.type} completed successfully`);
         return context;
     } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
@@ -193,16 +199,24 @@ async function executeActionSequence(
     actions: ActionNode[],
     context: DSLContext
 ): Promise<DSLContext> {
-    for (const action of actions) {
+    console.log(`[DSL] Executing action sequence with ${actions.length} actions:`, 
+        actions.map(a => a.type).join(' -> '));
+    
+    for (let i = 0; i < actions.length; i++) {
+        const action = actions[i];
+        
         if (context.shouldReturn) {
+            console.log(`[DSL] Sequence halted at action ${i} (${action.type}): shouldReturn=true`);
             break;
         }
         
+        console.log(`[DSL] Running action ${i + 1}/${actions.length}: ${action.type}`);
         context = await executeActionSafe(action, context);
 
         // Stop the sequence on the first error.
         // This prevents running downstream actions (e.g. transform) with missing vars when read/fetch failed.
         if (context.error) {
+            console.log(`[DSL] Sequence halted at action ${i} (${action.type}): error occurred:`, context.error.message);
             break;
         }
     }
@@ -217,9 +231,23 @@ export async function executeTrigger(
     trigger: DSLTrigger,
     context: DSLContext
 ): Promise<DSLExecutionResult> {
+    console.log(`[DSL] Executing trigger: ${trigger.type}`, {
+        actionCount: trigger.actions.length,
+        actions: trigger.actions.map(a => ({
+            type: a.type,
+            ...(a.type === 'fetch' ? { url: (a as any).url, as: (a as any).as } : {}),
+            ...(a.type === 'read' ? { pattern: (a as any).pattern } : {})
+        }))
+    });
+    
     try {
         context.triggerType = trigger.type;
         const resultContext = await executeActionSequence(trigger.actions, context);
+        
+        console.log(`[DSL] Trigger ${trigger.type} completed`, {
+            success: !resultContext.error,
+            varsKeys: Object.keys(resultContext.vars)
+        });
         
         return {
             success: !resultContext.error,
@@ -228,6 +256,7 @@ export async function executeTrigger(
         };
     } catch (error) {
         const err = error instanceof Error ? error : new Error(String(error));
+        console.error(`[DSL] Trigger ${trigger.type} threw:`, err.message);
         context.error = err;
         
         return {

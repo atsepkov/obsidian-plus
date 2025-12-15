@@ -151,6 +151,20 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     // Interpolate URL with context variables
     const url = interpolate(action.url, context.vars);
     
+    console.log('[DSL][fetch] Starting fetch', {
+        rawUrl: action.url,
+        interpolatedUrl: url,
+        method: action.method || 'GET',
+        as: action.as
+    });
+    
+    // Validate URL
+    if (!url || url.includes('{{')) {
+        const error = `Invalid URL after interpolation: "${url}" (original: "${action.url}")`;
+        console.error('[DSL][fetch] URL interpolation failed:', error);
+        throw new Error(error);
+    }
+    
     // Build headers
     const headers: Record<string, string> = {
         'Content-Type': 'application/json',
@@ -209,16 +223,27 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     }
     
     // Make the request using Obsidian's requestUrl
-    const response = await requestUrl({
-        url,
-        method: action.method || 'GET',
-        headers,
-        body,
-        throw: false
-    });
+    console.log('[DSL][fetch] Making request to:', url);
+    let response;
+    try {
+        response = await requestUrl({
+            url,
+            method: action.method || 'GET',
+            headers,
+            body,
+            throw: false
+        });
+    } catch (reqError) {
+        console.error('[DSL][fetch] Request threw exception:', reqError);
+        throw new Error(`Network request failed: ${reqError instanceof Error ? reqError.message : String(reqError)}`);
+    }
+    
+    console.log('[DSL][fetch] Response status:', response.status, 'headers:', response.headers);
     
     if (response.status < 200 || response.status >= 300) {
-        throw new Error(`HTTP ${response.status}: ${response.text || 'Request failed'}`);
+        const errorMsg = `HTTP ${response.status}: ${response.text?.slice(0, 200) || 'Request failed'}`;
+        console.error('[DSL][fetch] HTTP error:', errorMsg);
+        throw new Error(errorMsg);
     }
     
     // Parse response
@@ -228,11 +253,14 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     if (contentType.includes('application/json')) {
         try {
             responseData = response.json;
+            console.log('[DSL][fetch] Parsed JSON response:', JSON.stringify(responseData).slice(0, 500));
         } catch {
             responseData = response.text;
+            console.log('[DSL][fetch] Failed to parse JSON, using text');
         }
     } else {
         responseData = response.text;
+        console.log('[DSL][fetch] Non-JSON response, using text');
     }
     
     // Store response
@@ -241,6 +269,7 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     
     if (action.as) {
         context.vars[action.as] = responseData;
+        console.log('[DSL][fetch] Stored response as:', action.as);
     }
     
     return context;
@@ -322,7 +351,8 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
         const first = childTemplates[0];
         const firstText = interpolate(first.template, context.vars);
         // Replace current line with first child as the "main" line
-        newLines.push(`${indent}${bullet} ${firstText.replace('{{cursor}}', '')}`);
+        // Preserve {{cursor}} for position calculation - will be stripped later
+        newLines.push(`${indent}${bullet} ${firstText}`);
         // Remaining children become appended under it. Also include any nested children of the first child.
         const rest: TransformChild[] = [];
         if (first.children && first.children.length > 0) {
@@ -332,7 +362,8 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
         childTemplates = rest;
     } else if (action.template) {
         const newText = interpolate(action.template, context.vars);
-        newLines.push(`${indent}${bullet} ${newText.replace('{{cursor}}', '')}`);
+        // Preserve {{cursor}} for position calculation - will be stripped later
+        newLines.push(`${indent}${bullet} ${newText}`);
     } else {
         // Keep the current line if no template and no children
         newLines.push(currentLine);
@@ -348,23 +379,44 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
     let cursorLine = cursor.line;
     let cursorCh = cursor.ch;
     
-    const fullText = newLines.join('\n');
+    let fullText = newLines.join('\n');
     const cursorMarkerIndex = fullText.indexOf('{{cursor}}');
+    
+    console.log('[DSL][transform] Cursor marker search', {
+        fullTextLength: fullText.length,
+        cursorMarkerIndex,
+        fullTextPreview: fullText.slice(0, 300)
+    });
     
     if (cursorMarkerIndex !== -1) {
         // Calculate cursor position from marker
         const beforeCursor = fullText.substring(0, cursorMarkerIndex);
-        const lines = beforeCursor.split('\n');
-        cursorLine = cursor.line + lines.length - 1;
-        cursorCh = lines[lines.length - 1].length;
+        const linesBeforeCursor = beforeCursor.split('\n');
+        cursorLine = cursor.line + linesBeforeCursor.length - 1;
+        cursorCh = linesBeforeCursor[linesBeforeCursor.length - 1].length;
         
-        // Remove cursor marker from lines
-        newLines = fullText.replace('{{cursor}}', '').split('\n');
+        console.log('[DSL][transform] Cursor position calculated', {
+            targetLine: cursorLine,
+            targetCh: cursorCh,
+            linesBeforeCursor: linesBeforeCursor.length
+        });
+        
+        // Remove cursor marker from the text
+        fullText = fullText.replace('{{cursor}}', '');
+        newLines = fullText.split('\n');
     }
     
     // Replace current line with new content (single-line replace)
     const startPos = { line: cursor.line, ch: 0 };
     const endPos = { line: cursor.line, ch: currentLine.length };
+    
+    console.log('[DSL][transform] Replacing range', {
+        startPos,
+        endPos,
+        newLinesCount: newLines.length,
+        output: newLines.join('\n').slice(0, 300)
+    });
+    
     editor.replaceRange(newLines.join('\n'), startPos, endPos);
     
     // Set cursor position
@@ -387,14 +439,17 @@ function buildTransformChildren(
     for (const template of templates) {
         const text = interpolate(template.template, context.vars);
         
-        // Skip cursor placeholder in children
-        if (text === '{{cursor}}' || text === '') {
+        // Skip empty lines, but keep {{cursor}} placeholder for position tracking
+        if (text === '') {
             continue;
         }
         
+        // For {{cursor}}, create an empty line where cursor will be placed
+        const finalText = text === '{{cursor}}' ? '' : text.replace('{{cursor}}', '').trim();
+        
         const child: any = {
             indent: baseIndent + template.indent,
-            text: text.replace('{{cursor}}', '').trim()
+            text: finalText
         };
         
         if (template.children && template.children.length > 0) {
@@ -419,6 +474,7 @@ function buildTransformChildren(
 
 /**
  * Build transform children as plain text lines
+ * NOTE: This preserves {{cursor}} markers - caller is responsible for finding position and removing them
  */
 function buildTransformChildrenAsLines(
     templates: TransformChild[],
@@ -432,9 +488,12 @@ function buildTransformChildrenAsLines(
         const text = interpolate(template.template, context.vars);
         const indent = baseIndent + indentUnit.repeat(template.indent + 1);
         
-        // Don't add a bullet for cursor placeholder
-        if (text !== '{{cursor}}' && text !== '') {
-            lines.push(`${indent}- ${text.replace('{{cursor}}', '')}`);
+        // For standalone {{cursor}} line, create an empty bullet where cursor will land
+        if (text === '{{cursor}}') {
+            lines.push(`${indent}- {{cursor}}`);
+        } else if (text !== '') {
+            // Preserve {{cursor}} in the line for position calculation (don't strip here)
+            lines.push(`${indent}- ${text}`);
         }
         
         if (template.children && template.children.length > 0) {
