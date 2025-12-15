@@ -298,10 +298,26 @@ function parseFetchAction(
     children: RawConfigItem[],
     onError?: ActionNode[]
 ): FetchActionNode {
+    // If URL contains " as: " and we don't have 'as' in inlineKV, extract it
+    // This handles cases where backticks are missing: "fetch: url as: name"
+    let finalUrl = url;
+    let finalAs = inlineKV.as;
+    
+    if (!finalAs) {
+        // Try to match " as: value" at the end of the URL string
+        // Match both backticked and non-backticked values
+        const asMatch = url.match(/\s+as:\s+(?:`([^`]+)`|([^\s]+))/);
+        if (asMatch) {
+            finalAs = asMatch[1] || asMatch[2]; // Use backticked value if present, otherwise plain
+            // Remove the " as: ..." part from the URL
+            finalUrl = url.replace(/\s+as:\s+(?:`[^`]+`|[^\s]+)/, '').trim();
+        }
+    }
+    
     const node: FetchActionNode = {
         type: 'fetch',
-        url: cleanTemplate(url),
-        as: inlineKV.as ? cleanTemplate(inlineKV.as) : undefined,
+        url: cleanTemplate(finalUrl),
+        as: finalAs ? cleanTemplate(finalAs) : undefined,
         onError
     };
     

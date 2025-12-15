@@ -250,17 +250,41 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     let responseData: any;
     const contentType = response.headers['content-type'] || '';
     
-    if (contentType.includes('application/json')) {
+    // Try to parse as JSON if content-type suggests JSON, or if response looks like JSON
+    const isJsonContentType = contentType.includes('application/json') || 
+                               contentType.includes('text/javascript') ||
+                               contentType.includes('application/javascript');
+    
+    if (isJsonContentType) {
         try {
             responseData = response.json;
             console.log('[DSL][fetch] Parsed JSON response:', JSON.stringify(responseData).slice(0, 500));
         } catch {
-            responseData = response.text;
-            console.log('[DSL][fetch] Failed to parse JSON, using text');
+            // If response.json fails, try parsing response.text
+            try {
+                responseData = JSON.parse(response.text);
+                console.log('[DSL][fetch] Parsed JSON from text');
+            } catch {
+                responseData = response.text;
+                console.log('[DSL][fetch] Failed to parse JSON, using text');
+            }
         }
     } else {
-        responseData = response.text;
-        console.log('[DSL][fetch] Non-JSON response, using text');
+        // Try to parse as JSON anyway (many APIs return JSON with wrong content-type)
+        // Check if response looks like JSON (starts with { or [)
+        const text = response.text || '';
+        if (text.trim().startsWith('{') || text.trim().startsWith('[')) {
+            try {
+                responseData = JSON.parse(text);
+                console.log('[DSL][fetch] Parsed as JSON despite content-type');
+            } catch {
+                responseData = text;
+                console.log('[DSL][fetch] Failed to parse as JSON, using text');
+            }
+        } else {
+            responseData = text;
+            console.log('[DSL][fetch] Non-JSON response, using text');
+        }
     }
     
     // Store response
