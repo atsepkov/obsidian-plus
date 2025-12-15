@@ -699,8 +699,18 @@ export const foreachAction: ActionHandler<ForeachActionNode> = async (action, co
     
     const itemVarName = action.as || 'item';
     
+    // Save the anchor line before the loop so all appends use the same parent
+    // This is critical for "foreach + append" to create siblings, not nested children
+    const anchorLine = context.cursor?.line ?? context.editor?.getCursor().line;
+    let lastCursor = context.cursor;
+    
     for (let i = 0; i < items.length; i++) {
         if (context.shouldReturn) break;
+        
+        // Reset cursor to anchor before each iteration (so append scans from parent)
+        if (anchorLine !== undefined) {
+            context.cursor = { line: anchorLine, ch: 0 };
+        }
         
         // Set iteration variables
         context.vars[itemVarName] = items[i];
@@ -710,6 +720,17 @@ export const foreachAction: ActionHandler<ForeachActionNode> = async (action, co
         for (const childAction of action.do) {
             if (context.shouldReturn) break;
             context = await executeAction(childAction, context);
+        }
+        
+        // Save cursor position after this iteration
+        lastCursor = context.cursor;
+    }
+    
+    // After the loop, restore cursor to the last inserted position for natural continuation
+    if (lastCursor) {
+        context.cursor = lastCursor;
+        if (context.editor) {
+            context.editor.setCursor(lastCursor.line, lastCursor.ch);
         }
     }
     
@@ -761,18 +782,21 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
     // For editor context (like onEnter), append directly
     if (context.editor) {
         const editor = context.editor;
-        const cursor = editor.getCursor();
-        const currentLine = editor.getLine(cursor.line);
+        
+        // Use context.cursor if set (from previous transform/append), otherwise use editor cursor
+        // This is critical for foreach loops that call append multiple times
+        const cursorLine = context.cursor?.line ?? editor.getCursor().line;
+        const currentLine = editor.getLine(cursorLine);
         const baseIndent = currentLine.match(/^(\s*)/)?.[1] || '';
         const indentUnit = '  '; // 2 spaces per indent level
         const childIndent = baseIndent + indentUnit.repeat(indentLevel);
         
         // Find the end of the current block (last child or current line)
-        let insertLine = cursor.line;
+        let insertLine = cursorLine;
         const totalLines = editor.lineCount();
         
         // Scan forward to find the last child at this or deeper indentation
-        for (let i = cursor.line + 1; i < totalLines; i++) {
+        for (let i = cursorLine + 1; i < totalLines; i++) {
             const line = editor.getLine(i);
             const lineIndent = line.match(/^(\s*)/)?.[1] || '';
             if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
@@ -786,8 +810,10 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
         const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
         editor.replaceRange('\n' + newLine, insertPos);
         
-        // Update cursor to end of new line
-        context.cursor = { line: insertLine + 1, ch: newLine.length };
+        // Update BOTH context.cursor AND editor cursor so subsequent appends work correctly
+        const newCursorLine = insertLine + 1;
+        context.cursor = { line: newCursorLine, ch: newLine.length };
+        editor.setCursor(newCursorLine, newLine.length);
         
         return context;
     }
