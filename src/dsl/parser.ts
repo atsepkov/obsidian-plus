@@ -102,22 +102,74 @@ function parseKeyValue(text: string): { key: string; value: string } | null {
  * Parse inline key-value pairs like "fetch: `url` as: `name`"
  */
 function parseInlineKeyValues(text: string): Record<string, string> {
+    // Robust tokenizer:
+    // - Supports independent backticks per field (e.g. fetch: `url` as: `meta`)
+    // - Supports no backticks (e.g. fetch: url as: meta)
+    // - Supports main value containing characters like :/?&= without confusing it for another key
     const result: Record<string, string> = {};
-    
-    // First get the main action and value
-    const mainMatch = text.match(/^([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*`([^`]*)`/);
-    if (mainMatch) {
-        result[mainMatch[1]] = mainMatch[2];
-        text = text.slice(mainMatch[0].length).trim();
+
+    const keyRegex = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+
+    const skipWs = (s: string, i: number): number => {
+        while (i < s.length && /\s/.test(s[i])) i++;
+        return i;
+    };
+
+    const readKey = (s: string, i: number): { key: string; next: number } | null => {
+        i = skipWs(s, i);
+        let j = i;
+        while (j < s.length && /[a-zA-Z0-9_]/.test(s[j])) j++;
+        const key = s.slice(i, j);
+        if (!key || !keyRegex.test(key)) return null;
+        j = skipWs(s, j);
+        if (s[j] !== ':') return null;
+        j++;
+        j = skipWs(s, j);
+        return { key, next: j };
+    };
+
+    const readValue = (s: string, i: number): { value: string; next: number } => {
+        i = skipWs(s, i);
+        if (s[i] === '`') {
+            // backticked value
+            i++;
+            const start = i;
+            while (i < s.length && s[i] !== '`') i++;
+            const value = s.slice(start, i);
+            if (s[i] === '`') i++;
+            return { value, next: i };
+        }
+
+        // unquoted value: read until the next " <key>:" occurrence (or end)
+        const start = i;
+        const nextKeyRe = /\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*/g;
+        nextKeyRe.lastIndex = i;
+        const m = nextKeyRe.exec(s);
+        if (!m) {
+            return { value: s.slice(start).trim(), next: s.length };
+        }
+        return { value: s.slice(start, m.index).trim(), next: m.index };
+    };
+
+    // Parse first key/value
+    let idx = 0;
+    const first = readKey(text, idx);
+    if (!first) return result;
+    idx = first.next;
+    const firstVal = readValue(text, idx);
+    result[first.key] = firstVal.value;
+    idx = firstVal.next;
+
+    // Parse subsequent key/value pairs
+    while (idx < text.length) {
+        const next = readKey(text, idx);
+        if (!next) break;
+        idx = next.next;
+        const v = readValue(text, idx);
+        result[next.key] = v.value;
+        idx = v.next;
     }
-    
-    // Then get additional key: `value` pairs
-    const pairRegex = /([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*`([^`]*)`/g;
-    let match: RegExpExecArray | null;
-    while ((match = pairRegex.exec(text)) !== null) {
-        result[match[1]] = match[2];
-    }
-    
+
     return result;
 }
 

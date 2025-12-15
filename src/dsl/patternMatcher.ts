@@ -315,13 +315,21 @@ export function interpolate(template: string, context: Record<string, any>): str
         return template;
     }
     
-    return template.replace(PATTERN_TOKEN_REGEX, (match, name) => {
+    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier) => {
+        // {{cursor}} is a control marker used by transform; it is NOT a normal variable.
+        // Preserve it verbatim so transform can locate it after interpolation.
+        if (name === 'cursor') {
+            return match;
+        }
+
         const value = resolvePath(context, name);
         
         if (value === undefined || value === null) {
-            // Keep the placeholder if value not found
-            // This allows for optional values
-            return '';
+            // Strict-by-default:
+            // - {{var}} is required and should error if missing
+            // - {{var?}} is optional and becomes empty string if missing
+            if (modifier === '?') return '';
+            throw new Error(`Missing required variable: ${name}`);
         }
         
         if (typeof value === 'object') {
