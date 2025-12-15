@@ -1338,13 +1338,19 @@ export default class ObsidianPlus extends Plugin {
 							editor
 						);
 						
-						if (result && result.success) {
-							// DSL handled the enter - return true to indicate we consumed the event
-							console.log('[DSL] onEnter triggered for', tag);
+						// IMPORTANT: If a DSL onEnter handler ran, we consider the Enter "handled" regardless of success.
+						// On failure, the DSL engine is responsible for appending a user-visible "* Error (...)" bullet.
+						// We must NOT fall back to inserting a new "- " line, otherwise we create stray bullets and odd cursor jumps.
+						if (result) {
+							if (result.success) {
+								console.log('[DSL] onEnter triggered for', tag);
+							} else {
+								console.log('[DSL] onEnter executed but returned unsuccessful result for', tag, result);
+							}
 							return true;
-						} else {
-							console.log('[DSL] onEnter returned unsuccessful result for', tag, result);
 						}
+						
+						console.log('[DSL] onEnter returned null/undefined result for', tag, result);
 					} catch (error) {
 						console.error(`[DSL] onEnter failed for ${tag}:`, error);
 					}

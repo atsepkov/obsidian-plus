@@ -136,6 +136,12 @@ async function defaultErrorHandler(
 
             const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
             editor.replaceRange('\n' + errorLine, insertPos);
+
+            // Put cursor on the error line (end), since we prevented the default Enter behavior.
+            // This avoids creating extra "- " bullets after errors and makes the failure immediately visible.
+            const errorLineNumber = insertLine + 1;
+            editor.setCursor({ line: errorLineNumber, ch: errorLine.length });
+            context.cursor = { line: errorLineNumber, ch: errorLine.length };
         } catch (e) {
             console.error('[DSL] Failed to append editor error line:', e);
         }
