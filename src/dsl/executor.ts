@@ -404,13 +404,15 @@ export class DSLEngine {
         config: DSLConfig,
         task: Task,
         file: TFile,
-        editor?: Editor
+        editor?: Editor,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onTrigger', {
             task,
             line: task.text,
             file,
-            editor
+            editor,
+            initialVars
         });
     }
     
@@ -421,13 +423,15 @@ export class DSLEngine {
         config: DSLConfig,
         task: Task,
         file: TFile,
-        editor?: Editor
+        editor?: Editor,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onDone', {
             task,
             line: task.text,
             file,
-            editor
+            editor,
+            initialVars
         });
     }
     
@@ -439,19 +443,23 @@ export class DSLEngine {
         task: Task,
         file: TFile,
         error?: Error,
-        editor?: Editor
+        editor?: Editor,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onError', {
             task,
             line: task.text,
             file,
             editor,
-            initialVars: error ? {
-                error: {
-                    message: error.message,
-                    name: error.name
-                }
-            } : undefined
+            initialVars: {
+                ...(initialVars || {}),
+                ...(error ? {
+                    error: {
+                        message: error.message,
+                        name: error.name
+                    }
+                } : {})
+            }
         });
     }
     
@@ -462,13 +470,15 @@ export class DSLEngine {
         config: DSLConfig,
         task: Task,
         file: TFile,
-        editor?: Editor
+        editor?: Editor,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onInProgress', {
             task,
             line: task.text,
             file,
-            editor
+            editor,
+            initialVars
         });
     }
     
@@ -479,13 +489,15 @@ export class DSLEngine {
         config: DSLConfig,
         task: Task,
         file: TFile,
-        editor?: Editor
+        editor?: Editor,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onCancelled', {
             task,
             line: task.text,
             file,
-            editor
+            editor,
+            initialVars
         });
     }
     
@@ -496,13 +508,15 @@ export class DSLEngine {
         config: DSLConfig,
         task: Task,
         file: TFile,
-        editor?: Editor
+        editor?: Editor,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onReset', {
             task,
             line: task.text,
             file,
-            editor
+            editor,
+            initialVars
         });
     }
     
@@ -514,13 +528,15 @@ export class DSLEngine {
         line: string,
         file: TFile,
         editor: Editor,
-        task?: Task
+        task?: Task,
+        initialVars?: Record<string, any>
     ): Promise<DSLExecutionResult> {
         return this.execute(config, 'onEnter', {
             task,
             line,
             file,
-            editor
+            editor,
+            initialVars
         });
     }
     

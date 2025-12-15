@@ -95,7 +95,12 @@ export type ActionType =
     | 'extract'
     | 'foreach'
     | 'return'
-    | 'append';
+    | 'append'
+    | 'validate'
+    | 'delay'
+    | 'filter'
+    | 'map'
+    | 'date';
 
 /**
  * Read action - reads line, file, or selection
@@ -104,8 +109,30 @@ export interface ReadActionNode extends BaseActionNode {
     type: 'read';
     /** Pattern to match against (e.g., `#podcast {{url}}`) */
     pattern: string;
-    /** Source to read from: 'line', 'file', 'selection', 'children' */
-    source?: 'line' | 'file' | 'selection' | 'children';
+    /** Source to read from: 'line', 'file', 'selection', 'children', 'wikilink' */
+    source?: 'line' | 'file' | 'selection' | 'children' | 'wikilink';
+    /**
+     * Optional file reference (wikilink or path-like string) used when source = 'wikilink'.
+     * Examples: `[[My Post]]`, `[[My Post|alias]]`, `My Post`
+     */
+    from?: string;
+    /** Optional variable name to store the read text into (in addition to vars.text) */
+    as?: string;
+    /** If true, strip YAML frontmatter from the read content (when reading a file/wikilink) */
+    stripFrontmatter?: boolean;
+    /** If true, also expose the frontmatter object (when reading a file/wikilink) */
+    includeFrontmatter?: boolean;
+    /** Variable name to store frontmatter into (defaults to `frontmatter`) */
+    frontmatterAs?: string;
+
+    /**
+     * When source = 'children', also parse child bullets that look like `key: value`
+     * into an object and store it into this variable name (defaults to `children`).
+     * Lines that don't match `key: value` are ignored for the object, but still included in raw.
+     */
+    childrenAs?: string;
+    /** Variable name to store raw child lines array into (defaults to `childrenLines`) */
+    childrenLinesAs?: string;
 }
 
 /**
@@ -301,6 +328,71 @@ export interface AppendActionNode extends BaseActionNode {
 }
 
 /**
+ * Validate action - asserts a condition / presence of required inputs
+ */
+export interface ValidateActionNode extends BaseActionNode {
+    type: 'validate';
+    /** Condition/expression template (truthy check) */
+    condition: string;
+    /** Optional custom error message template */
+    message?: string;
+}
+
+/**
+ * Delay action - waits before continuing
+ */
+export interface DelayActionNode extends BaseActionNode {
+    type: 'delay';
+    /** Duration in milliseconds, or a duration string like "250ms", "2s", "1m" */
+    duration: string;
+}
+
+/**
+ * Filter action - filters an array variable based on a simple condition
+ */
+export interface FilterActionNode extends BaseActionNode {
+    type: 'filter';
+    /** Variable containing the array */
+    items: string;
+    /** Output variable name */
+    as?: string;
+    /** Item variable name inside the predicate */
+    itemAs?: string;
+    /** Predicate condition (evaluated per item) */
+    where: string;
+}
+
+/**
+ * Map action - maps an array variable into a new array using a template
+ */
+export interface MapActionNode extends BaseActionNode {
+    type: 'map';
+    /** Variable containing the array */
+    items: string;
+    /** Output variable name */
+    as?: string;
+    /** Item variable name inside the template */
+    itemAs?: string;
+    /** Template used to produce each mapped element */
+    template: string;
+}
+
+/**
+ * Date action - common date/time operations
+ */
+export interface DateActionNode extends BaseActionNode {
+    type: 'date';
+    /** Operation mode */
+    mode: 'now' | 'parse';
+    /** Source date when mode=parse */
+    from?: string;
+    /** Output variable name */
+    as?: string;
+    /** Output format */
+    format?: 'epoch' | 'unix' | 'iso' | 'date';
+}
+
+/**
  * Union type of all action nodes
  */
 export type ActionNode = 
@@ -318,7 +410,12 @@ export type ActionNode =
     | ExtractActionNode
     | ForeachActionNode
     | ReturnActionNode
-    | AppendActionNode;
+    | AppendActionNode
+    | ValidateActionNode
+    | DelayActionNode
+    | FilterActionNode
+    | MapActionNode
+    | DateActionNode;
 
 // ============================================================================
 // Trigger Types

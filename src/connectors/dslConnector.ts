@@ -74,6 +74,17 @@ export default class DSLConnector extends TagConnector {
         
         return this.engine;
     }
+
+    /**
+     * Standard initial vars for DSL execution.
+     * Exposes the connector configuration (including `config:` JSON-file configs) as {{config.*}}.
+     */
+    private getDslInitialVars(extra?: Record<string, any>): Record<string, any> {
+        return {
+            config: this.config,
+            ...(extra || {})
+        };
+    }
     
     /**
      * Check if a trigger is defined in the config
@@ -156,7 +167,8 @@ export default class DSLConnector extends TagConnector {
                 this.dslConfig,
                 task,
                 file,
-                this.getActiveEditor()
+                this.getActiveEditor(),
+                this.getDslInitialVars()
             );
             
             if (!result.success && result.error) {
@@ -190,7 +202,8 @@ export default class DSLConnector extends TagConnector {
                 this.dslConfig,
                 task,
                 file,
-                this.getActiveEditor()
+                this.getActiveEditor(),
+                this.getDslInitialVars({ response })
             );
             
             // Add response to context
@@ -229,7 +242,8 @@ export default class DSLConnector extends TagConnector {
                 task,
                 file,
                 error,
-                this.getActiveEditor()
+                this.getActiveEditor(),
+                this.getDslInitialVars({ error })
             );
             
             // If DSL handled it, we're done
@@ -262,7 +276,8 @@ export default class DSLConnector extends TagConnector {
                 this.dslConfig,
                 task,
                 file,
-                this.getActiveEditor()
+                this.getActiveEditor(),
+                this.getDslInitialVars()
             );
             
             // If DSL handled it, we're done
@@ -293,7 +308,8 @@ export default class DSLConnector extends TagConnector {
             line,
             file,
             editor,
-            task
+            task,
+            this.getDslInitialVars()
         );
     }
     
@@ -327,7 +343,8 @@ export default class DSLConnector extends TagConnector {
                 task,
                 line: task.text,
                 file,
-                editor: this.getActiveEditor()
+                editor: this.getActiveEditor(),
+                initialVars: this.getDslInitialVars()
             }
         );
     }

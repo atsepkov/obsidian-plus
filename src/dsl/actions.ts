@@ -5,7 +5,7 @@
  * Each action receives the DSL context and returns an updated context.
  */
 
-import { Notice, requestUrl } from 'obsidian';
+import { Notice, requestUrl, TFile } from 'obsidian';
 import type {
     DSLContext,
     ActionNode,
@@ -23,6 +23,11 @@ import type {
     ForeachActionNode,
     ReturnActionNode,
     AppendActionNode,
+    ValidateActionNode,
+    DelayActionNode,
+    FilterActionNode,
+    MapActionNode,
+    DateActionNode,
     TransformChild
 } from './types';
 import { 
@@ -72,6 +77,34 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
     let text: string;
     let textForMatching: string | null = null;
     
+    const stripFrontmatter = (md: string): { frontmatter: any | null; body: string } => {
+        // Standard YAML frontmatter: starts at beginning of file with ---\n and ends with \n---\n
+        if (!md.startsWith('---\n')) return { frontmatter: null, body: md };
+        const end = md.indexOf('\n---', 4);
+        if (end === -1) return { frontmatter: null, body: md };
+        const body = md.slice(end + '\n---'.length).replace(/^\r?\n/, '');
+        return { frontmatter: null, body };
+    };
+
+    const normalizeWikilink = (raw: string): string => {
+        const s = (raw ?? '').trim();
+        if (!s) return '';
+        // [[path|alias]] -> path
+        const bracket = s.match(/^\[\[([\s\S]+)\]\]$/);
+        const inner = bracket ? bracket[1] : s;
+        const beforeAlias = inner.split('|')[0].trim();
+        return beforeAlias;
+    };
+
+    const resolveWikilinkToFile = (wikilink: string): TFile => {
+        const linkpath = normalizeWikilink(wikilink);
+        if (!linkpath) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
+        const basePath = context.file?.path ?? '';
+        const dest = context.app.metadataCache.getFirstLinkpathDest(linkpath, basePath);
+        if (!dest) throw new Error(`Could not resolve wikilink: ${wikilink}`);
+        return dest;
+    };
+
     switch (source) {
         case 'line':
             text = context.line || '';
@@ -89,6 +122,22 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
                 throw new Error('No file available in context');
             }
             break;
+        case 'wikilink': {
+            const from = action.from ? interpolate(action.from, context.vars) : '';
+            const file = resolveWikilinkToFile(from);
+            text = await context.app.vault.read(file);
+
+            if (action.includeFrontmatter) {
+                const fm = context.app.metadataCache.getFileCache(file)?.frontmatter ?? null;
+                const fmVar = action.frontmatterAs || 'frontmatter';
+                context.vars[fmVar] = fm;
+            }
+
+            if (action.stripFrontmatter) {
+                text = stripFrontmatter(text).body;
+            }
+            break;
+        }
         case 'selection':
             if (context.editor) {
                 text = context.editor.getSelection() || context.line || '';
@@ -97,12 +146,51 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             }
             break;
         case 'children':
-            // Read children of the current task
-            if (context.task && context.taskManager) {
-                const children = await context.taskManager.getDvTaskChildren(context.task);
-                text = children.map(c => c.text).join('\n');
-            } else {
-                text = '';
+            // Read children of the current task (task context) OR current editor line (onEnter editor context)
+            {
+                let lines: string[] = [];
+                if (context.task && context.taskManager) {
+                    const children = await context.taskManager.getDvTaskChildren(context.task);
+                    lines = children.map(c => c.text).filter(Boolean);
+                } else if (context.editor) {
+                    // Scan editor lines below current cursor line until indentation resets
+                    const editor = context.editor;
+                    const cursorLine = context.cursor?.line ?? editor.getCursor().line;
+                    const parentLine = editor.getLine(cursorLine);
+                    const baseIndent = parentLine.match(/^(\s*)/)?.[1] ?? '';
+                    const total = editor.lineCount();
+                    for (let i = cursorLine + 1; i < total; i++) {
+                        const l = editor.getLine(i);
+                        const lIndent = l.match(/^(\s*)/)?.[1] ?? '';
+                        if (lIndent.length <= baseIndent.length && l.trim() !== '') break;
+                        if (l.trim() !== '') {
+                            lines.push(l);
+                        }
+                    }
+                }
+
+                // Store raw children lines
+                const linesVar = action.childrenLinesAs || 'childrenLines';
+                context.vars[linesVar] = lines;
+
+                // Build a normalized "text" version
+                text = lines.join('\n');
+
+                // Build object view (only for "key: value" lines, ignore others)
+                const objVar = action.childrenAs || 'children';
+                const obj: Record<string, any> = {};
+                for (const rawLine of lines) {
+                    // In task context, lines may already be plain; in editor context they include bullets.
+                    const stripped = stripMarkdownListPrefix(rawLine);
+                    const content = stripped.bullet === '-' ? stripped.content : rawLine.trim();
+                    const idx = content.indexOf(':');
+                    if (idx === -1) continue;
+                    const key = content.slice(0, idx).trim();
+                    const value = content.slice(idx + 1).trim();
+                    if (!key || !value) continue;
+                    obj[key] = cleanTemplate(value);
+                }
+                context.vars[objVar] = obj;
             }
             break;
         default:
@@ -138,6 +226,11 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
     context.vars.text = text;
     if (textForMatching !== null) {
         context.vars.textContent = textForMatching;
+    }
+
+    // If requested, store into a named variable too
+    if (action.as) {
+        context.vars[action.as] = text;
     }
     
     return context;
@@ -761,6 +854,150 @@ export const returnAction: ActionHandler<ReturnActionNode> = async (action, cont
 };
 
 /**
+ * Validate action handler
+ * Asserts a condition; throws with a user-friendly message when it fails.
+ */
+export const validateAction: ActionHandler<ValidateActionNode> = async (action, context) => {
+    const message = action.message ? interpolate(action.message, context.vars) : undefined;
+
+    // Evaluate:
+    // - If condition looks like a comparison, use evaluateCondition
+    // - Otherwise, treat interpolated value as truthy/falsy
+    let ok = false;
+    try {
+        const hasOperator = /==|!=|>=|<=|>|</.test(action.condition);
+        if (hasOperator) {
+            ok = evaluateCondition(action.condition, context.vars);
+        } else {
+            const val = interpolate(action.condition, context.vars);
+            ok = Boolean(val) && val !== 'false' && val !== '0' && val !== 'null' && val !== 'undefined';
+        }
+    } catch (e) {
+        // Missing required variables etc.
+        ok = false;
+        if (!message) {
+            const err = e instanceof Error ? e : new Error(String(e));
+            throw err;
+        }
+    }
+
+    if (!ok) {
+        throw new Error(message || `Validation failed: ${action.condition}`);
+    }
+
+    return context;
+};
+
+/**
+ * Delay action handler
+ * Pauses execution for a duration.
+ */
+export const delayAction: ActionHandler<DelayActionNode> = async (action, context) => {
+    const raw = interpolate(action.duration, context.vars).trim();
+    const m = raw.match(/^(\d+(?:\.\d+)?)(ms|s|m)?$/i);
+    if (!m) throw new Error(`Invalid delay duration: ${raw}`);
+    const n = Number(m[1]);
+    const unit = (m[2] || 'ms').toLowerCase();
+    const ms = unit === 'm' ? n * 60_000 : unit === 's' ? n * 1_000 : n;
+    await new Promise<void>(resolve => window.setTimeout(resolve, ms));
+    return context;
+};
+
+/**
+ * Filter action handler
+ */
+export const filterAction: ActionHandler<FilterActionNode> = async (action, context) => {
+    const items = context.vars[action.items];
+    if (!Array.isArray(items)) {
+        throw new Error(`Variable '${action.items}' is not an array`);
+    }
+    const outVar = action.as || `${action.items}_filtered`;
+    const itemVar = action.itemAs || 'item';
+    const kept: any[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+        context.vars[itemVar] = items[i];
+        context.vars[`${itemVar}_index`] = i;
+        const ok = evaluateCondition(action.where, context.vars);
+        if (ok) kept.push(items[i]);
+    }
+
+    delete context.vars[itemVar];
+    delete context.vars[`${itemVar}_index`];
+    context.vars[outVar] = kept;
+    return context;
+};
+
+/**
+ * Map action handler
+ */
+export const mapAction: ActionHandler<MapActionNode> = async (action, context) => {
+    const items = context.vars[action.items];
+    if (!Array.isArray(items)) {
+        throw new Error(`Variable '${action.items}' is not an array`);
+    }
+    const outVar = action.as || `${action.items}_mapped`;
+    const itemVar = action.itemAs || 'item';
+    const mapped: any[] = [];
+
+    for (let i = 0; i < items.length; i++) {
+        context.vars[itemVar] = items[i];
+        context.vars[`${itemVar}_index`] = i;
+        const rendered = interpolate(action.template, context.vars);
+        // Try to parse JSON to allow mapping into objects/arrays when desired
+        try {
+            mapped.push(JSON.parse(rendered));
+        } catch {
+            mapped.push(rendered);
+        }
+    }
+
+    delete context.vars[itemVar];
+    delete context.vars[`${itemVar}_index`];
+    context.vars[outVar] = mapped;
+    return context;
+};
+
+/**
+ * Date action handler
+ */
+export const dateAction: ActionHandler<DateActionNode> = async (action, context) => {
+    const outVar = action.as || 'date';
+    const format = action.format || 'epoch';
+    let d: Date;
+
+    if (action.mode === 'now') {
+        d = new Date();
+    } else {
+        const from = action.from ? interpolate(action.from, context.vars) : '';
+        const t = Date.parse(String(from));
+        if (!Number.isFinite(t)) throw new Error(`Could not parse date: ${from}`);
+        d = new Date(t);
+    }
+
+    let value: any;
+    switch (format) {
+        case 'unix':
+            value = Math.floor(d.getTime() / 1000);
+            break;
+        case 'iso':
+            value = d.toISOString();
+            break;
+        case 'date':
+            // Prefer Obsidian's moment if available
+            value = (window as any).moment ? (window as any).moment(d).format('YYYY-MM-DD') : d.toISOString().slice(0, 10);
+            break;
+        case 'epoch':
+        default:
+            value = d.getTime();
+            break;
+    }
+
+    context.vars[outVar] = value;
+    return context;
+};
+
+/**
  * Append action handler
  * Appends a child bullet to the current task/line
  */
@@ -842,7 +1079,12 @@ export const actionHandlers: Record<string, ActionHandler<any>> = {
     extract: extractAction,
     foreach: foreachAction,
     return: returnAction,
-    append: appendAction
+    append: appendAction,
+    validate: validateAction,
+    delay: delayAction,
+    filter: filterAction,
+    map: mapAction,
+    date: dateAction
 };
 
 /**

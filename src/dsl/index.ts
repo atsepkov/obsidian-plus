@@ -28,6 +28,11 @@ export type {
     ForeachActionNode,
     ReturnActionNode,
     AppendActionNode,
+    ValidateActionNode,
+    DelayActionNode,
+    FilterActionNode,
+    MapActionNode,
+    DateActionNode,
     AuthConfig,
     TriggerType,
     DSLTrigger,
@@ -77,7 +82,12 @@ export {
     extractAction,
     foreachAction,
     returnAction,
-    appendAction
+    appendAction,
+    validateAction,
+    delayAction,
+    filterAction,
+    mapAction,
+    dateAction
 } from './actions';
 export type { ActionHandler } from './actions';
 

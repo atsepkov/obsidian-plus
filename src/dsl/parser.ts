@@ -28,9 +28,15 @@ import type {
     ForeachActionNode,
     ReturnActionNode,
     AppendActionNode,
+    ValidateActionNode,
+    DelayActionNode,
+    FilterActionNode,
+    MapActionNode,
+    DateActionNode,
     AuthConfig
 } from './types';
 import { cleanTemplate } from './patternMatcher';
+import { childTreeToRecord } from '../utils/childTreeToRecord';
 
 /**
  * All supported trigger names
@@ -64,7 +70,12 @@ const ACTION_TYPES: ActionType[] = [
     'extract',
     'foreach',
     'return',
-    'append'
+    'append',
+    'validate',
+    'delay',
+    'filter',
+    'map',
+    'date'
 ];
 
 /**
@@ -177,23 +188,10 @@ function parseInlineKeyValues(text: string): Record<string, string> {
  * Parse a raw config item's children into a Record
  */
 function parseChildrenAsRecord(children: RawConfigItem[] | undefined): Record<string, any> {
-    const result: Record<string, any> = {};
-    
-    if (!children) return result;
-    
-    for (const child of children) {
-        const parsed = parseKeyValue(child.text);
-        if (parsed) {
-            if (child.children && child.children.length > 0) {
-                // Nested structure
-                result[parsed.key] = parseChildrenAsRecord(child.children);
-            } else {
-                result[parsed.key] = cleanTemplate(parsed.value);
-            }
-        }
-    }
-    
-    return result;
+    return childTreeToRecord(children as any, {
+        normalizeKey: (k) => k.trim(),
+        normalizeValue: (v) => cleanTemplate(v),
+    });
 }
 
 /**
@@ -291,7 +289,7 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
     // Build the action node based on type
     switch (actionType) {
         case 'read':
-            return parseReadAction(mainValue, regularChildren, onError);
+            return parseReadAction(mainValue, inlineKV, regularChildren, onError);
         case 'fetch':
             return parseFetchAction(mainValue, inlineKV, regularChildren, onError);
         case 'transform':
@@ -318,6 +316,16 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
             return parseReturnAction(mainValue, onError);
         case 'append':
             return parseAppendAction(mainValue, regularChildren, onError);
+        case 'validate':
+            return parseValidateAction(mainValue, inlineKV, regularChildren, onError);
+        case 'delay':
+            return parseDelayAction(mainValue, onError);
+        case 'filter':
+            return parseFilterAction(mainValue, inlineKV, regularChildren, onError);
+        case 'map':
+            return parseMapAction(mainValue, inlineKV, regularChildren, onError);
+        case 'date':
+            return parseDateAction(mainValue, inlineKV, regularChildren, onError);
         default:
             return null;
     }
@@ -328,6 +336,7 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
  */
 function parseReadAction(
     pattern: string,
+    inlineKV: Record<string, string>,
     children: RawConfigItem[],
     onError?: ActionNode[]
 ): ReadActionNode {
@@ -336,7 +345,14 @@ function parseReadAction(
     return {
         type: 'read',
         pattern: cleanTemplate(pattern),
-        source: options.source as 'line' | 'file' | 'selection' | 'children' | undefined,
+        source: options.source as 'line' | 'file' | 'selection' | 'children' | 'wikilink' | undefined,
+        from: inlineKV.from ? cleanTemplate(inlineKV.from) : (options.from ? cleanTemplate(options.from) : undefined),
+        as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
+        stripFrontmatter: options.stripFrontmatter === true || options.stripFrontmatter === 'true',
+        includeFrontmatter: options.includeFrontmatter === true || options.includeFrontmatter === 'true',
+        frontmatterAs: options.frontmatterAs ? cleanTemplate(options.frontmatterAs) : undefined,
+        childrenAs: options.childrenAs ? cleanTemplate(options.childrenAs) : undefined,
+        childrenLinesAs: options.childrenLinesAs ? cleanTemplate(options.childrenLinesAs) : undefined,
         onError
     };
 }
@@ -649,6 +665,94 @@ function parseAppendAction(
         type: 'append',
         template: cleanTemplate(template),
         indent: options.indent ? parseInt(options.indent, 10) : undefined,
+        onError
+    };
+}
+
+/**
+ * Parse a validate action
+ */
+function parseValidateAction(
+    condition: string,
+    inlineKV: Record<string, string>,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): ValidateActionNode {
+    const options = parseChildrenAsRecord(children);
+    return {
+        type: 'validate',
+        condition: cleanTemplate(condition),
+        message: inlineKV.message ? cleanTemplate(inlineKV.message) : (options.message ? cleanTemplate(options.message) : undefined),
+        onError
+    };
+}
+
+/**
+ * Parse a delay action
+ */
+function parseDelayAction(duration: string, onError?: ActionNode[]): any {
+    return {
+        type: 'delay',
+        duration: cleanTemplate(duration),
+        onError
+    } as DelayActionNode;
+}
+
+function parseFilterAction(
+    items: string,
+    inlineKV: Record<string, string>,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): FilterActionNode {
+    const options = parseChildrenAsRecord(children);
+    const where = inlineKV.where ? cleanTemplate(inlineKV.where) : (options.where ? cleanTemplate(options.where) : '');
+    if (!where) throw new Error('filter action requires a where: condition');
+    return {
+        type: 'filter',
+        items: cleanTemplate(items),
+        as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
+        itemAs: inlineKV.itemAs ? cleanTemplate(inlineKV.itemAs) : (options.itemAs ? cleanTemplate(options.itemAs) : undefined),
+        where,
+        onError
+    };
+}
+
+function parseMapAction(
+    items: string,
+    inlineKV: Record<string, string>,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): MapActionNode {
+    const options = parseChildrenAsRecord(children);
+    const template = inlineKV.template ? cleanTemplate(inlineKV.template) : (options.template ? cleanTemplate(options.template) : '');
+    if (!template) throw new Error('map action requires a template:');
+    return {
+        type: 'map',
+        items: cleanTemplate(items),
+        as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
+        itemAs: inlineKV.itemAs ? cleanTemplate(inlineKV.itemAs) : (options.itemAs ? cleanTemplate(options.itemAs) : undefined),
+        template,
+        onError
+    };
+}
+
+function parseDateAction(
+    mode: string,
+    inlineKV: Record<string, string>,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): DateActionNode {
+    const options = parseChildrenAsRecord(children);
+    const m = cleanTemplate(mode) as DateActionNode['mode'];
+    if (m !== 'now' && m !== 'parse') {
+        throw new Error(`date action mode must be 'now' or 'parse' (got: ${mode})`);
+    }
+    return {
+        type: 'date',
+        mode: m,
+        from: inlineKV.from ? cleanTemplate(inlineKV.from) : (options.from ? cleanTemplate(options.from) : undefined),
+        as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
+        format: inlineKV.format ? (cleanTemplate(inlineKV.format) as any) : (options.format ? (cleanTemplate(options.format) as any) : undefined),
         onError
     };
 }

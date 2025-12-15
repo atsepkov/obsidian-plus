@@ -6,6 +6,7 @@ import AiConnector from './connectors/aiConnector';
 // import WebConnector from './connectors/webConnector'; // Uncomment if used
 import { parseStatusCycleConfig } from "./statusFilters";
 import { hasDSLTriggers, TriggerType } from './dsl';
+import { childTreeToRecord } from './utils/childTreeToRecord';
 
 // Define ConnectorConfig interface locally for now
 interface ConnectorConfig {
@@ -70,22 +71,11 @@ export class ConfigLoader {
 
     // Moved from main.ts loadTaskTagsFromFile's inner scope
     private parseChildren(prop: any): Record<string, any> {
-        let config: Record<string, any> = {};
         if (prop.children && prop.children.length) {
-            for (const child of prop.children) {
-                // there may be additional colons in the value, so split only once
-                const [key, ...rest] = child.text.split(':');
-                const normalizedKey = normalizeConfigVal(key.trim()); // Normalize the key
-                if (!normalizedKey) continue; // Skip empty keys
-
-                if (!rest || !rest.length || !rest[0].trim().length) {
-                    // If no value after colon, assume it's a nested structure
-                    config[normalizedKey] = this.parseChildren(child);
-                } else {
-                    const value = rest.join(':').trim();
-                    config[normalizedKey] = normalizeConfigVal(value); // Normalize the value
-                }
-            }
+            return childTreeToRecord(prop.children, {
+                normalizeKey: (k) => normalizeConfigVal(k.trim()),
+                normalizeValue: (v) => normalizeConfigVal(v),
+            });
         } else {
             // If a 'config:' line has no children, treat its text as a potential path or return empty
              const [key, ...rest] = prop.text.split(':');
@@ -101,7 +91,6 @@ export class ConfigLoader {
                 return {};
              }
         }
-        return config;
     }
 
     private applyStatusCycle(tag: string, config: ConnectorConfig): void {
@@ -148,8 +137,15 @@ export class ConfigLoader {
      * Parse DSL triggers directly from tag children in Tag Triggers section
      * In this section, triggers are direct children without 'config:' wrapper
      */
-    private parseTriggersForLine(tag: string, line: any): ConnectorConfig {
-        const config: ConnectorConfig = {};
+    private async parseTriggersForLine(tag: string, line: any): Promise<ConnectorConfig> {
+        // Support reusing the existing connector pattern where `config:` can either:
+        // - be a nested bullet object under the tag, or
+        // - point to a JSON config file path (loaded and parsed)
+        //
+        // This is important for DSL Tag Triggers because it enables secrets/auth settings
+        // without inventing a new DSL mechanism.
+        const baseConfig = await this.resolveConfigForLine(tag, line);
+        const config: ConnectorConfig = { ...(baseConfig || {}) };
         const triggerNames: TriggerType[] = [
             'onTrigger', 'onDone', 'onError', 'onInProgress', 
             'onCancelled', 'onReset', 'onEnter', 'onData'
@@ -458,7 +454,7 @@ export class ConfigLoader {
                     console.log('[ConfigLoader] Processing tag trigger definition for:', tag, 'from line:', rawText, 'col:', col);
 
                     // Parse triggers directly from children (no config: wrapper needed)
-                    const config = this.parseTriggersForLine(tag, line);
+                    const config = await this.parseTriggersForLine(tag, line);
                     console.log('[ConfigLoader] Parsed config for', tag, ':', config);
                     console.log('[ConfigLoader] Config keys:', Object.keys(config));
                     console.log('[ConfigLoader] Config.onEnter:', (config as any).onEnter);

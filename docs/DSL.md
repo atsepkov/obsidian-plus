@@ -100,6 +100,111 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: file` — read entire file instead of current line
 - `source: selection` — read selected text
 - `source: children` — read child bullets
+- `source: wikilink` — read the contents of another note by wikilink
+
+#### Reading another note by wikilink
+
+```yaml
+- read: ``
+  - source: wikilink
+  - from: `[[My Blog Post]]`
+  - as: `post_md`
+  - stripFrontmatter: true
+```
+
+After this, `{{post_md}}` contains the linked note’s markdown body, and `{{text}}` is also set to the same content.
+
+#### Reading children as an object
+
+When you `read` from `children`, the DSL also builds an object view:
+
+- Lines that look like `key: value` become properties (e.g. `{{children.title}}`).
+- Lines that do **not** match `key: value` are ignored for the object (but still exist in `{{childrenLines}}` / `{{text}}`).
+
+```yaml
+- read: ``
+  - source: children
+  - childrenAs: `meta`
+  - childrenLinesAs: `meta_lines`
+```
+
+Now you can reference:
+- `{{meta.post}}` (from a `post: [[...]]` child)
+- `{{meta.title}}`
+- `{{meta.tags}}` (string unless you parse it)
+- raw: `{{meta_lines}}`
+
+---
+
+### `validate` — Fail Fast (with a Useful Error)
+
+`validate` is your guardrail: it turns “mystery automations” into reliable workflows.
+
+```yaml
+- validate: `{{config.BLOG_API_TOKEN}}` message: `Missing BLOG_API_TOKEN (set it via config:)`
+```
+
+- If the condition is falsy (or a required variable is missing), execution stops and a `* Error (validate): ...` bullet is appended in the note.
+- Use `{{var?}}` when you explicitly want optional data.
+
+---
+
+### `delay` — Wait Before the Next Step
+
+```yaml
+- delay: `500ms`
+- delay: `2s`
+- delay: `1m`
+```
+
+Useful for rate limits, backoff, or letting external systems catch up.
+
+---
+
+### `filter` — Keep Only What You Want (Lists)
+
+`filter` takes an array and keeps only items matching a simple condition.
+
+```yaml
+- filter: `items` as: `nonEmpty` where: `{{item}} != ""`
+```
+
+You can control the per-item variable name:
+
+```yaml
+- filter: `tasks` as: `done` 
+  - itemAs: `t`
+  - where: `{{t.completed}} == true`
+```
+
+---
+
+### `map` — Convert Lists Into Other Lists
+
+`map` transforms an array into a new array using a template.
+
+```yaml
+- map: `tasks` as: `titles` template: `{{item.text}}`
+```
+
+If your template renders JSON, `map` will parse it into objects automatically.
+
+---
+
+### `date` — Time Without Writing Code
+
+Set a variable to “now”, or parse an existing date string.
+
+```yaml
+- date: `now` as: `created` 
+  - format: epoch   # epoch|unix|iso|date
+```
+
+```yaml
+- date: `parse` as: `created`
+  - from: `{{meta.date}}`
+  - format: unix
+```
 
 ---
 
@@ -333,6 +438,57 @@ Turn inline items into a checkbox list:
 
 ---
 
+### ✍️ Publish a Blog Post (linked note + metadata)
+
+This shows how to publish a post file referenced from a task. The task holds a wikilink to the post, plus any extra metadata you want.
+
+**Tag Triggers config:**
+
+```markdown
+- #publish-blog
+  - config: `config/blog-secrets.json`
+  - onTrigger:
+    - validate: `{{config.BLOG_API_TOKEN}}` message: `Missing BLOG_API_TOKEN`
+
+    # Grab metadata from children as an object (only `key: value` lines become properties)
+    - read: ``
+      - source: children
+      - childrenAs: `meta`
+      - childrenLinesAs: `meta_lines`
+    - validate: `{{meta.post}}` message: `Missing post: [[...]] child bullet`
+
+    # Read linked post content
+    - read: ``
+      - source: wikilink
+      - from: `{{meta.post}}`
+      - as: `post_md`
+      - stripFrontmatter: true
+
+    # Build payload + publish
+    - date: `now` as: `created` 
+      - format: epoch
+    - build: `payload`
+      - title: `{{file.basename}}`
+      - created: `{{created}}`
+      - content: `{{post_md}}`
+    - fetch: `https://staging.host.horse/api/blog` as: `res`
+      - method: POST
+      - headers:
+        - Authorization: `Bearer {{config.BLOG_API_TOKEN}}`
+      - body: `{{payload}}`
+
+    - transform:
+      - #publish-blog ✅ Posted id={{res.id}}
+        - {{cursor}}
+```
+
+**In your note:**
+
+```markdown
+- [ ] #publish-blog
+  - post: [[Blog/My First Post]]
+```
+
 ### 🔔 Slack Notification on Task Complete
 
 ```markdown
@@ -355,7 +511,11 @@ Turn inline items into a checkbox list:
 - #project-summary
   - onTrigger:
     - query: `#{{task.text}}` as: `tasks`
-    - set: `completed` value: `{{tasks.filter(t => t.completed).length}}`
+    - filter: `tasks` as: `done` 
+      - itemAs: `t`
+      - where: `{{t.completed}} == true`
+    - map: `done` as: `doneTitles` template: `{{item.text}}`
+    - set: `completed` value: `{{done.length}}`
     - transform:
       - {{task.text}} Summary
         - Total: {{tasks.length}} tasks
