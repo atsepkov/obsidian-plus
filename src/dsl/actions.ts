@@ -792,7 +792,9 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
         const childIndent = baseIndent + indentUnit.repeat(indentLevel);
         
         // Find the end of the current block (last child or current line)
-        let insertLine = cursorLine;
+        // IMPORTANT: don't "chase" trailing blank lines, otherwise we end up inserting the child
+        // after a run of empty lines (and the leading '\n' creates an extra visible blank line).
+        let insertLine = cursorLine; // last non-empty line within the block
         const totalLines = editor.lineCount();
         
         // Scan forward to find the last child at this or deeper indentation
@@ -802,7 +804,9 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
             if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
                 break;
             }
-            insertLine = i;
+            if (line.trim() !== '') {
+                insertLine = i;
+            }
         }
         
         // Insert the new child line after the last child
