@@ -118,8 +118,10 @@ async function defaultErrorHandler(
             const childIndent = baseIndent + indentUnit;
             const errorLine = `${childIndent}* Error (${action.type}): ${error.message}`;
 
-            // Insert after existing children of this line (scan forward until indent resets)
-            let insertLine = cursor.line;
+            // Insert after existing children of this line (scan forward until indent resets).
+            // IMPORTANT: don't "chase" trailing blank lines, otherwise we end up appending the error
+            // after a run of empty lines (and the leading '\n' creates even more empty lines).
+            let insertLine = cursor.line; // last non-empty line within the block
             const totalLines = editor.lineCount();
             for (let i = cursor.line + 1; i < totalLines; i++) {
                 const line = editor.getLine(i);
@@ -127,7 +129,9 @@ async function defaultErrorHandler(
                 if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
                     break;
                 }
-                insertLine = i;
+                if (line.trim() !== '') {
+                    insertLine = i;
+                }
             }
 
             const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
