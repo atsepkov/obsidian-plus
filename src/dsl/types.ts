@@ -109,11 +109,11 @@ export interface ReadActionNode extends BaseActionNode {
     type: 'read';
     /** Pattern to match against (e.g., `#podcast {{url}}`) */
     pattern: string;
-    /** Source to read from: 'line', 'file', 'selection', 'children', 'wikilink' */
-    source?: 'line' | 'file' | 'selection' | 'children' | 'wikilink';
+    /** Source to read from: 'line', 'file', 'selection', 'children', 'wikilink', 'image' */
+    source?: 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image';
     /**
-     * Optional file reference (wikilink or path-like string) used when source = 'wikilink'.
-     * Examples: `[[My Post]]`, `[[My Post|alias]]`, `My Post`
+     * Optional file reference (wikilink or path-like string) used when source = 'wikilink' or 'image'.
+     * Examples: `[[My Post]]`, `[[My Post|alias]]`, `My Post`, `![[image.png]]`, `https://example.com/image.png`
      */
     from?: string;
     /** Optional variable name to store the read text into (in addition to vars.text) */
@@ -133,6 +133,8 @@ export interface ReadActionNode extends BaseActionNode {
     childrenAs?: string;
     /** Variable name to store raw child lines array into (defaults to `childrenLines`) */
     childrenLinesAs?: string;
+    /** Format for image output: 'base64' (just base64 string), 'dataUri' (data:image/...;base64,...), 'url' (pass through external URLs) */
+    format?: 'base64' | 'dataUri' | 'url';
 }
 
 /**
@@ -228,6 +230,8 @@ export interface SetActionNode extends BaseActionNode {
     name: string;
     /** Value template */
     value: string;
+    /** Optional pattern for extraction (uses same syntax as read) */
+    pattern?: string;
 }
 
 /**

@@ -345,7 +345,7 @@ function parseReadAction(
     return {
         type: 'read',
         pattern: cleanTemplate(pattern),
-        source: options.source as 'line' | 'file' | 'selection' | 'children' | 'wikilink' | undefined,
+        source: options.source as 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image' | undefined,
         from: inlineKV.from ? cleanTemplate(inlineKV.from) : (options.from ? cleanTemplate(options.from) : undefined),
         as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
         stripFrontmatter: options.stripFrontmatter === true || options.stripFrontmatter === 'true',
@@ -353,6 +353,7 @@ function parseReadAction(
         frontmatterAs: options.frontmatterAs ? cleanTemplate(options.frontmatterAs) : undefined,
         childrenAs: options.childrenAs ? cleanTemplate(options.childrenAs) : undefined,
         childrenLinesAs: options.childrenLinesAs ? cleanTemplate(options.childrenLinesAs) : undefined,
+        format: inlineKV.format ? (inlineKV.format as 'base64' | 'dataUri' | 'url') : (options.format ? (options.format as 'base64' | 'dataUri' | 'url') : undefined),
         onError
     };
 }
@@ -508,6 +509,7 @@ function parseSetAction(
         type: 'set',
         name: cleanTemplate(name),
         value: inlineKV.value ? cleanTemplate(inlineKV.value) : (options.value || ''),
+        pattern: inlineKV.pattern ? cleanTemplate(inlineKV.pattern) : (options.pattern ? cleanTemplate(options.pattern) : undefined),
         onError
     };
 }

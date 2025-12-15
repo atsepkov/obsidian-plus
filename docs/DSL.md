@@ -101,6 +101,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: selection` — read selected text
 - `source: children` — read child bullets
 - `source: wikilink` — read the contents of another note by wikilink
+- `source: image` — read image file (wikilink or URL) and convert to base64
 
 #### Reading another note by wikilink
 
@@ -112,7 +113,47 @@ Reads the current line (or file/selection) and extracts variables using patterns
   - stripFrontmatter: true
 ```
 
-After this, `{{post_md}}` contains the linked note’s markdown body, and `{{text}}` is also set to the same content.
+After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
+
+#### Reading images (wikilinks or URLs)
+
+Read image files and convert them to base64 for sending to APIs:
+
+```yaml
+- read: ``
+  - source: image
+  - from: `{{meta.media}}`
+  - as: `media_base64`
+  - format: base64   # or 'dataUri' (default), 'url'
+```
+
+**Behavior:**
+- If `from` is an external URL (`http://...` or `https://...`), it's passed through as-is (when `format: url`)
+- If `from` is a wikilink (`![[image.png]]` or `[[image.png]]`):
+  - Resolves to the image file in your vault
+  - Reads the binary data
+  - Converts to base64 string or data URI
+  - Supported formats: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`
+
+**Format options:**
+- `format: base64` — returns just the base64 string (e.g., `iVBORw0KGgo...`)
+- `format: dataUri` — returns data URI (e.g., `data:image/png;base64,iVBORw0KGgo...`) (default)
+- `format: url` — for external URLs, passes through; for local files, returns resource path
+
+**Example:**
+```yaml
+- read: ``
+  - source: children
+  - childrenAs: `meta`
+- read: ``
+  - source: image
+  - from: `{{meta.media}}`
+  - as: `media`
+  - format: base64
+- build: `payload`
+  - title: `{{file.basename}}`
+  - media: `{{media}}`
+```
 
 #### Reading children as an object
 
@@ -268,13 +309,26 @@ Replaces the current line and adds child bullets.
 
 ### `set` — Create or Update Variables
 
-Sets a variable to a value (string or parsed JSON).
+Sets a variable to a value (string or parsed JSON). Can also extract values using pattern syntax (like `read`).
 
+**Simple assignment:**
 ```yaml
 - set: `myVar` value: `Hello {{name}}`
 ```
 
-Use for intermediate calculations or preparing data.
+**Extract using pattern (e.g., parse comma-separated list into array):**
+```yaml
+- set: `tags` value: `{{meta.tags}}` pattern: `{{tags+:, }}`
+```
+
+**Pattern examples:**
+- `pattern: {{tags+:, }}` — comma-space-separated list → array
+- `pattern: {{items+}}` — space-separated list → array  
+- `pattern: {{items+;}}` — semicolon-separated list → array
+
+When a pattern is provided, `set` uses the same extraction logic as `read`, allowing you to parse strings into structured data (arrays, objects, etc.). This differentiates `set` from `build` (which constructs objects from child bullets).
+
+Use for intermediate calculations, preparing data, or parsing structured strings.
 
 ---
 
@@ -464,6 +518,17 @@ This shows how to publish a post file referenced from a task. The task holds a w
       - as: `post_md`
       - stripFrontmatter: true
 
+    # Parse tags from comma-separated string into array
+    - set: `tags` value: `{{meta.tags}}` pattern: `{{tags+:, }}`
+    
+    # Convert image to base64 if provided
+    - if: `{{meta.media}}`
+      - read: ``
+        - source: image
+        - from: `{{meta.media}}`
+        - as: `media_base64`
+        - format: base64
+    
     # Build payload + publish
     - date: `now` as: `created` 
       - format: epoch
@@ -471,6 +536,8 @@ This shows how to publish a post file referenced from a task. The task holds a w
       - title: `{{file.basename}}`
       - created: `{{created}}`
       - content: `{{post_md}}`
+      - tags: `{{tags}}`
+      - media: `{{media_base64?}}`
     - fetch: `https://staging.host.horse/api/blog` as: `res`
       - method: POST
       - headers:
@@ -487,7 +554,13 @@ This shows how to publish a post file referenced from a task. The task holds a w
 ```markdown
 - [ ] #publish-blog
   - post: [[Blog/My First Post]]
+  - tags: tech, obsidian, automation
+  - media: ![[Blog/header-image.png]]
 ```
+
+- The `tags: tech, obsidian, automation` child gets parsed into an array via `set` with pattern `{{tags+:, }}`
+- The `media: ![[Blog/header-image.png]]` child gets converted to base64 via `read source: image`
+- Both are included in the payload sent to your blog API
 
 ### 🔔 Slack Notification on Task Complete
 
@@ -618,13 +691,15 @@ read → (extract variables) → fetch → (get data) → transform → (update 
 
 **Q: What's the difference between `set` and `build`?**
 - `set` creates a single variable: `set: name value: John`
-- `build` creates an object with multiple properties:
+- `set` with `pattern` extracts structured data from strings: `set: tags value: {{meta.tags}} pattern: {{tags+:, }}`
+- `build` creates an object with multiple properties from child bullets:
   ```yaml
   - build: person
     - name: John
     - age: 30
   ```
 - Both try to parse JSON, so `set: data value: [1,2,3]` creates an array
+- Use `set` with `pattern` when you need to parse a string (like comma-separated lists) into arrays/objects
 
 ---
 

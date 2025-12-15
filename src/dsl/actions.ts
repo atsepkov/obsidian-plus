@@ -105,6 +105,34 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         return dest;
     };
 
+    const isImageFile = (file: TFile): boolean => {
+        const ext = file.extension.toLowerCase();
+        return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext);
+    };
+
+    const getMimeType = (file: TFile): string => {
+        const ext = file.extension.toLowerCase();
+        const mimeTypes: Record<string, string> = {
+            'png': 'image/png',
+            'jpg': 'image/jpeg',
+            'jpeg': 'image/jpeg',
+            'gif': 'image/gif',
+            'webp': 'image/webp',
+            'svg': 'image/svg+xml',
+            'bmp': 'image/bmp'
+        };
+        return mimeTypes[ext] || 'image/png';
+    };
+
+    const arrayBufferToBase64 = (buffer: ArrayBuffer): string => {
+        const bytes = new Uint8Array(buffer);
+        let binary = '';
+        for (let i = 0; i < bytes.byteLength; i++) {
+            binary += String.fromCharCode(bytes[i]);
+        }
+        return btoa(binary);
+    };
+
     switch (source) {
         case 'line':
             text = context.line || '';
@@ -193,12 +221,58 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
                 context.vars[objVar] = obj;
             }
             break;
+        case 'image': {
+            const from = action.from ? interpolate(action.from, context.vars) : '';
+            if (!from) throw new Error('read: source=image requires a non-empty from: value');
+            
+            // Check if it's an external URL
+            const isExternalUrl = /^https?:\/\//i.test(from.trim());
+            
+            if (isExternalUrl) {
+                // External URL: pass through or convert based on format
+                const url = from.trim();
+                const format = action.format || 'url';
+                if (format === 'url') {
+                    text = url;
+                } else {
+                    // For external URLs, we'd need to fetch and convert
+                    // For now, just return the URL (user can fetch separately if needed)
+                    text = url;
+                }
+            } else {
+                // Wikilink: resolve to file and convert to base64
+                // Handle both ![[image.png]] and [[image.png]] formats
+                const wikilink = from.replace(/^!\[\[/, '[[').replace(/\]\]$/, ']]');
+                const file = resolveWikilinkToFile(wikilink);
+                
+                if (!isImageFile(file)) {
+                    throw new Error(`read: source=image - file "${file.name}" is not a recognized image file (supported: png, jpg, jpeg, gif, webp, svg, bmp)`);
+                }
+                
+                // Read binary data
+                const arrayBuffer = await context.app.vault.adapter.readBinary(file.path);
+                const base64 = arrayBufferToBase64(arrayBuffer);
+                
+                // Format output based on format option
+                const format = action.format || 'dataUri';
+                if (format === 'base64') {
+                    text = base64;
+                } else if (format === 'dataUri') {
+                    const mimeType = getMimeType(file);
+                    text = `data:${mimeType};base64,${base64}`;
+                } else {
+                    // 'url' format - return resource path (though this is less useful for external APIs)
+                    text = context.app.vault.getResourcePath(file);
+                }
+            }
+            break;
+        }
         default:
             text = context.line || '';
     }
     
-    // Extract variables from text using pattern
-    if (action.pattern) {
+    // Extract variables from text using pattern (skip for images - they're binary)
+    if (action.pattern && source !== 'image') {
         // IMPORTANT: Do NOT interpolate patterns used for extraction.
         // Interpolation would delete capture tokens (e.g. {{url}}) when vars are unset,
         // turning "#podcast {{url}}" into "#podcast " and causing false mismatches.
@@ -681,11 +755,30 @@ export const queryAction: ActionHandler<QueryActionNode> = async (action, contex
 export const setAction: ActionHandler<SetActionNode> = async (action, context) => {
     const value = interpolate(action.value, context.vars);
     
-    // Try to parse as JSON
-    try {
-        context.vars[action.name] = JSON.parse(value);
-    } catch {
-        context.vars[action.name] = value;
+    // If pattern is provided, extract using pattern (like read does)
+    if (action.pattern) {
+        const result = extractValues(value, action.pattern);
+        if (!result.success) {
+            throw new Error(result.error || `Pattern extraction failed for set: ${action.pattern}`);
+        }
+        // Store all extracted variables into context
+        context.vars = { ...context.vars, ...result.values };
+        // If pattern extracted a variable matching action.name, use that; otherwise use first extracted
+        const extractedVarNames = Object.keys(result.values);
+        if (extractedVarNames.length > 0) {
+            // Prefer extracted variable with same name as target, otherwise use first
+            const matchingVar = extractedVarNames.find(v => v === action.name);
+            context.vars[action.name] = matchingVar 
+                ? result.values[matchingVar] 
+                : result.values[extractedVarNames[0]];
+        }
+    } else {
+        // Original behavior: try JSON parse, fallback to string
+        try {
+            context.vars[action.name] = JSON.parse(value);
+        } catch {
+            context.vars[action.name] = value;
+        }
     }
     
     return context;
