@@ -151,45 +151,6 @@ async function executeActionSafe(
         console.warn(`[DSL] Unknown action type: ${action.type}`);
         return context;
     }
-
-    // Centralized validation for common output variable fields across actions.
-    // This ensures we don't silently create weird keys like "`meta`" or "meta.title",
-    // and that bad var names produce user-visible * Error bullets.
-    const normalizeVarName = (raw: string): string => {
-        return String(raw ?? '')
-            .trim()
-            .replace(/^`|`$/g, '')
-            .replace(/^"|"$/g, '')
-            .replace(/^'|'$/g, '')
-            .trim();
-    };
-    const isValidVarName = (name: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
-    const validateVarName = (raw: unknown, fieldLabel: string): string | undefined => {
-        if (raw === undefined || raw === null) return undefined;
-        const name = normalizeVarName(String(raw));
-        if (!name) throw new Error(`Invalid ${fieldLabel}: empty`);
-        if (!isValidVarName(name)) {
-            throw new Error(
-                `Invalid ${fieldLabel}: "${name}". Use an identifier like meta, response1, my_var (letters/numbers/underscore; cannot start with a number).`
-            );
-        }
-        return name;
-    };
-
-    // Validate and normalize common fields
-    if ('as' in (action as any)) {
-        const normalized = validateVarName((action as any).as, 'variable name for "as"');
-        if (normalized !== undefined) (action as any).as = normalized;
-    }
-    if ('name' in (action as any)) {
-        const normalized = validateVarName((action as any).name, 'variable name for "name"');
-        if (normalized !== undefined) (action as any).name = normalized;
-    }
-    if (action.type === 'foreach' && 'as' in (action as any)) {
-        // foreach.as is required in the AST, but still validate it.
-        const normalized = validateVarName((action as any).as, 'variable name for foreach "as"');
-        if (normalized !== undefined) (action as any).as = normalized;
-    }
     
     // Log action start for debugging
     console.log(`[DSL] Executing action: ${action.type}`, {
@@ -197,6 +158,45 @@ async function executeActionSafe(
     });
     
     try {
+        // Centralized validation for common output variable fields across actions.
+        // This ensures we don't silently create weird keys like "`meta`" or "meta.title",
+        // and that bad var names produce user-visible * Error bullets.
+        const normalizeVarName = (raw: string): string => {
+            return String(raw ?? '')
+                .trim()
+                .replace(/^`|`$/g, '')
+                .replace(/^"|"$/g, '')
+                .replace(/^'|'$/g, '')
+                .trim();
+        };
+        const isValidVarName = (name: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name);
+        const validateVarName = (raw: unknown, fieldLabel: string): string | undefined => {
+            if (raw === undefined || raw === null) return undefined;
+            const name = normalizeVarName(String(raw));
+            if (!name) throw new Error(`Invalid ${fieldLabel}: empty`);
+            if (!isValidVarName(name)) {
+                throw new Error(
+                    `Invalid ${fieldLabel}: "${name}". Use an identifier like meta, response1, my_var (letters/numbers/underscore; cannot start with a number).`
+                );
+            }
+            return name;
+        };
+
+        // Validate and normalize common fields
+        if ('as' in (action as any)) {
+            const normalized = validateVarName((action as any).as, 'variable name for "as"');
+            if (normalized !== undefined) (action as any).as = normalized;
+        }
+        if ('name' in (action as any)) {
+            const normalized = validateVarName((action as any).name, 'variable name for "name"');
+            if (normalized !== undefined) (action as any).name = normalized;
+        }
+        if (action.type === 'foreach' && 'as' in (action as any)) {
+            // foreach.as is required in the AST, but still validate it.
+            const normalized = validateVarName((action as any).as, 'variable name for foreach "as"');
+            if (normalized !== undefined) (action as any).as = normalized;
+        }
+
         // Execute the action
         context = await handler(action, context, executeActionSafe);
         console.log(`[DSL] Action ${action.type} completed successfully`);
