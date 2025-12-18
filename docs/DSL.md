@@ -115,6 +115,52 @@ Reads the current line (or file/selection) and extracts variables using patterns
 
 After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
 
+**Reading a specific section:**
+
+You can read just a section of a note by including a heading anchor in the wikilink:
+
+```yaml
+- read: ``
+  - source: wikilink
+  - from: `[[My Blog Post#Introduction]]`
+  - as: `intro_section`
+```
+
+This will:
+- Find the heading that matches "Introduction" (case-insensitive, supports slug matching)
+- Extract all content from that heading until the next heading of the same or higher level
+- Store only that section's content in `{{intro_section}}`
+
+**Section matching:**
+- Matches by heading text (case-insensitive) or slug
+- Supports all heading levels (`#`, `##`, `###`, etc.)
+- Extracts content until the next heading of equal or higher level
+- If the section isn't found, throws an error with a clear message
+
+**Example:**
+```markdown
+# My Blog Post
+
+Some intro text.
+
+## Introduction
+
+This is the introduction section.
+It has multiple paragraphs.
+
+## Next Section
+
+This won't be included.
+```
+
+Using `[[My Blog Post#Introduction]]` will extract:
+```markdown
+## Introduction
+
+This is the introduction section.
+It has multiple paragraphs.
+```
+
 #### Reading images (wikilinks or URLs)
 
 Read image files and convert them to base64 for sending to APIs:
@@ -669,6 +715,15 @@ If `read` fails, the pattern doesn't match. Check:
 ```
 read → (extract variables) → fetch → (get data) → transform → (update note)
 ```
+
+### 6. Read Specific Sections from Long Notes
+If you only need part of a note, use section anchors:
+```yaml
+- read: ``
+  - source: wikilink
+  - from: `[[Long Note#Summary Section]]`
+```
+This extracts just that section instead of the entire file—useful for large notes or when you only need specific content.
 
 ---
 

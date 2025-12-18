@@ -86,21 +86,87 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         return { frontmatter: null, body };
     };
 
-    const normalizeWikilink = (raw: string): string => {
+    const parseWikilink = (raw: string): { path: string; anchor: string | null } => {
         const s = (raw ?? '').trim();
-        if (!s) return '';
-        // [[path|alias]] -> path
+        if (!s) return { path: '', anchor: null };
+        
+        // [[path|alias]] or [[path#anchor|alias]] -> extract path and anchor
         const bracket = s.match(/^\[\[([\s\S]+)\]\]$/);
         const inner = bracket ? bracket[1] : s;
         const beforeAlias = inner.split('|')[0].trim();
-        return beforeAlias;
+        
+        // Split on # to get path and anchor
+        const hashIndex = beforeAlias.indexOf('#');
+        if (hashIndex >= 0) {
+            return {
+                path: beforeAlias.slice(0, hashIndex).trim(),
+                anchor: beforeAlias.slice(hashIndex + 1).trim() || null
+            };
+        }
+        return { path: beforeAlias, anchor: null };
+    };
+
+    const slugifyHeading = (value: string): string => {
+        return value
+            .trim()
+            .toLowerCase()
+            .replace(/[^a-z0-9\s-]/g, '')
+            .replace(/\s+/g, '-');
+    };
+
+    const findHeadingLine = (file: TFile, lines: string[], anchor: string): { index: number; level: number } | null => {
+        const normalizedAnchor = slugifyHeading(anchor.replace(/^#/, ''));
+        const cache = context.app.metadataCache.getFileCache(file);
+
+        // Try to find heading using metadataCache
+        if (cache?.headings?.length) {
+            for (const heading of cache.headings) {
+                if (!heading?.heading) continue;
+                const headingText = heading.heading.trim();
+                const slug = slugifyHeading(headingText);
+                if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
+                    const index = heading.position?.start?.line ?? heading.position?.line ?? -1;
+                    if (index >= 0) {
+                        return { index, level: heading.level ?? 1 };
+                    }
+                }
+            }
+        }
+
+        // Fallback: scan lines manually
+        for (let i = 0; i < lines.length; i++) {
+            const match = lines[i].match(/^(#+)\s+(.*)$/);
+            if (!match) continue;
+            const headingText = match[2].trim();
+            const slug = slugifyHeading(headingText);
+            if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
+                return { index: i, level: match[1].length };
+            }
+        }
+
+        return null;
+    };
+
+    const extractHeadingSectionFromLines = (lines: string[], startLine: number, level: number): string => {
+        const result: string[] = [];
+        for (let i = startLine; i < lines.length; i++) {
+            const line = lines[i];
+            if (i > startLine) {
+                const match = line.match(/^(#+)\s+/);
+                if (match && match[1].length <= level) {
+                    break;
+                }
+            }
+            result.push(line);
+        }
+        return result.join('\n');
     };
 
     const resolveWikilinkToFile = (wikilink: string): TFile => {
-        const linkpath = normalizeWikilink(wikilink);
-        if (!linkpath) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
+        const { path } = parseWikilink(wikilink);
+        if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
         const basePath = context.file?.path ?? '';
-        const dest = context.app.metadataCache.getFirstLinkpathDest(linkpath, basePath);
+        const dest = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
         if (!dest) throw new Error(`Could not resolve wikilink: ${wikilink}`);
         return dest;
     };
@@ -152,8 +218,27 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             break;
         case 'wikilink': {
             const from = action.from ? interpolate(action.from, context.vars) : '';
-            const file = resolveWikilinkToFile(from);
-            text = await context.app.vault.read(file);
+            const { path, anchor } = parseWikilink(from);
+            if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
+            
+            const basePath = context.file?.path ?? '';
+            const file = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
+            if (!file) throw new Error(`Could not resolve wikilink: ${from}`);
+            
+            const fullText = await context.app.vault.read(file);
+            
+            // If anchor is specified, extract just that section
+            if (anchor) {
+                const lines = fullText.split('\n');
+                const headingInfo = findHeadingLine(file, lines, anchor);
+                if (headingInfo) {
+                    text = extractHeadingSectionFromLines(lines, headingInfo.index, headingInfo.level);
+                } else {
+                    throw new Error(`Could not find section "${anchor}" in file ${file.name}`);
+                }
+            } else {
+                text = fullText;
+            }
 
             if (action.includeFrontmatter) {
                 const fm = context.app.metadataCache.getFileCache(file)?.frontmatter ?? null;
