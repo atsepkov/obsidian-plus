@@ -28,6 +28,7 @@ import type {
     ForeachActionNode,
     ReturnActionNode,
     AppendActionNode,
+    TaskActionNode,
     ValidateActionNode,
     DelayActionNode,
     FilterActionNode,
@@ -71,6 +72,7 @@ const ACTION_TYPES: ActionType[] = [
     'foreach',
     'return',
     'append',
+    'task',
     'validate',
     'delay',
     'filter',
@@ -316,6 +318,8 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
             return parseReturnAction(mainValue, onError);
         case 'append':
             return parseAppendAction(mainValue, regularChildren, onError);
+        case 'task':
+            return parseTaskAction(mainValue, inlineKV, regularChildren, onError);
         case 'validate':
             return parseValidateAction(mainValue, inlineKV, regularChildren, onError);
         case 'delay':
@@ -329,6 +333,54 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
         default:
             return null;
     }
+}
+
+/**
+ * Parse a task action (safe task manipulation)
+ *
+ * Supported:
+ * - task: clear bullets: `*+`
+ * - task: status to: `x`
+ * - task: append `Some response` (defaults to + bullet)
+ */
+function parseTaskAction(
+    mainValue: string,
+    inlineKV: Record<string, string>,
+    _children: RawConfigItem[],
+    onError?: ActionNode[]
+): TaskActionNode {
+    const rest = (mainValue ?? '').trim();
+    const [opRaw, ...tail] = rest.split(/\s+/);
+    const op = (opRaw || '').trim().toLowerCase();
+
+    if (op !== 'clear' && op !== 'status' && op !== 'append') {
+        throw new Error(`task: unknown op "${opRaw}". Supported: clear | status | append`);
+    }
+
+    const node: TaskActionNode = {
+        type: 'task',
+        op: op as TaskActionNode['op'],
+        onError
+    };
+
+    if (op === 'clear') {
+        const bullets = inlineKV.bullets ?? inlineKV.bullet ?? tail.join(' ');
+        node.bullets = cleanTemplate(String(bullets ?? '').trim());
+    }
+
+    if (op === 'status') {
+        const to = inlineKV.to ?? inlineKV.status ?? tail.join(' ');
+        node.toStatus = cleanTemplate(String(to ?? '').trim());
+    }
+
+    if (op === 'append') {
+        const templateFromTail = tail.join(' ');
+        node.template = cleanTemplate(inlineKV.template ?? inlineKV.text ?? templateFromTail);
+        if (inlineKV.indent) node.indent = parseInt(inlineKV.indent, 10);
+        if (inlineKV.bullet) node.bullet = cleanTemplate(inlineKV.bullet);
+    }
+
+    return node;
 }
 
 /**

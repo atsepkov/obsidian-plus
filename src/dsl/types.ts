@@ -96,11 +96,33 @@ export type ActionType =
     | 'foreach'
     | 'return'
     | 'append'
+    | 'task'
     | 'validate'
     | 'delay'
     | 'filter'
     | 'map'
     | 'date';
+
+/**
+ * Task action - safely manipulates the current task
+ * - clear: remove child bullets by bullet type (* errors, + responses)
+ * - status: set task status marker (x, !, /, -, ' ')
+ * - append: append a generated child line (defaults to + bullet for safety)
+ */
+export interface TaskActionNode extends BaseActionNode {
+    type: 'task';
+    op: 'clear' | 'status' | 'append';
+    /** For op=clear: bullets to remove (e.g. "*", "+", "*+") */
+    bullets?: string;
+    /** For op=status: target status char (e.g. x, !, /, -, ' ') */
+    toStatus?: string;
+    /** For op=append: child content template */
+    template?: string;
+    /** For op=append: indent level under the current task (1 = direct child) */
+    indent?: number;
+    /** For op=append: bullet to use (defaults to '+') */
+    bullet?: string;
+}
 
 /**
  * Read action - reads line, file, or selection
@@ -415,6 +437,7 @@ export type ActionNode =
     | ForeachActionNode
     | ReturnActionNode
     | AppendActionNode
+    | TaskActionNode
     | ValidateActionNode
     | DelayActionNode
     | FilterActionNode

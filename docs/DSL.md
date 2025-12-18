@@ -51,8 +51,8 @@ Triggers are entry points—they fire when specific events occur.
 | Trigger | When It Fires |
 |---------|--------------|
 | `onEnter` | User presses Enter at end of a tagged line |
-| `onTrigger` | User toggles any task checkbox |
-| `onDone` | Task marked complete `[x]` |
+| `onTrigger` | Task enters “in progress” phase for a connector-driven transaction |
+| `onDone` | Task enters done `[x]` (fires even if `onTrigger` is not defined) |
 | `onError` | Task marked with error `[!]` |
 | `onInProgress` | Task marked in-progress `[/]` |
 | `onCancelled` | Task marked cancelled `[-]` |
@@ -402,6 +402,48 @@ Appends a new child bullet under the current line.
   - indent: 2   # optional: indent level (default: 1)
 ```
 
+**Bullet safety:**
+- In **task-trigger contexts** (`onTrigger`/`onDone`/etc), `append` writes children using **`+` bullets** by default (automation output).
+- In **editor contexts** (`onEnter`), `append` writes `-` children (useful for “create tasks” workflows like `#shopping`).
+
+If you’re writing “automation output” under a task, prefer the `task` action below for explicit control.
+
+---
+
+### `task` — Safe Task Manipulation (status, clear errors/responses)
+
+`task` is a set of primitives for interacting with the current task **without touching user-authored `-` bullets**.
+
+#### Clear children by bullet
+
+- Errors in Obsidian+ / DSL use `*`
+- Connector responses / outputs use `+`
+
+```yaml
+- task: clear bullets: `*`   # clear errors
+- task: clear bullets: `+`   # clear responses
+- task: clear bullets: `*+`  # clear both
+```
+
+#### Set task status
+
+```yaml
+- task: status to: `x`
+- task: status to: `!`
+- task: status to: `/`
+```
+
+#### Append a generated child line (defaults to `+`)
+
+```yaml
+- task: append `Posted id={{res.id}}`
+- task: append `API response stored` indent: 2
+```
+
+Safety rules:
+- `task` refuses to clear or write `-` bullets (those are considered user-owned)
+- Use `*` for errors, `+` for generated output
+
 ---
 
 ### `if` — Conditional Logic
@@ -675,6 +717,22 @@ Every action can have an `onError` block:
 | `{{task.completed}}` | Whether task is completed |
 | `{{task.status}}` | Task status character |
 | `{{cursor}}` | Special: marks cursor position in transforms |
+
+### Trigger Event Variables (Status Transitions)
+
+For task-trigger flows, the DSL also receives an `event` object:
+
+- `{{event.fromStatus}}` — status before the change (e.g. `" "`, `"/"`)
+- `{{event.toStatus}}` — status after the change (e.g. `"x"`, `"!"`)
+
+This is especially useful in `onTrigger` if you want to gate execution:
+
+```yaml
+- onTrigger:
+  - if: `{{event.toStatus}} != x`
+    - return: ``
+  - log: `Running only for completion`
+```
 
 ### Variable Strictness
 

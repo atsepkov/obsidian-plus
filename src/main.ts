@@ -512,19 +512,42 @@ export default class ObsidianPlus extends Plugin {
 										// if reset updated the task, we need to sync our cache
 										newTasks = await this.extractTaskLines(file);
 									} else if (taskStatus === 'x' && !dvTask.completed) {
-										// trigger the tag
+										// Completion: either run a connector transaction (onTrigger -> onSuccess -> set x),
+										// or if DSL has no onTrigger, allow onDone to run directly on entering x.
+										const event = { fromStatus: oldTaskStatus, toStatus: taskStatus };
+										const hasDslTriggers = typeof (tagConnector as any)?.hasTrigger === 'function';
+										const dslHasOnTrigger = hasDslTriggers ? Boolean((tagConnector as any).hasTrigger('onTrigger')) : true;
+
+										// If this is a DSL connector (hasTrigger exists) and it does NOT define onTrigger,
+										// do NOT run the transaction pipeline. Instead, fire onDone via status-change hook.
+										if (hasDslTriggers && !dslHasOnTrigger) {
+											if (typeof (tagConnector as any)?.onStatusChange === 'function') {
+												await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
+												newTasks = await this.extractTaskLines(file);
+											}
+											continue;
+										}
+
+										// Otherwise run the normal transaction pipeline.
 										try {
 											await this.changeTaskStatus(dvTask, '/');
-											const response = await tagConnector.onTrigger(dvTask);
+											const response = await (tagConnector as any).onTrigger(dvTask, event);
 											await tagConnector.onSuccess(dvTask, response);
-        									await this.changeTaskStatus(dvTask, 'x');
+											await this.changeTaskStatus(dvTask, 'x');
 											// if success updated the task, we need to sync our cache
 											newTasks = await this.extractTaskLines(file);
 										} catch (e) {
 											console.error(e);
 											await tagConnector.onError(dvTask, e);
-        									await this.changeTaskStatus(dvTask, '!');
+											await this.changeTaskStatus(dvTask, '!');
 											// if error updated the task, we need to sync our cache
+											newTasks = await this.extractTaskLines(file);
+										}
+									} else if (taskStatus === 'x' && oldTaskStatus === '/') {
+										// Finalization transition after successful transaction: / -> x.
+										// Fire onDone (and other status-based triggers) via connector hook if available.
+										if (typeof (tagConnector as any)?.onStatusChange === 'function') {
+											await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
 											newTasks = await this.extractTaskLines(file);
 										}
 									}

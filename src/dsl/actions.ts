@@ -23,6 +23,7 @@ import type {
     ForeachActionNode,
     ReturnActionNode,
     AppendActionNode,
+    TaskActionNode,
     ValidateActionNode,
     DelayActionNode,
     FilterActionNode,
@@ -1189,7 +1190,10 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
             appendChildren: [{
                 indent: indentLevel - 1, // taskManager uses 0-based indent
                 text: content
-            }]
+            }],
+            // Safety: connector/automation output should not use "-" bullets (user-authored).
+            // Default to "+" for task-context appends; editor-context appends still use "-" (shopping list, etc.)
+            useBullet: '+'
         });
         return context;
     }
@@ -1241,6 +1245,59 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
 };
 
 /**
+ * Task action handler
+ * Safe task manipulation primitives:
+ * - clear: remove children by bullet type (* errors, + responses)
+ * - status: set task status marker
+ * - append: append a generated child line (defaults to + bullet)
+ */
+export const taskAction: ActionHandler<TaskActionNode> = async (action, context) => {
+    if (!context.task || !context.taskManager) {
+        throw new Error('task: requires a task context');
+    }
+
+    if (action.op === 'clear') {
+        const bullets = String(action.bullets ?? '').trim();
+        if (!bullets) throw new Error('task clear: requires bullets (e.g. "*", "+", "*+")');
+        if (bullets.includes('-')) throw new Error('task clear: refusing to remove "-" bullets (user-authored)');
+
+        await context.taskManager.updateDvTask(context.task, {
+            removeChildrenByBullet: bullets
+        });
+        return context;
+    }
+
+    if (action.op === 'status') {
+        const to = String(action.toStatus ?? '').trim();
+        if (!to) throw new Error('task status: requires to: (e.g. x, !, /, -, " ")');
+        await context.taskManager.changeDvTaskStatus(context.task, to);
+        return context;
+    }
+
+    if (action.op === 'append') {
+        const tpl = String(action.template ?? '').trim();
+        if (!tpl) throw new Error('task append: requires text/template');
+
+        const indentLevel = action.indent ?? 1;
+        const bullet = (action.bullet ?? '+').trim() || '+';
+        if (bullet === '-') throw new Error('task append: refusing to use "-" bullet (user-authored)');
+        if (bullet !== '+' && bullet !== '*') throw new Error(`task append: unsupported bullet "${bullet}" (use "+" or "*")`);
+
+        await context.taskManager.updateDvTask(context.task, {
+            appendChildren: [{
+                indent: Math.max(0, indentLevel - 1),
+                text: interpolate(tpl, context.vars),
+                bullet
+            }],
+            useBullet: bullet
+        });
+        return context;
+    }
+
+    throw new Error(`task: unsupported op ${(action as any).op}`);
+};
+
+/**
  * Registry of all action handlers
  */
 export const actionHandlers: Record<string, ActionHandler<any>> = {
@@ -1258,6 +1315,7 @@ export const actionHandlers: Record<string, ActionHandler<any>> = {
     foreach: foreachAction,
     return: returnAction,
     append: appendAction,
+    task: taskAction,
     validate: validateAction,
     delay: delayAction,
     filter: filterAction,

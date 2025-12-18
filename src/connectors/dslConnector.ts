@@ -44,6 +44,8 @@ export default class DSLConnector extends TagConnector {
     private dslConfig: DSLConfig;
     private engine: DSLEngine | null = null;
     declare config: DSLConnectorConfig;
+    /** Stash transaction response until the task actually enters [x] so onDone can consume it. */
+    private pendingResponseByPath = new Map<string, any>();
     
     constructor(tag: string, obsidianPlus: ObsidianPlus, config: DSLConnectorConfig) {
         super(tag, obsidianPlus, config);
@@ -151,7 +153,7 @@ export default class DSLConnector extends TagConnector {
     /**
      * Fires when user clicks the checkbox next to the tag (any status change)
      */
-    async onTrigger(task: Task): Promise<any> {
+    async onTrigger(task: Task, event?: { fromStatus?: string; toStatus?: string }): Promise<any> {
         console.log(`[DSLConnector] ${this.tag} onTrigger`, task);
         
         const file = this.getTaskFile(task);
@@ -168,7 +170,7 @@ export default class DSLConnector extends TagConnector {
                 task,
                 file,
                 this.getActiveEditor(),
-                this.getDslInitialVars()
+                this.getDslInitialVars({ event })
             );
             
             if (!result.success && result.error) {
@@ -187,37 +189,12 @@ export default class DSLConnector extends TagConnector {
      */
     async onSuccess(task: Task, response: any): Promise<void> {
         console.log(`[DSLConnector] ${this.tag} onSuccess`, task, response);
-        
-        const file = this.getTaskFile(task);
-        if (!file) {
-            console.error(`Could not find file for task: ${task.path}`);
-            return super.onSuccess(task, response);
-        }
-        
-        const engine = this.getEngine();
-        
-        // Check for onDone handler (more specific than onTrigger for success)
-        if (this.hasTrigger('onDone')) {
-            const result = await engine.onDone(
-                this.dslConfig,
-                task,
-                file,
-                this.getActiveEditor(),
-                this.getDslInitialVars({ response })
-            );
-            
-            // Add response to context
-            if (result.context) {
-                result.context.vars.response = response;
-            }
-            
-            // If DSL handled it, we're done
-            if (result.success) {
-                return;
-            }
-        }
-        
-        // Fall back to default success behavior
+
+        // IMPORTANT: onDone should fire only when the task actually enters [x].
+        // main.ts now drives that via onStatusChange (/ -> x), so we stash the response here.
+        this.pendingResponseByPath.set(task.path, response);
+
+        // Still apply default success visuals (✓, timestamps, etc.) unless DSL handled them via transforms.
         await super.onSuccess(task, response);
     }
     
@@ -226,6 +203,8 @@ export default class DSLConnector extends TagConnector {
      */
     async onError(task: Task, error: Error): Promise<void> {
         console.log(`[DSLConnector] ${this.tag} onError`, task, error);
+        // Clear any stashed success response on failure
+        this.pendingResponseByPath.delete(task.path);
         
         const file = this.getTaskFile(task);
         if (!file) {
@@ -316,7 +295,7 @@ export default class DSLConnector extends TagConnector {
     /**
      * Fires for specific status changes
      */
-    async onStatusChange(task: Task, status: string): Promise<DSLExecutionResult | null> {
+    async onStatusChange(task: Task, fromStatus: string, toStatus: string): Promise<DSLExecutionResult | null> {
         const file = this.getTaskFile(task);
         if (!file) {
             console.error(`Could not find file for task: ${task.path}`);
@@ -331,9 +310,19 @@ export default class DSLConnector extends TagConnector {
             '-': 'onCancelled'
         };
         
-        const triggerType = triggerMap[status];
+        const triggerType = triggerMap[toStatus];
         if (!triggerType || !this.hasTrigger(triggerType)) {
             return null;
+        }
+
+        const initialVars: Record<string, any> = {
+            event: { fromStatus, toStatus }
+        };
+
+        // If we just entered done, attach stashed transaction response (if any)
+        if (toStatus === 'x' && this.pendingResponseByPath.has(task.path)) {
+            initialVars.response = this.pendingResponseByPath.get(task.path);
+            this.pendingResponseByPath.delete(task.path);
         }
         
         return engine.execute(
@@ -344,7 +333,7 @@ export default class DSLConnector extends TagConnector {
                 line: task.text,
                 file,
                 editor: this.getActiveEditor(),
-                initialVars: this.getDslInitialVars()
+                initialVars: this.getDslInitialVars(initialVars)
             }
         );
     }
