@@ -488,6 +488,9 @@ export class ConfigLoader {
                     childCount: item?.children?.length ?? 0
                 })));
                 
+                // Track processed tags to detect duplicates
+                const processedTags = new Set<string>();
+                
                 for (const line of tagTriggersSection) {
                     const rawText = (line?.text ?? '').split('\n')[0];
                     const col = line?.position?.start?.col;
@@ -517,6 +520,15 @@ export class ConfigLoader {
                     }
 
                     const tag = line.tags[0];
+                    
+                    // Check for duplicate tag definitions
+                    if (processedTags.has(tag)) {
+                        const notice = new Notice(`Duplicate tag definition found: ${tag}. Only the first definition will be used.`, 5000);
+                        console.warn(`[ConfigLoader] DUPLICATE tag definition: ${tag} (already processed)`);
+                        continue;
+                    }
+                    processedTags.add(tag);
+                    
                     console.log('[ConfigLoader] ✓ Item passed filters, processing tag trigger definition for:', tag);
                     console.log('[ConfigLoader] Tag details:', {
                         tag,
@@ -571,10 +583,19 @@ export class ConfigLoader {
                             console.error(`[ConfigLoader] Config that failed:`, JSON.stringify(config, null, 2));
                         }
                     } else if (hasAnyTriggers) {
-                        // This tag only has onEnter (or other non-task triggers) - don't create connector
-                        // onEnter is handled separately via Enter key handler in main.ts
-                        console.log(`[ConfigLoader] Tag "${tag}" has triggers but no task-promoting triggers (only onEnter or similar). Skipping connector creation.`);
+                        // This tag only has onEnter (or other non-task triggers) - still create connector for onEnter handler
+                        // onEnter is handled via Enter key handler in main.ts, which needs to look up the connector
+                        console.log(`[ConfigLoader] Tag "${tag}" has triggers but no task-promoting triggers (only onEnter or similar). Creating connector for onEnter handler.`);
                         console.log(`[ConfigLoader] Triggers found:`, Object.keys(config).filter(k => k.startsWith('on')));
+                        const connector = createConnector(tag, config, this.plugin);
+                        if (connector) {
+                            console.log('[ConfigLoader] Storing onEnter-only connector in webTags with key:', tag);
+                            this.plugin.settings.webTags[tag] = connector;
+                            console.log('[ConfigLoader] Stored. webTags keys now:', Object.keys(this.plugin.settings.webTags));
+                            console.log(`[ConfigLoader] Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));
+                        } else {
+                            console.error(`[ConfigLoader] Failed to create DSL connector for onEnter-only tag "${tag}"`);
+                        }
                     } else {
                         console.log('[ConfigLoader] No DSL triggers found in config for', tag);
                         console.log('[ConfigLoader] Config object:', JSON.stringify(config, null, 2));

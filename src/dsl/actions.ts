@@ -557,9 +557,19 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
  * Modifies line content and adds children
  */
 export const transformAction: ActionHandler<TransformActionNode> = async (action, context) => {
+    console.log('[DSL][transform] Starting transform action', {
+        hasTask: Boolean(context.task),
+        hasTaskManager: Boolean(context.taskManager),
+        hasEditor: Boolean(context.editor),
+        hasTemplate: Boolean(action.template),
+        hasChildTemplates: Boolean(action.childTemplates?.length),
+        childTemplatesCount: action.childTemplates?.length ?? 0
+    });
+    
     if (!context.task || !context.taskManager) {
         // For non-task contexts (like onEnter), we work with the editor directly
         if (context.editor) {
+            console.log('[DSL][transform] Using editor context (onEnter)');
             return transformWithEditor(action, context);
         }
         throw new Error('No task or editor available for transform');
@@ -606,12 +616,27 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
         throw new Error('No editor available for transform');
     }
     
+    console.log('[DSL][transform] transformWithEditor called', {
+        hasTemplate: Boolean(action.template),
+        hasChildTemplates: Boolean(action.childTemplates?.length),
+        childTemplatesCount: action.childTemplates?.length ?? 0,
+        contextVars: Object.keys(context.vars)
+    });
+    
     const cursor = editor.getCursor();
     const currentLine = editor.getLine(cursor.line);
     const indent = currentLine.match(/^(\s*)/)?.[1] || '';
     // Only preserve "-" bullets for transform output. If the line isn't a "-" bullet, default to "-".
     const bulletMatch = currentLine.match(/^(\s*)-\s+/);
     const bullet = bulletMatch ? '-' : '-';
+    
+    console.log('[DSL][transform] Current line context', {
+        cursorLine: cursor.line,
+        cursorCh: cursor.ch,
+        currentLine,
+        indent,
+        bullet
+    });
     
     // Build the new content
     let newLines: string[] = [];
