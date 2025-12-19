@@ -452,6 +452,13 @@ export class ConfigLoader {
 
                     const tag = line.tags[0];
                     console.log('[ConfigLoader] Processing tag trigger definition for:', tag, 'from line:', rawText, 'col:', col);
+                    console.log('[ConfigLoader] Tag details:', {
+                        tag,
+                        tagType: typeof tag,
+                        tagLength: tag?.length,
+                        tagStartsWithHash: tag?.startsWith('#'),
+                        allTags: line.tags
+                    });
 
                     // Parse triggers directly from children (no config: wrapper needed)
                     const config = await this.parseTriggersForLine(tag, line);

@@ -497,7 +497,16 @@ export default class ObsidianPlus extends Plugin {
 								if (!tagConnector) {
 									console.log(`[Trigger] No connector found for task tag "${taskTag}" in webTags.`, {
 										taskTag,
+										taskTagType: typeof taskTag,
+										taskTagLength: taskTag?.length,
+										taskTagStartsWithHash: taskTag?.startsWith('#'),
 										webTagsKeys: Object.keys(this.settings.webTags),
+										webTagsKeysDetails: Object.keys(this.settings.webTags).map(k => ({
+											key: k,
+											type: typeof k,
+											length: k?.length,
+											startsWithHash: k?.startsWith('#')
+										})),
 										inTaskTags: this.settings.taskTags.includes(taskTag)
 									});
 									continue;
