@@ -144,32 +144,47 @@ export class ConfigLoader {
         //
         // This is important for DSL Tag Triggers because it enables secrets/auth settings
         // without inventing a new DSL mechanism.
+        console.log('[ConfigLoader][parseTriggersForLine] Starting for tag:', tag);
+        console.log('[ConfigLoader][parseTriggersForLine] Line children count:', line.children?.length || 0);
+        
         const baseConfig = await this.resolveConfigForLine(tag, line);
+        console.log('[ConfigLoader][parseTriggersForLine] Base config from resolveConfigForLine:', baseConfig);
         const config: ConnectorConfig = { ...(baseConfig || {}) };
         const triggerNames: TriggerType[] = [
             'onTrigger', 'onDone', 'onError', 'onInProgress', 
             'onCancelled', 'onReset', 'onEnter', 'onData'
         ];
         
-        console.log('[ConfigLoader] Parsing triggers for tag:', tag, 'children:', line.children?.length || 0);
+        console.log('[ConfigLoader][parseTriggersForLine] Parsing triggers for tag:', tag, 'children:', line.children?.length || 0);
+        
+        if (!line.children || line.children.length === 0) {
+            console.log('[ConfigLoader][parseTriggersForLine] WARNING: No children found for tag:', tag);
+            return config;
+        }
         
         for (const prop of line.children || []) {
             const text = prop.text?.trim() || '';
-            console.log('[ConfigLoader] Checking child:', text);
+            console.log('[ConfigLoader][parseTriggersForLine] Checking child:', text, 'has children:', Boolean(prop.children?.length));
             // Check if this is a trigger line (e.g., "onEnter:")
             const triggerMatch = text.match(/^(on[A-Za-z]+):?\s*$/);
             if (triggerMatch) {
                 const triggerName = triggerMatch[1] as TriggerType;
-                console.log('[ConfigLoader] Found trigger:', triggerName);
+                console.log('[ConfigLoader][parseTriggersForLine] ✓ Found trigger:', triggerName);
                 if (triggerNames.includes(triggerName)) {
                     // Parse the trigger's children as actions
-                    config[triggerName] = this.parseActionsFromChildren(prop.children || []);
-                    console.log('[ConfigLoader] Parsed', config[triggerName].length, 'actions for', triggerName);
+                    const actionChildren = prop.children || [];
+                    console.log('[ConfigLoader][parseTriggersForLine] Parsing', actionChildren.length, 'action children for trigger', triggerName);
+                    config[triggerName] = this.parseActionsFromChildren(actionChildren);
+                    console.log('[ConfigLoader][parseTriggersForLine] ✓ Parsed', config[triggerName].length, 'actions for', triggerName);
+                } else {
+                    console.log('[ConfigLoader][parseTriggersForLine] WARNING: Trigger name not in allowed list:', triggerName);
                 }
+            } else {
+                console.log('[ConfigLoader][parseTriggersForLine] Child does not match trigger pattern:', text);
             }
         }
         
-        console.log('[ConfigLoader] Final config for', tag, ':', Object.keys(config));
+        console.log('[ConfigLoader][parseTriggersForLine] ✓ Final config for', tag, 'keys:', Object.keys(config));
         return config;
     }
 
@@ -435,36 +450,68 @@ export class ConfigLoader {
 
                 // Process Tag Triggers section (DSL triggers without config: wrapper)
                 console.log('[ConfigLoader] Processing Tag Triggers section, found', tagTriggersSection.length, 'lines');
+                console.log('[ConfigLoader] Tag Triggers raw items (before filtering):', tagTriggersSection.map((item: any) => ({
+                    text: (item?.text ?? '').split('\n')[0],
+                    tags: item?.tags || [],
+                    line: item?.line || item?.position?.start?.line,
+                    col: item?.position?.start?.col,
+                    childCount: item?.children?.length ?? 0
+                })));
+                
                 for (const line of tagTriggersSection) {
                     const rawText = (line?.text ?? '').split('\n')[0];
                     const col = line?.position?.start?.col;
 
+                    console.log('[ConfigLoader] ===== Processing item =====');
+                    console.log('[ConfigLoader] Item details:', {
+                        rawText,
+                        col,
+                        tagTriggersMinCol,
+                        matchesMinCol: typeof col === 'number' && col === tagTriggersMinCol,
+                        hasTags: Boolean(line.tags && line.tags.length > 0),
+                        tags: line.tags || [],
+                        childrenCount: line.children?.length ?? 0
+                    });
+
                     // Skip non-top-level items under the Tag Triggers header. This is the key guard
                     // that prevents treating tags inside `transform` output as new tag definitions.
                     if (typeof col === 'number' && col !== tagTriggersMinCol) {
+                        console.log('[ConfigLoader] SKIPPING item (wrong indentation):', rawText, 'col:', col, 'expected:', tagTriggersMinCol);
                         continue;
                     }
 
                     if (!line.tags || line.tags.length === 0) {
                         // This will skip lines like "onEnter:" or "read:" etc.
+                        console.log('[ConfigLoader] SKIPPING item (no tags):', rawText);
                         continue;
                     }
 
                     const tag = line.tags[0];
-                    console.log('[ConfigLoader] Processing tag trigger definition for:', tag, 'from line:', rawText, 'col:', col);
+                    console.log('[ConfigLoader] ✓ Item passed filters, processing tag trigger definition for:', tag);
                     console.log('[ConfigLoader] Tag details:', {
                         tag,
                         tagType: typeof tag,
                         tagLength: tag?.length,
                         tagStartsWithHash: tag?.startsWith('#'),
-                        allTags: line.tags
+                        allTags: line.tags,
+                        rawText,
+                        col
                     });
 
                     // Parse triggers directly from children (no config: wrapper needed)
+                    console.log('[ConfigLoader] About to parse triggers for', tag, 'children:', line.children?.length ?? 0);
+                    if (line.children && line.children.length > 0) {
+                        console.log('[ConfigLoader] Children details:', line.children.map((c: any) => ({
+                            text: c.text,
+                            childCount: c.children?.length ?? 0
+                        })));
+                    }
                     const config = await this.parseTriggersForLine(tag, line);
-                    console.log('[ConfigLoader] Parsed config for', tag, ':', config);
+                    console.log('[ConfigLoader] ✓ Parsed config for', tag);
                     console.log('[ConfigLoader] Config keys:', Object.keys(config));
+                    console.log('[ConfigLoader] Config object:', JSON.stringify(config, null, 2));
                     console.log('[ConfigLoader] Config.onEnter:', (config as any).onEnter);
+                    console.log('[ConfigLoader] Config.onDone:', (config as any).onDone);
 
                     // Only create connector and add to webTags if it has task-promoting triggers
                     // (onEnter is handled separately via Enter key handler, not via connectors)
