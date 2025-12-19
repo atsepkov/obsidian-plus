@@ -270,6 +270,18 @@ export class ConfigLoader {
                 if (testPodcastQuery.length > 0) {
                     console.log('[ConfigLoader] Found #podcast at lines:', testPodcastQuery.map((item: any) => item.line || item.position?.start?.line));
                 }
+                
+                // Test query: try to find #blog without header filter to see if it exists at all
+                const testBlogQuery = this.plugin.query(dataview, '#blog', { ...commonOptions, onlyReturn: true }) || [];
+                console.log('[ConfigLoader] Test query for #blog (no header filter):', testBlogQuery.length, 'items');
+                if (testBlogQuery.length > 0) {
+                    console.log('[ConfigLoader] Found #blog at lines:', testBlogQuery.map((item: any) => ({
+                        line: item.line || item.position?.start?.line,
+                        col: item.position?.start?.col,
+                        text: (item.text || '').split('\n')[0],
+                        tags: item.tags
+                    })));
+                }
 
                 const basicTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Basic Task Tags' }) || [];
                 const autoTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Automated Task Tags' }) || [];
@@ -299,11 +311,29 @@ export class ConfigLoader {
                 console.log('[ConfigLoader] Final Tag Triggers section found:', tagTriggersSection.length, 'items (raw list items)');
                 if (tagTriggersSection.length > 0) {
                     console.log('[ConfigLoader] Tag Triggers raw items:', tagTriggersSection.map((item: any) => ({
-                        text: item.text,
-                        tags: item.tags,
+                        text: (item.text || '').split('\n')[0],
+                        tags: item.tags || [],
                         line: item.line || item.position?.start?.line,
+                        col: item.position?.start?.col,
                         childCount: item.children?.length ?? 0
                     })));
+                    
+                    // Check specifically for #blog in the results
+                    const blogItems = tagTriggersSection.filter((item: any) => 
+                        item.tags && item.tags.some((t: string) => t === '#blog' || t === 'blog')
+                    );
+                    console.log('[ConfigLoader] Items containing #blog tag:', blogItems.length);
+                    if (blogItems.length > 0) {
+                        console.log('[ConfigLoader] #blog items details:', blogItems.map((item: any) => ({
+                            text: (item.text || '').split('\n')[0],
+                            tags: item.tags,
+                            line: item.line || item.position?.start?.line,
+                            col: item.position?.start?.col,
+                            childCount: item.children?.length ?? 0
+                        })));
+                    } else {
+                        console.log('[ConfigLoader] WARNING: #blog not found in tagTriggersSection query results!');
+                    }
                 }
 
                 // Compute the minimum indentation column inside the Tag Triggers header.

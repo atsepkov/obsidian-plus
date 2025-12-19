@@ -1190,10 +1190,9 @@ export const appendAction: ActionHandler<AppendActionNode> = async (action, cont
             appendChildren: [{
                 indent: indentLevel - 1, // taskManager uses 0-based indent
                 text: content
-            }],
-            // Safety: connector/automation output should not use "-" bullets (user-authored).
-            // Default to "+" for task-context appends; editor-context appends still use "-" (shopping list, etc.)
-            useBullet: '+'
+            }]
+            // Note: useBullet defaults to "-" in taskManager, which is fine for user-facing content
+            // We only use "+" for connector-generated responses/errors, not for user workflows like shopping lists
         });
         return context;
     }
