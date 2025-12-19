@@ -466,13 +466,19 @@ export class ConfigLoader {
                         console.log('[ConfigLoader] Config has DSL triggers, creating connector for', tag);
                         const connector = createConnector(tag, config, this.plugin);
                         if (connector) {
-                            console.log('[ConfigLoader] Storing connector in webTags with key:', tag, 'typeof:', typeof tag, 'length:', tag.length);
+                            console.log('[ConfigLoader] Storing DSL connector in webTags with key:', tag);
                             this.plugin.settings.webTags[tag] = connector;
                             console.log('[ConfigLoader] Stored. webTags keys now:', Object.keys(this.plugin.settings.webTags));
 
                             // Add to taskTags only if it has task-promoting triggers (not just onEnter)
-                            if (this.hasTaskTriggers(config)) {
+                            // This ensures tags with onDone/onTrigger/etc. are treated as task tags
+                            const hasTaskPromotingTriggers = this.hasTaskTriggers(config);
+                            console.log(`[ConfigLoader] Tag "${tag}" has task-promoting triggers?`, hasTaskPromotingTriggers, 'triggers:', Object.keys(config).filter(k => k.startsWith('on')));
+                            if (hasTaskPromotingTriggers) {
                                 addTaskTag(tag);
+                                console.log(`[ConfigLoader] Added "${tag}" to taskTags (has task triggers)`);
+                            } else {
+                                console.log(`[ConfigLoader] NOT adding "${tag}" to taskTags (only has onEnter or no task triggers)`);
                             }
 
                             console.log(`[ConfigLoader] Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));

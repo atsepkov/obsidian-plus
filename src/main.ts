@@ -492,91 +492,99 @@ export default class ObsidianPlus extends Plugin {
 								// }
 
 								console.log(`Task ${taskStatus === 'x' ? 'completed' : 'incomplete'}: ${taskTag}`, task);
-								if (this.settings.webTags[taskTag]) {
-									const tagConnector = this.settings.webTags[taskTag];
-									const dataview = this.app.plugins.getPlugin("dataview");
-									if (!dataview) {
-										throw new Error("Dataview plugin not found");
-									}
-									const dvTask = this.taskManager.findDvTask({ ...task, file, taskText, tag: {
-										pos: tagPosition,
-										name: taskTag,
-									}});
-									if (!dvTask) {
-										console.error(`Could not find task in dataview for ${taskTag}`, task);
+								
+								const tagConnector = this.settings.webTags[taskTag];
+								if (!tagConnector) {
+									console.log(`[Trigger] No connector found for task tag "${taskTag}" in webTags.`, {
+										taskTag,
+										webTagsKeys: Object.keys(this.settings.webTags),
+										inTaskTags: this.settings.taskTags.includes(taskTag)
+									});
+									continue;
+								}
+								
+								const dataview = this.app.plugins.getPlugin("dataview");
+								if (!dataview) {
+									throw new Error("Dataview plugin not found");
+								}
+								const dvTask = this.taskManager.findDvTask({ ...task, file, taskText, tag: {
+									pos: tagPosition,
+									name: taskTag,
+								}});
+								if (!dvTask) {
+									console.error(`Could not find task in dataview for ${taskTag}`, task);
+									continue;
+								}
+								if (taskStatus === ' ') {
+									// reset trigger
+									await tagConnector.onReset(dvTask);
+									// if reset updated the task, we need to sync our cache
+									newTasks = await this.extractTaskLines(file);
+								} else if (taskStatus === 'x' && oldTaskStatus === ' ') {
+									// Completion: either run a connector transaction (onTrigger -> onSuccess -> set x),
+									// or if DSL has no onTrigger, allow onDone to run directly on entering x.
+									const event = { fromStatus: oldTaskStatus, toStatus: taskStatus };
+									const hasDslTriggers = typeof (tagConnector as any)?.hasTrigger === 'function';
+									const dslHasOnTrigger = hasDslTriggers ? Boolean((tagConnector as any).hasTrigger('onTrigger')) : true;
+									console.log('[Trigger] completion detected (space -> x)', {
+										tag: taskTag,
+										oldTaskStatus,
+										taskStatus,
+										dvTaskStatus: (dvTask as any)?.status,
+										dvTaskCompleted: (dvTask as any)?.completed,
+										hasDslTriggers,
+										dslHasOnTrigger
+									});
+
+									// If this is a DSL connector (hasTrigger exists) and it does NOT define onTrigger,
+									// do NOT run the transaction pipeline. Instead, fire onDone via status-change hook.
+									if (hasDslTriggers && !dslHasOnTrigger) {
+										if (typeof (tagConnector as any)?.onStatusChange === 'function') {
+											console.log('[Trigger] DSL has no onTrigger; firing onStatusChange for onDone', { tag: taskTag });
+											await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
+											newTasks = await this.extractTaskLines(file);
+										}
 										continue;
 									}
-									if (taskStatus === ' ') {
-										// reset trigger
-										await tagConnector.onReset(dvTask);
-										// if reset updated the task, we need to sync our cache
+
+									// Otherwise run the normal transaction pipeline.
+									try {
+										await this.changeTaskStatus(dvTask, '/');
+										const response = await (tagConnector as any).onTrigger(dvTask, event);
+										await tagConnector.onSuccess(dvTask, response);
+										await this.changeTaskStatus(dvTask, 'x');
+										// if success updated the task, we need to sync our cache
 										newTasks = await this.extractTaskLines(file);
-									} else if (taskStatus === 'x' && oldTaskStatus === ' ') {
-										// Completion: either run a connector transaction (onTrigger -> onSuccess -> set x),
-										// or if DSL has no onTrigger, allow onDone to run directly on entering x.
-										const event = { fromStatus: oldTaskStatus, toStatus: taskStatus };
-										const hasDslTriggers = typeof (tagConnector as any)?.hasTrigger === 'function';
-										const dslHasOnTrigger = hasDslTriggers ? Boolean((tagConnector as any).hasTrigger('onTrigger')) : true;
-										console.log('[Trigger] completion detected (space -> x)', {
+									} catch (e) {
+										console.error(e);
+										await tagConnector.onError(dvTask, e);
+										await this.changeTaskStatus(dvTask, '!');
+										// if error updated the task, we need to sync our cache
+										newTasks = await this.extractTaskLines(file);
+									}
+								} else if (taskStatus === 'x' && oldTaskStatus === '/') {
+									// Finalization transition after successful transaction: / -> x.
+									// Fire onDone (and other status-based triggers) via connector hook if available.
+									if (typeof (tagConnector as any)?.onStatusChange === 'function') {
+										console.log('[Trigger] finalization detected (/ -> x); firing onStatusChange', { tag: taskTag });
+										await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
+										newTasks = await this.extractTaskLines(file);
+									}
+								} else if (taskStatus === 'x') {
+									// Safety net: if we see a completion transition we didn't explicitly handle,
+									// still try firing status-change triggers (e.g. ! -> x, - -> x, etc.)
+									if (typeof (tagConnector as any)?.onStatusChange === 'function') {
+										console.log('[Trigger] completion detected (other -> x); firing onStatusChange', {
 											tag: taskTag,
 											oldTaskStatus,
 											taskStatus,
 											dvTaskStatus: (dvTask as any)?.status,
-											dvTaskCompleted: (dvTask as any)?.completed,
-											hasDslTriggers,
-											dslHasOnTrigger
+											dvTaskCompleted: (dvTask as any)?.completed
 										});
-
-										// If this is a DSL connector (hasTrigger exists) and it does NOT define onTrigger,
-										// do NOT run the transaction pipeline. Instead, fire onDone via status-change hook.
-										if (hasDslTriggers && !dslHasOnTrigger) {
-											if (typeof (tagConnector as any)?.onStatusChange === 'function') {
-												console.log('[Trigger] DSL has no onTrigger; firing onStatusChange for onDone', { tag: taskTag });
-												await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
-												newTasks = await this.extractTaskLines(file);
-											}
-											continue;
-										}
-
-										// Otherwise run the normal transaction pipeline.
-										try {
-											await this.changeTaskStatus(dvTask, '/');
-											const response = await (tagConnector as any).onTrigger(dvTask, event);
-											await tagConnector.onSuccess(dvTask, response);
-											await this.changeTaskStatus(dvTask, 'x');
-											// if success updated the task, we need to sync our cache
-											newTasks = await this.extractTaskLines(file);
-										} catch (e) {
-											console.error(e);
-											await tagConnector.onError(dvTask, e);
-											await this.changeTaskStatus(dvTask, '!');
-											// if error updated the task, we need to sync our cache
-											newTasks = await this.extractTaskLines(file);
-										}
-									} else if (taskStatus === 'x' && oldTaskStatus === '/') {
-										// Finalization transition after successful transaction: / -> x.
-										// Fire onDone (and other status-based triggers) via connector hook if available.
-										if (typeof (tagConnector as any)?.onStatusChange === 'function') {
-											console.log('[Trigger] finalization detected (/ -> x); firing onStatusChange', { tag: taskTag });
-											await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
-											newTasks = await this.extractTaskLines(file);
-										}
-									} else if (taskStatus === 'x') {
-										// Safety net: if we see a completion transition we didn't explicitly handle,
-										// still try firing status-change triggers (e.g. ! -> x, - -> x, etc.)
-										if (typeof (tagConnector as any)?.onStatusChange === 'function') {
-											console.log('[Trigger] completion detected (other -> x); firing onStatusChange', {
-												tag: taskTag,
-												oldTaskStatus,
-												taskStatus,
-												dvTaskStatus: (dvTask as any)?.status,
-												dvTaskCompleted: (dvTask as any)?.completed
-											});
-											await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
-											newTasks = await this.extractTaskLines(file);
-										} else {
-											console.log('[Trigger] completion detected but connector has no onStatusChange', { tag: taskTag });
-										}
+										await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
+										newTasks = await this.extractTaskLines(file);
+									} else {
+										console.log('[Trigger] completion detected but connector has no onStatusChange', { tag: taskTag });
 									}
 								}
 							}
