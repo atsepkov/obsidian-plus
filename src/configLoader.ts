@@ -466,32 +466,38 @@ export class ConfigLoader {
                     console.log('[ConfigLoader] Config keys:', Object.keys(config));
                     console.log('[ConfigLoader] Config.onEnter:', (config as any).onEnter);
 
-                    // Only process if we found any triggers
-                    const hasTriggers = hasDSLTriggers(config);
-                    console.log('[ConfigLoader] hasDSLTriggers result for', tag, ':', hasTriggers);
-                    if (hasTriggers) {
-                        console.log('[ConfigLoader] Config has DSL triggers, creating connector for', tag);
+                    // Only create connector and add to webTags if it has task-promoting triggers
+                    // (onEnter is handled separately via Enter key handler, not via connectors)
+                    const hasTaskPromotingTriggers = this.hasTaskTriggers(config);
+                    const hasAnyTriggers = hasDSLTriggers(config);
+                    
+                    console.log('[ConfigLoader] hasDSLTriggers result for', tag, ':', hasAnyTriggers);
+                    console.log('[ConfigLoader] hasTaskTriggers result for', tag, ':', hasTaskPromotingTriggers);
+                    console.log('[ConfigLoader] Config keys:', Object.keys(config));
+                    console.log('[ConfigLoader] All triggers:', Object.keys(config).filter(k => k.startsWith('on')));
+                    
+                    if (hasTaskPromotingTriggers) {
+                        // This tag has task triggers (onDone, onTrigger, etc.) - needs a connector
+                        console.log('[ConfigLoader] Config has task-promoting triggers, creating connector for', tag);
                         const connector = createConnector(tag, config, this.plugin);
                         if (connector) {
                             console.log('[ConfigLoader] Storing DSL connector in webTags with key:', tag);
                             this.plugin.settings.webTags[tag] = connector;
                             console.log('[ConfigLoader] Stored. webTags keys now:', Object.keys(this.plugin.settings.webTags));
-
-                            // Add to taskTags only if it has task-promoting triggers (not just onEnter)
-                            // This ensures tags with onDone/onTrigger/etc. are treated as task tags
-                            const hasTaskPromotingTriggers = this.hasTaskTriggers(config);
-                            console.log(`[ConfigLoader] Tag "${tag}" has task-promoting triggers?`, hasTaskPromotingTriggers, 'triggers:', Object.keys(config).filter(k => k.startsWith('on')));
-                            if (hasTaskPromotingTriggers) {
-                                addTaskTag(tag);
-                                console.log(`[ConfigLoader] Added "${tag}" to taskTags (has task triggers)`);
-                            } else {
-                                console.log(`[ConfigLoader] NOT adding "${tag}" to taskTags (only has onEnter or no task triggers)`);
-                            }
-
+                            
+                            addTaskTag(tag);
+                            console.log(`[ConfigLoader] Added "${tag}" to taskTags (has task triggers)`);
+                            
                             console.log(`[ConfigLoader] Created DSL connector for ${tag} with triggers:`, Object.keys(config).filter(k => k.startsWith('on')));
                         } else {
                             console.error(`[ConfigLoader] Failed to create DSL connector for tag "${tag}"`);
+                            console.error(`[ConfigLoader] Config that failed:`, JSON.stringify(config, null, 2));
                         }
+                    } else if (hasAnyTriggers) {
+                        // This tag only has onEnter (or other non-task triggers) - don't create connector
+                        // onEnter is handled separately via Enter key handler in main.ts
+                        console.log(`[ConfigLoader] Tag "${tag}" has triggers but no task-promoting triggers (only onEnter or similar). Skipping connector creation.`);
+                        console.log(`[ConfigLoader] Triggers found:`, Object.keys(config).filter(k => k.startsWith('on')));
                     } else {
                         console.log('[ConfigLoader] No DSL triggers found in config for', tag);
                         console.log('[ConfigLoader] Config object:', JSON.stringify(config, null, 2));
