@@ -12,6 +12,7 @@ import type {
     DSLContext,
     ActionNode,
     ReadActionNode,
+    FileActionNode,
     FetchActionNode,
     ShellActionNode,
     TransformActionNode,
@@ -43,6 +44,14 @@ import {
 
 const execAsync = promisify(exec);
 const SHELL_MAX_BUFFER = 10 * 1024 * 1024;
+
+type FileMetadata = {
+    path: string;
+    name: string;
+    basename: string;
+    extension: string;
+    resourcePath: string;
+};
 
 async function appendChildBullet(context: DSLContext, text: string, bullet: '+' | '*', indentLevel = 1): Promise<void> {
     const trimmed = text.trim();
@@ -119,6 +128,45 @@ function ensureVaultScopedCommand(command: string): void {
     }
 }
 
+export function parseWikilink(raw: string): { path: string; anchor: string | null } {
+    const s = (raw ?? '').trim();
+    if (!s) return { path: '', anchor: null };
+
+    // [[path|alias]] or [[path#anchor|alias]] -> extract path and anchor
+    const bracket = s.match(/^\[\[([\s\S]+)\]\]$/);
+    const inner = bracket ? bracket[1] : s;
+    const beforeAlias = inner.split('|')[0].trim();
+
+    // Split on # to get path and anchor
+    const hashIndex = beforeAlias.indexOf('#');
+    if (hashIndex >= 0) {
+        return {
+            path: beforeAlias.slice(0, hashIndex).trim(),
+            anchor: beforeAlias.slice(hashIndex + 1).trim() || null
+        };
+    }
+    return { path: beforeAlias, anchor: null };
+}
+
+export function resolveWikilinkToFile(context: DSLContext, wikilink: string): TFile {
+    const { path } = parseWikilink(wikilink);
+    if (!path) throw new Error('wikilink resolution requires a non-empty from: [[File]]');
+    const basePath = context.file?.path ?? '';
+    const dest = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
+    if (!dest) throw new Error(`Could not resolve wikilink: ${wikilink}`);
+    return dest;
+}
+
+function buildFileMetadata(context: DSLContext, file: TFile): FileMetadata {
+    return {
+        path: file.path,
+        name: file.name,
+        basename: file.basename,
+        extension: file.extension,
+        resourcePath: context.app.vault.getResourcePath(file)
+    };
+}
+
 /**
  * Action handler type
  */
@@ -166,26 +214,6 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         if (end === -1) return { frontmatter: null, body: md };
         const body = md.slice(end + '\n---'.length).replace(/^\r?\n/, '');
         return { frontmatter: null, body };
-    };
-
-    const parseWikilink = (raw: string): { path: string; anchor: string | null } => {
-        const s = (raw ?? '').trim();
-        if (!s) return { path: '', anchor: null };
-        
-        // [[path|alias]] or [[path#anchor|alias]] -> extract path and anchor
-        const bracket = s.match(/^\[\[([\s\S]+)\]\]$/);
-        const inner = bracket ? bracket[1] : s;
-        const beforeAlias = inner.split('|')[0].trim();
-        
-        // Split on # to get path and anchor
-        const hashIndex = beforeAlias.indexOf('#');
-        if (hashIndex >= 0) {
-            return {
-                path: beforeAlias.slice(0, hashIndex).trim(),
-                anchor: beforeAlias.slice(hashIndex + 1).trim() || null
-            };
-        }
-        return { path: beforeAlias, anchor: null };
     };
 
     const slugifyHeading = (value: string): string => {
@@ -244,15 +272,6 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         return result.join('\n');
     };
 
-    const resolveWikilinkToFile = (wikilink: string): TFile => {
-        const { path } = parseWikilink(wikilink);
-        if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
-        const basePath = context.file?.path ?? '';
-        const dest = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
-        if (!dest) throw new Error(`Could not resolve wikilink: ${wikilink}`);
-        return dest;
-    };
-
     const isImageFile = (file: TFile): boolean => {
         const ext = file.extension.toLowerCase();
         return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext);
@@ -302,11 +321,12 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             const from = action.from ? interpolate(action.from, context.vars) : '';
             const { path, anchor } = parseWikilink(from);
             if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
-            
-            const basePath = context.file?.path ?? '';
-            const file = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
-            if (!file) throw new Error(`Could not resolve wikilink: ${from}`);
-            
+
+            const file = resolveWikilinkToFile(context, from);
+
+            const fileVar = action.asFile ?? 'fromFile';
+            context.vars[fileVar] = buildFileMetadata(context, file);
+
             const fullText = await context.app.vault.read(file);
             
             // If anchor is specified, extract just that section
@@ -410,7 +430,10 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
                 // Wikilink: resolve to file and convert to base64
                 // Handle both ![[image.png]] and [[image.png]] formats
                 const wikilink = from.replace(/^!\[\[/, '[[').replace(/\]\]$/, ']]');
-                const file = resolveWikilinkToFile(wikilink);
+                const file = resolveWikilinkToFile(context, wikilink);
+
+                const fileVar = action.asFile ?? 'fromFile';
+                context.vars[fileVar] = buildFileMetadata(context, file);
                 
                 if (!isImageFile(file)) {
                     throw new Error(`read: source=image - file "${file.name}" is not a recognized image file (supported: png, jpg, jpeg, gif, webp, svg, bmp)`);
@@ -487,6 +510,22 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         context.vars[action.as] = text;
     }
     
+    return context;
+};
+
+/**
+ * File action handler
+ * Resolves a wikilink/path to a vault file and exposes its metadata for downstream actions
+ */
+export const fileAction: ActionHandler<FileActionNode> = async (action, context) => {
+    const from = interpolate(action.from, context.vars).trim();
+    if (!from) throw new Error('file: requires a from value (wikilink or path)');
+
+    const file = resolveWikilinkToFile(context, from);
+    const varName = action.as?.trim();
+    if (!varName) throw new Error('file: requires as: <variable> to store metadata');
+
+    context.vars[varName] = buildFileMetadata(context, file);
     return context;
 };
 
@@ -1459,6 +1498,7 @@ export const taskAction: ActionHandler<TaskActionNode> = async (action, context)
  */
 export const actionHandlers: Record<string, ActionHandler<any>> = {
     read: readAction,
+    file: fileAction,
     fetch: fetchAction,
     shell: shellAction,
     transform: transformAction,

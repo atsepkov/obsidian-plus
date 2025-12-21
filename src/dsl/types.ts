@@ -82,6 +82,7 @@ export interface BaseActionNode {
  */
 export type ActionType =
     | 'read'
+    | 'file'
     | 'fetch'
     | 'shell'
     | 'transform'
@@ -154,6 +155,8 @@ export interface ReadActionNode extends BaseActionNode {
     from?: string;
     /** Optional variable name to store the read text into (in addition to vars.text) */
     as?: string;
+    /** When reading another file/image, also expose its metadata into this variable (defaults to `fromFile`) */
+    asFile?: string;
     /** If true, strip YAML frontmatter from the read content (when reading a file/wikilink) */
     stripFrontmatter?: boolean;
     /** If true, also expose the frontmatter object (when reading a file/wikilink) */
@@ -190,6 +193,17 @@ export interface FetchActionNode extends BaseActionNode {
     as?: string;
     /** Authentication configuration */
     auth?: AuthConfig;
+}
+
+/**
+ * File action - resolves a wikilink/path to a vault file and exposes its metadata
+ */
+export interface FileActionNode extends BaseActionNode {
+    type: 'file';
+    /** Wikilink or path to resolve */
+    from: string;
+    /** Variable name to store file metadata (path/name/basename/extension/resourcePath) */
+    as: string;
 }
 
 /**
@@ -437,6 +451,7 @@ export interface DateActionNode extends BaseActionNode {
  */
 export type ActionNode =
     | ReadActionNode
+    | FileActionNode
     | FetchActionNode
     | ShellActionNode
     | TransformActionNode

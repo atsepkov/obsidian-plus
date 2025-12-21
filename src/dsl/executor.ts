@@ -196,6 +196,10 @@ async function executeActionSafe(
             const normalized = validateVarName((action as any).as, 'variable name for "as"');
             if (normalized !== undefined) (action as any).as = normalized;
         }
+        if ('asFile' in (action as any)) {
+            const normalized = validateVarName((action as any).asFile, 'variable name for "asFile"');
+            if (normalized !== undefined) (action as any).asFile = normalized;
+        }
         if ('name' in (action as any)) {
             const normalized = validateVarName((action as any).name, 'variable name for "name"');
             if (normalized !== undefined) (action as any).name = normalized;

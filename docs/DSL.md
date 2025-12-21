@@ -104,6 +104,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: children` — read child bullets
 - `source: wikilink` — read the contents of another note by wikilink
 - `source: image` — read image file (wikilink or URL) and convert to base64
+- `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath)
 
 #### Reading another note by wikilink
 
@@ -116,6 +117,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 ```
 
 After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
+`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath) unless you set `asFile` to a different variable name.
 
 **Reading a specific section:**
 
@@ -182,6 +184,7 @@ Read image files and convert them to base64 for sending to APIs:
   - Reads the binary data
   - Converts to base64 string or data URI
   - Supported formats: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`
+  - Also exposes file metadata at `{{fromFile}}` (or your custom `asFile` variable)
 
 **Format options:**
 - `format: base64` — returns just the base64 string (e.g., `iVBORw0KGgo...`)
@@ -222,6 +225,23 @@ Now you can reference:
 - `{{meta.title}}`
 - `{{meta.tags}}` (string unless you parse it)
 - raw: `{{meta_lines}}`
+
+---
+
+### `file` — Resolve Wikilinks to File Metadata
+
+Resolve a wikilink or path to the underlying vault file without reading its contents. The resolved metadata is safe to hand to `shell` or other actions that need on-disk paths.
+
+```yaml
+- file: `[[My Note]]` as: `noteFile`
+- shell: `cat "{{noteFile.path}}"`
+```
+
+**Metadata fields:**
+- `path`, `name`, `basename`, `extension`
+- `resourcePath` (Obsidian resource URL for embeds)
+
+If you already `read` a wikilink or image, `{{fromFile}}` (or your `asFile:` override) contains the same metadata without needing a separate `file` action.
 
 ---
 
@@ -738,6 +758,12 @@ Every action can have an `onError` block:
 | `{{task.completed}}` | Whether task is completed |
 | `{{task.status}}` | Task status character |
 | `{{cursor}}` | Special: marks cursor position in transforms |
+
+#### File metadata variables
+
+- Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`
+- Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`)
+- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, etc.
 
 ### Trigger Event Variables (Status Transitions)
 
