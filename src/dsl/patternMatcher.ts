@@ -314,7 +314,9 @@ export function interpolate(template: string, context: Record<string, any>): str
     if (!template || typeof template !== 'string') {
         return template;
     }
-    
+
+    validateTemplatePlaceholders(template);
+
     return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier) => {
         // {{cursor}} is a control marker used by transform; it is NOT a normal variable.
         // Preserve it verbatim so transform can locate it after interpolation.
@@ -342,6 +344,39 @@ export function interpolate(template: string, context: Record<string, any>): str
         
         return String(value);
     });
+}
+
+/**
+ * Ensure there are no stray/unmatched `{{` placeholders in the template.
+ *
+ * We scan for every `{{` sequence and require that it belongs to a token matched
+ * by PATTERN_TOKEN_REGEX. If not, we throw to prevent silently running commands
+ * with literal placeholders (e.g. an unclosed `{{name}`).
+ */
+function validateTemplatePlaceholders(template: string): void {
+    if (!template.includes('{{')) return;
+
+    PATTERN_TOKEN_REGEX.lastIndex = 0;
+    const matchedRanges: Array<{ start: number; end: number }> = [];
+    let match: RegExpExecArray | null;
+    while ((match = PATTERN_TOKEN_REGEX.exec(template)) !== null) {
+        matchedRanges.push({ start: match.index, end: match.index + match[0].length });
+    }
+
+    // Look for any `{{` not covered by a matched token
+    let searchIndex = 0;
+    while (true) {
+        const idx = template.indexOf('{{', searchIndex);
+        if (idx === -1) break;
+
+        const belongsToToken = matchedRanges.some((range) => idx >= range.start && idx < range.end);
+        if (!belongsToToken) {
+            const context = template.slice(idx, Math.min(template.length, idx + 30));
+            throw new Error(`Unmatched template placeholder near: ${context}`);
+        }
+
+        searchIndex = idx + 2; // Move past current `{{`
+    }
 }
 
 /**

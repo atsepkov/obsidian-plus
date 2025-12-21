@@ -96,6 +96,8 @@ Reads the current line (or file/selection) and extracts variables using patterns
 | `{{items+}}` | Space-separated list | `apple banana` → `["apple", "banana"]` |
 | `{{items+:, }}` | Custom delimiter list | `a, b, c` → `["a", "b", "c"]` |
 
+> **Tip:** Placeholders must be closed. An unbalanced token such as `{{name` will throw an error during execution instead of running with the literal text.
+
 **Options:**
 - `source: file` — read entire file instead of current line
 - `source: selection` — read selected text
