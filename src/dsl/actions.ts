@@ -438,13 +438,26 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             text = context.line || '';
     }
     
+    const stripTaskMetadata = (content: string): string => {
+        // Remove trailing task metadata tokens (e.g., completion/due dates like "✅ 2025-12-21").
+        // This keeps pattern matching focused on the user-provided text rather than auto-appended status fields.
+        const metadataPattern = /\s*(?:[✅⏳📅🔁🛫🛬🚩]\s+[^\s]+(?:\s+[^\s]+)*)$/;
+        let result = content.trimEnd();
+
+        while (metadataPattern.test(result)) {
+            result = result.replace(metadataPattern, '').trimEnd();
+        }
+
+        return result;
+    };
+
     // Extract variables from text using pattern (skip for images - they're binary)
     if (action.pattern && source !== 'image') {
         // IMPORTANT: Do NOT interpolate patterns used for extraction.
         // Interpolation would delete capture tokens (e.g. {{url}}) when vars are unset,
         // turning "#podcast {{url}}" into "#podcast " and causing false mismatches.
         const pattern = action.pattern;
-        const haystack = textForMatching ?? text;
+        const haystack = stripTaskMetadata(textForMatching ?? text);
         const result = extractValues(haystack, pattern);
         
         if (result.success) {

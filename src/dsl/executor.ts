@@ -92,9 +92,8 @@ async function defaultErrorHandler(
     // If we have a task, add error as child bullet
     if (context.task && context.taskManager) {
         try {
-            const timestamp = new Date().toLocaleString();
-            const errorMessage = `Error (${action.type}): ${error.message} (${timestamp})`;
-            
+            const errorMessage = `Error (${action.type}): ${error.message}`;
+
             await context.taskManager.updateDvTask(context.task, {
                 prependChildren: [{
                     indent: 0,
