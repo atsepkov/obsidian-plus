@@ -80,9 +80,10 @@ export interface BaseActionNode {
 /**
  * All supported action types
  */
-export type ActionType = 
+export type ActionType =
     | 'read'
     | 'fetch'
+    | 'shell'
     | 'transform'
     | 'build'
     | 'query'
@@ -102,6 +103,19 @@ export type ActionType =
     | 'filter'
     | 'map'
     | 'date';
+
+/**
+ * Shell action - executes a command within the vault directory
+ */
+export interface ShellActionNode extends BaseActionNode {
+    type: 'shell';
+    /** Command to execute (will be run from the vault root) */
+    command: string;
+    /** Optional variable name to store combined stdout/stderr */
+    as?: string;
+    /** Optional timeout in milliseconds */
+    timeout?: number;
+}
 
 /**
  * Task action - safely manipulates the current task
@@ -421,9 +435,10 @@ export interface DateActionNode extends BaseActionNode {
 /**
  * Union type of all action nodes
  */
-export type ActionNode = 
+export type ActionNode =
     | ReadActionNode
     | FetchActionNode
+    | ShellActionNode
     | TransformActionNode
     | BuildActionNode
     | QueryActionNode

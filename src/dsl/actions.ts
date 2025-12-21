@@ -6,11 +6,14 @@
  */
 
 import { Notice, requestUrl, TFile } from 'obsidian';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type {
     DSLContext,
     ActionNode,
     ReadActionNode,
     FetchActionNode,
+    ShellActionNode,
     TransformActionNode,
     BuildActionNode,
     QueryActionNode,
@@ -31,12 +34,90 @@ import type {
     DateActionNode,
     TransformChild
 } from './types';
-import { 
-    extractValues, 
-    interpolate, 
-    evaluateCondition, 
-    cleanTemplate 
+import {
+    extractValues,
+    interpolate,
+    evaluateCondition,
+    cleanTemplate
 } from './patternMatcher';
+
+const execAsync = promisify(exec);
+const SHELL_MAX_BUFFER = 10 * 1024 * 1024;
+
+async function appendChildBullet(context: DSLContext, text: string, bullet: '+' | '*', indentLevel = 1): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    if (context.task && context.taskManager) {
+        await context.taskManager.updateDvTask(context.task, {
+            appendChildren: [{
+                indent: Math.max(0, indentLevel - 1),
+                text: trimmed,
+                bullet
+            }],
+            useBullet: bullet
+        });
+        return;
+    }
+
+    if (context.editor) {
+        const editor = context.editor;
+        const cursorLine = context.cursor?.line ?? editor.getCursor().line;
+        const currentLine = editor.getLine(cursorLine);
+        const baseIndent = currentLine.match(/^(\s*)/)?.[1] || '';
+        const indentUnit = '  ';
+        const childIndent = baseIndent + indentUnit.repeat(indentLevel);
+
+        let insertLine = cursorLine;
+        const totalLines = editor.lineCount();
+        for (let i = cursorLine + 1; i < totalLines; i++) {
+            const line = editor.getLine(i);
+            const lineIndent = line.match(/^(\s*)/)?.[1] || '';
+            if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
+                break;
+            }
+            if (line.trim() !== '') {
+                insertLine = i;
+            }
+        }
+
+        const newLine = `${childIndent}${bullet} ${trimmed}`;
+        const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
+        editor.replaceRange('\n' + newLine, insertPos);
+
+        const newCursorLine = insertLine + 1;
+        editor.setCursor({ line: newCursorLine, ch: newLine.length });
+        context.cursor = { line: newCursorLine, ch: newLine.length };
+    }
+}
+
+function getVaultBasePath(context: DSLContext): string {
+    const adapter = (context.app.vault as any)?.adapter;
+    const basePath = typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : adapter?.basePath;
+
+    if (!basePath || typeof basePath !== 'string') {
+        throw new Error('shell: vault base path is unavailable; shell commands require a filesystem vault');
+    }
+
+    return basePath;
+}
+
+function ensureVaultScopedCommand(command: string): void {
+    const tokens = command.split(/\s+/).filter(Boolean).map(t => t.replace(/^['"]|['"]$/g, ''));
+
+    for (const token of tokens) {
+        if (!token) continue;
+        if (/^[A-Za-z]:\\/.test(token)) {
+            throw new Error('shell: commands must stay within the vault (no absolute drive paths)');
+        }
+        if (token.startsWith('/') || token.startsWith('~')) {
+            throw new Error('shell: commands must stay within the vault (no absolute paths). Symlink external folders into the vault if needed.');
+        }
+        if (token === '..' || token.startsWith('../') || token.includes('/../')) {
+            throw new Error('shell: parent path segments are not allowed; use a vault symlink instead');
+        }
+    }
+}
 
 /**
  * Action handler type
@@ -550,6 +631,45 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     }
     
     return context;
+};
+
+/**
+ * Shell action handler
+ * Executes a command scoped to the vault root and surfaces output as + children
+ */
+export const shellAction: ActionHandler<ShellActionNode> = async (action, context) => {
+    const command = interpolate(action.command, context.vars).trim();
+    if (!command) throw new Error('shell: command is empty after interpolation');
+
+    ensureVaultScopedCommand(command);
+    const cwd = getVaultBasePath(context);
+
+    try {
+        const result = await execAsync(command, {
+            cwd,
+            timeout: action.timeout,
+            windowsHide: true,
+            maxBuffer: SHELL_MAX_BUFFER
+        });
+
+        const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+        if (action.as) {
+            context.vars[action.as] = output;
+        }
+
+        if (output) {
+            await appendChildBullet(context, output, '+');
+        }
+
+        return context;
+    } catch (err: any) {
+        const stdout = err?.stdout ?? '';
+        const stderr = err?.stderr ?? '';
+        const combined = `${stdout}${stderr}`.trim();
+        const codeInfo = err?.code !== undefined ? `exit ${err.code}` : (err?.signal ? `signal ${err.signal}` : 'failed');
+        const message = combined ? `${combined} (${codeInfo})` : `Command failed (${codeInfo})`;
+        throw new Error(`shell failed: ${message}`);
+    }
 };
 
 /**
@@ -1327,6 +1447,7 @@ export const taskAction: ActionHandler<TaskActionNode> = async (action, context)
 export const actionHandlers: Record<string, ActionHandler<any>> = {
     read: readAction,
     fetch: fetchAction,
+    shell: shellAction,
     transform: transformAction,
     build: buildAction,
     query: queryAction,

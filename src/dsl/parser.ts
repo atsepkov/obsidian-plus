@@ -34,6 +34,7 @@ import type {
     FilterActionNode,
     MapActionNode,
     DateActionNode,
+    ShellActionNode,
     AuthConfig
 } from './types';
 import { cleanTemplate } from './patternMatcher';
@@ -59,6 +60,7 @@ const TRIGGER_NAMES: TriggerType[] = [
 const ACTION_TYPES: ActionType[] = [
     'read',
     'fetch',
+    'shell',
     'transform',
     'build',
     'query',
@@ -294,6 +296,8 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
             return parseReadAction(mainValue, inlineKV, regularChildren, onError);
         case 'fetch':
             return parseFetchAction(mainValue, inlineKV, regularChildren, onError);
+        case 'shell':
+            return parseShellAction(mainValue, inlineKV, regularChildren, onError);
         case 'transform':
             return parseTransformAction(mainValue, regularChildren, onError);
         case 'build':
@@ -466,6 +470,34 @@ function parseFetchAction(
         }
     }
     
+    return node;
+}
+
+/**
+ * Parse a shell action
+ */
+function parseShellAction(
+    command: string,
+    inlineKV: Record<string, string>,
+    _children: RawConfigItem[],
+    onError?: ActionNode[]
+): ShellActionNode {
+    const trimmedCommand = cleanTemplate(command).trim();
+    if (!trimmedCommand) throw new Error('shell: requires a command to run');
+
+    const node: ShellActionNode = {
+        type: 'shell',
+        command: trimmedCommand,
+        onError
+    };
+
+    if (inlineKV.as) node.as = cleanTemplate(inlineKV.as);
+    if (inlineKV.timeout) {
+        const parsed = Number(inlineKV.timeout);
+        if (!Number.isFinite(parsed)) throw new Error('shell: timeout must be a number (ms)');
+        node.timeout = parsed;
+    }
+
     return node;
 }
 

@@ -333,6 +333,25 @@ Fetches data from APIs and stores the response.
 
 ---
 
+### `shell` — Run Local Commands (Vault-Scoped)
+
+Executes a shell command from the vault root so relative paths stay inside your vault.
+
+```yaml
+- shell: `ls templates`
+  - as: `listing`
+```
+
+**Behavior & safety:**
+- Commands are run with the vault root as the working directory.
+- Absolute paths (`/`, `~`, drive letters) and parent segments (`..`) are rejected to keep execution inside the vault. Symlink external folders into the vault if needed.
+- Combined stdout/stderr is stored in `as:` (if provided) and echoed as a `+` child bullet.
+- Non-zero exit codes produce a `* Error (shell): ...` bullet with the failure details.
+
+Use this for lightweight local automations that should only touch files inside the vault.
+
+---
+
 ### `transform` — Reshape Your Content
 
 Replaces the current line and adds child bullets.
