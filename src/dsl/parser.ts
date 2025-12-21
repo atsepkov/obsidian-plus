@@ -256,12 +256,13 @@ function parseTransformChildren(children: RawConfigItem[] | undefined, baseInden
  */
 function parseActionNode(item: RawConfigItem): ActionNode | null {
     const text = item.text.trim();
-    
+    const normalizedText = text.replace(/^[-+*]\s+/, '');
+
     // Parse inline key-value pairs (for actions like "fetch: `url` as: `name`")
-    const inlineKV = parseInlineKeyValues(text);
-    
+    const inlineKV = parseInlineKeyValues(normalizedText);
+
     // Get the main action type
-    const mainKV = parseKeyValue(text);
+    const mainKV = parseKeyValue(normalizedText);
     if (!mainKV) return null;
     
     const actionType = mainKV.key;
