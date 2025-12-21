@@ -90,7 +90,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 
 | Pattern | Meaning | Example |
 |---------|---------|---------|
-| `{{var}}` | Capture required value | `{{url}}` → must exist |
+| `{{var}}` | Capture required value (first word) | `{{url}}` → must exist |
 | `{{var?}}` | Capture optional value | `{{subtitle?}}` → can be empty |
 | `{{var*}}` | Greedy (rest of line) | `{{description*}}` |
 | `{{items+}}` | Space-separated list | `apple banana` → `["apple", "banana"]` |

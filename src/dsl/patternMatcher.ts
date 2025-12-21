@@ -165,19 +165,21 @@ export function extractValues(text: string, pattern: string): PatternExtractionR
                 regexStr += '(.+)';
             }
         } else {
-            // Simple or optional - match non-greedy word-like content
+            // Simple or optional - match non-greedy content (single word when no following literal)
             const nextLiteral = literals[literalIndex];
             if (token.optional) {
                 if (nextLiteral) {
                     regexStr += `(.*?)(?=${escapeRegex(nextLiteral)})`;
                 } else {
-                    regexStr += '(.*)';
+                    // Optional tokens at the end should only consume a single word, not the whole line
+                    regexStr += '(\\S*)';
                 }
             } else {
                 if (nextLiteral) {
                     regexStr += `(.+?)(?=${escapeRegex(nextLiteral)})`;
                 } else {
-                    regexStr += '(.+)';
+                    // Required tokens at the end should capture the first word only (use * for greedy)
+                    regexStr += '(\\S+)';
                 }
             }
         }
