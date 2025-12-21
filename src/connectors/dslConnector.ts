@@ -46,6 +46,8 @@ export default class DSLConnector extends TagConnector {
     declare config: DSLConnectorConfig;
     /** Stash transaction response until the task actually enters [x] so onDone can consume it. */
     private pendingResponseByPath = new Map<string, any>();
+    /** Prevent duplicate onDone execution when a task fires multiple identical status-change events. */
+    private handledDonePaths = new Set<string>();
     
     constructor(tag: string, obsidianPlus: ObsidianPlus, config: DSLConnectorConfig) {
         super(tag, obsidianPlus, config);
@@ -240,6 +242,9 @@ export default class DSLConnector extends TagConnector {
      */
     async onReset(task: Task): Promise<void> {
         console.log(`[DSLConnector] ${this.tag} onReset`, task);
+
+        // Allow future onDone executions after a reset.
+        this.handledDonePaths.delete(task.path);
         
         const file = this.getTaskFile(task);
         if (!file) {
@@ -301,7 +306,19 @@ export default class DSLConnector extends TagConnector {
             console.error(`Could not find file for task: ${task.path}`);
             return null;
         }
-        
+
+        // Obsidian sometimes emits duplicate status-change events for the same transition.
+        // Guard against running onDone twice for the same task while it remains completed.
+        if (toStatus === 'x') {
+            if (this.handledDonePaths.has(task.path)) {
+                console.log('[DSLConnector] Skipping duplicate onDone for task', { path: task.path, fromStatus, toStatus });
+                return null;
+            }
+            this.handledDonePaths.add(task.path);
+        } else {
+            this.handledDonePaths.delete(task.path);
+        }
+
         const engine = this.getEngine();
         const triggerMap: Record<string, TriggerType> = {
             'x': 'onDone',
