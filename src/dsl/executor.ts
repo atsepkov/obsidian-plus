@@ -95,7 +95,7 @@ async function defaultErrorHandler(
             const errorMessage = `Error (${action.type}): ${error.message}`;
 
             await context.taskManager.updateDvTask(context.task, {
-                prependChildren: [{
+                appendChildren: [{
                     indent: 0,
                     text: errorMessage,
                     bullet: '*'

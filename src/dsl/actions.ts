@@ -690,7 +690,8 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
  * Executes a command scoped to the vault root and surfaces output as + children
  */
 export const shellAction: ActionHandler<ShellActionNode> = async (action, context) => {
-    const command = interpolate(action.command, context.vars).trim();
+    const interpolated = interpolate(action.command, context.vars);
+    const command = interpolated.replace(/[\r\n]+/g, ' ').trim();
     if (!command) throw new Error('shell: command is empty after interpolation');
 
     ensureVaultScopedCommand(command);
