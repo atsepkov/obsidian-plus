@@ -242,7 +242,7 @@ Resolve a wikilink or path to the underlying vault file without reading its cont
 **Metadata fields:**
 - `path`, `name`, `basename`, `extension`
 - `resourcePath` (Obsidian resource URL for embeds)
-- `frontmatter` (Markdown files only; `null` for non-Markdown)
+- `frontmatter` (Markdown files expose their YAML object; empty object for files without frontmatter or non-Markdown)
 
 If you already `read` a wikilink or image, `{{fromFile}}` (or your `asFile:` override) contains the same metadata without needing a separate `file` action.
 
@@ -767,7 +767,7 @@ Every action can have an `onError` block:
 | `{{file.path}}` | File path |
 | `{{file.name}}` | File name with extension |
 | `{{file.basename}}` | File name without extension |
-| `{{file.frontmatter}}` | YAML frontmatter object for the current Markdown file (or `null` if absent) |
+| `{{file.frontmatter}}` | YAML frontmatter object for the current Markdown file (empty object if absent or non-Markdown) |
 | `{{task.text}}` | Task text (if in task context) |
 | `{{task.completed}}` | Whether task is completed |
 | `{{task.status}}` | Task status character |

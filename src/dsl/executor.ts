@@ -23,8 +23,8 @@ import { getActionHandler, ActionHandler } from './actions';
  */
 export function createContext(options: CreateContextOptions): DSLContext {
     const frontmatter = options.file.extension.toLowerCase() === 'md'
-        ? options.app.metadataCache.getFileCache(options.file)?.frontmatter ?? null
-        : null;
+        ? options.app.metadataCache.getFileCache(options.file)?.frontmatter ?? {}
+        : {};
 
     const context: DSLContext = {
         task: options.task,

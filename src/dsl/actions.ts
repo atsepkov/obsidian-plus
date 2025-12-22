@@ -152,7 +152,7 @@ export function resolveWikilinkToFile(context: DSLContext, wikilink: string): TF
 
 function buildFileMetadata(context: DSLContext, file: TFile): FileMetadata {
     const isMarkdown = (file.extension || '').toLowerCase() === 'md';
-    const frontmatter = isMarkdown ? context.app.metadataCache.getFileCache(file)?.frontmatter ?? null : null;
+    const frontmatter = isMarkdown ? context.app.metadataCache.getFileCache(file)?.frontmatter ?? {} : {};
 
     return {
         path: file.path,
@@ -340,7 +340,7 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             }
 
             if (action.includeFrontmatter) {
-                const fm = context.app.metadataCache.getFileCache(file)?.frontmatter ?? null;
+                const fm = context.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
                 const fmVar = action.frontmatterAs || 'frontmatter';
                 context.vars[fmVar] = fm;
             }
