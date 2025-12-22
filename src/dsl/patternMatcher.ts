@@ -391,27 +391,18 @@ export function interpolate(template: string, context: Record<string, any>): str
  */
 function validateTemplatePlaceholders(template: string): void {
     if (!template.includes('{{')) return;
-
-    PATTERN_TOKEN_REGEX.lastIndex = 0;
-    const matchedRanges: Array<{ start: number; end: number }> = [];
-    let match: RegExpExecArray | null;
-    while ((match = PATTERN_TOKEN_REGEX.exec(template)) !== null) {
-        matchedRanges.push({ start: match.index, end: match.index + match[0].length });
-    }
-
-    // Look for any `{{` not covered by a matched token
     let searchIndex = 0;
     while (true) {
         const idx = template.indexOf('{{', searchIndex);
         if (idx === -1) break;
 
-        const belongsToToken = matchedRanges.some((range) => idx >= range.start && idx < range.end);
-        if (!belongsToToken) {
+        const closeIdx = template.indexOf('}}', idx + 2);
+        if (closeIdx === -1) {
             const context = template.slice(idx, Math.min(template.length, idx + 30));
             throw new Error(`Unmatched template placeholder near: ${context}`);
         }
 
-        searchIndex = idx + 2; // Move past current `{{`
+        searchIndex = closeIdx + 2;
     }
 }
 
