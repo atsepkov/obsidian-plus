@@ -374,6 +374,23 @@ Use this for lightweight local automations that should only touch files inside t
 
 ---
 
+### `eval` — Run JavaScript in Obsidian
+
+Executes arbitrary JavaScript inside Obsidian, after interpolating variables. Code runs in an async function with easy access to DSL state.
+
+```yaml
+- eval: `const files = vault.getFiles(); return files.length;` as: `count`
+```
+
+**Context & behavior:**
+- Receives `context`, `vars`, `app`, `vault`, `workspace`, `metadataCache`, `dv`, and `file` as parameters.
+- Returned value is stored in `as:` (if provided) and echoed as a `+` child bullet when non-empty.
+- Errors surface as `* Error (eval): ...` just like other actions.
+
+Use this when a small snippet is easier than wiring multiple DSL steps or when you need direct access to Obsidian APIs without dropping to the shell.
+
+---
+
 ### `transform` — Reshape Your Content
 
 Replaces the current line and adds child bullets.
