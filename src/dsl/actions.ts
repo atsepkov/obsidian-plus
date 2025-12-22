@@ -15,7 +15,6 @@ import type {
     FileActionNode,
     FetchActionNode,
     ShellActionNode,
-    EvalActionNode,
     TransformActionNode,
     BuildActionNode,
     QueryActionNode,
@@ -723,68 +722,6 @@ export const shellAction: ActionHandler<ShellActionNode> = async (action, contex
         const codeInfo = err?.code !== undefined ? `exit ${err.code}` : (err?.signal ? `signal ${err.signal}` : 'failed');
         const message = combined ? `${combined} (${codeInfo})` : `Command failed (${codeInfo})`;
         throw new Error(`shell failed: ${message}`);
-    }
-};
-
-/**
- * Eval action handler
- * Executes JavaScript in the Obsidian context and surfaces returned value
- */
-export const evalAction: ActionHandler<EvalActionNode> = async (action, context) => {
-    const interpolated = interpolate(action.code, context.vars);
-    const code = interpolated.trim();
-    if (!code) throw new Error('eval: code is empty after interpolation');
-
-    try {
-        const runner = new Function(
-            'context',
-            'vars',
-            'app',
-            'vault',
-            'workspace',
-            'metadataCache',
-            'dv',
-            'file',
-            `return (async () => {\n${code}\n})();`
-        );
-
-        const result = await runner(
-            context,
-            context.vars,
-            context.app,
-            context.app?.vault,
-            context.app?.workspace,
-            context.app?.metadataCache,
-            context.dv,
-            context.file
-        );
-
-        if (action.as) {
-            context.vars[action.as] = result;
-        }
-
-        const stringify = (value: any): string => {
-            if (value === null || value === undefined) return '';
-            if (typeof value === 'string') return value;
-            if (typeof value === 'object') {
-                try {
-                    return JSON.stringify(value, null, 2);
-                } catch {
-                    return String(value);
-                }
-            }
-            return String(value);
-        };
-
-        const output = stringify(result).trim();
-        if (output) {
-            await appendChildBullet(context, output, '+');
-        }
-
-        return context;
-    } catch (err: any) {
-        const message = err?.message ?? String(err);
-        throw new Error(`eval failed: ${message}`);
     }
 };
 
@@ -1565,7 +1502,6 @@ export const actionHandlers: Record<string, ActionHandler<any>> = {
     file: fileAction,
     fetch: fetchAction,
     shell: shellAction,
-    eval: evalAction,
     transform: transformAction,
     build: buildAction,
     query: queryAction,

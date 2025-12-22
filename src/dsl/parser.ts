@@ -36,7 +36,6 @@ import type {
     MapActionNode,
     DateActionNode,
     ShellActionNode,
-    EvalActionNode,
     AuthConfig
 } from './types';
 import { cleanTemplate } from './patternMatcher';
@@ -64,7 +63,6 @@ const ACTION_TYPES: ActionType[] = [
     'file',
     'fetch',
     'shell',
-    'eval',
     'transform',
     'build',
     'query',
@@ -305,8 +303,6 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
             return parseFetchAction(mainValue, inlineKV, regularChildren, onError);
         case 'shell':
             return parseShellAction(mainValue, inlineKV, regularChildren, onError);
-        case 'eval':
-            return parseEvalAction(mainValue, inlineKV, regularChildren, onError);
         case 'transform':
             return parseTransformAction(mainValue, regularChildren, onError);
         case 'build':
@@ -531,29 +527,6 @@ function parseShellAction(
         if (!Number.isFinite(parsed)) throw new Error('shell: timeout must be a number (ms)');
         node.timeout = parsed;
     }
-
-    return node;
-}
-
-/**
- * Parse an eval action
- */
-function parseEvalAction(
-    code: string,
-    inlineKV: Record<string, string>,
-    _children: RawConfigItem[],
-    onError?: ActionNode[]
-): EvalActionNode {
-    const trimmedCode = cleanTemplate(code).trim();
-    if (!trimmedCode) throw new Error('eval: requires JavaScript to execute');
-
-    const node: EvalActionNode = {
-        type: 'eval',
-        code: trimmedCode,
-        onError
-    };
-
-    if (inlineKV.as) node.as = cleanTemplate(inlineKV.as);
 
     return node;
 }

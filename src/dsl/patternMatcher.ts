@@ -305,6 +305,20 @@ function resolvePath(obj: Record<string, any>, path: string): any {
     return current;
 }
 
+function evaluateTemplateExpression(expression: string, context: Record<string, any>): any {
+    const keys = Object.keys(context);
+    const values = Object.values(context);
+
+    try {
+        // Provide variables as direct parameters for convenient access
+        const fn = new Function(...keys, `return (${expression});`);
+        return fn(...values);
+    } catch (err: any) {
+        const message = err?.message ?? String(err);
+        throw new Error(`Template expression "{{${expression}}}" failed: ${message}`);
+    }
+}
+
 /**
  * Interpolate a template string with values from context
  * 
@@ -319,15 +333,35 @@ export function interpolate(template: string, context: Record<string, any>): str
 
     validateTemplatePlaceholders(template);
 
-    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier) => {
+    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier, extra) => {
         // {{cursor}} is a control marker used by transform; it is NOT a normal variable.
         // Preserve it verbatim so transform can locate it after interpolation.
         if (name === 'cursor') {
             return match;
         }
 
+        const expressionTail = !modifier && extra?.trim();
+
+        if (expressionTail) {
+            const result = evaluateTemplateExpression(`${name}${extra}`, context);
+
+            if (result === undefined || result === null) {
+                return '';
+            }
+
+            if (typeof result === 'object') {
+                try {
+                    return JSON.stringify(result);
+                } catch {
+                    return String(result);
+                }
+            }
+
+            return String(result);
+        }
+
         const value = resolvePath(context, name);
-        
+
         if (value === undefined || value === null) {
             // Strict-by-default:
             // - {{var}} is required and should error if missing

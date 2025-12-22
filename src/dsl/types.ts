@@ -85,7 +85,6 @@ export type ActionType =
     | 'file'
     | 'fetch'
     | 'shell'
-    | 'eval'
     | 'transform'
     | 'build'
     | 'query'
@@ -117,17 +116,6 @@ export interface ShellActionNode extends BaseActionNode {
     as?: string;
     /** Optional timeout in milliseconds */
     timeout?: number;
-}
-
-/**
- * Eval action - executes JavaScript in the Obsidian context
- */
-export interface EvalActionNode extends BaseActionNode {
-    type: 'eval';
-    /** JavaScript snippet to run */
-    code: string;
-    /** Optional variable name to store the returned value */
-    as?: string;
 }
 
 /**
@@ -466,7 +454,6 @@ export type ActionNode =
     | FileActionNode
     | FetchActionNode
     | ShellActionNode
-    | EvalActionNode
     | TransformActionNode
     | BuildActionNode
     | QueryActionNode
