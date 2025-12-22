@@ -104,7 +104,9 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: children` — read child bullets
 - `source: wikilink` — read the contents of another note by wikilink
 - `source: image` — read image file (wikilink or URL) and convert to base64
-- `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath)
+- `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath, frontmatter on Markdown)
+- `includeFrontmatter: true` — when reading another Markdown note by wikilink, also expose its YAML frontmatter
+- `frontmatterAs: meta` — rename the frontmatter variable (defaults to `frontmatter`)
 
 #### Reading another note by wikilink
 
@@ -117,7 +119,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 ```
 
 After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
-`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath) unless you set `asFile` to a different variable name.
+`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath/frontmatter) unless you set `asFile` to a different variable name.
 
 **Reading a specific section:**
 
@@ -240,6 +242,7 @@ Resolve a wikilink or path to the underlying vault file without reading its cont
 **Metadata fields:**
 - `path`, `name`, `basename`, `extension`
 - `resourcePath` (Obsidian resource URL for embeds)
+- `frontmatter` (Markdown files only; `null` for non-Markdown)
 
 If you already `read` a wikilink or image, `{{fromFile}}` (or your `asFile:` override) contains the same metadata without needing a separate `file` action.
 
@@ -764,6 +767,7 @@ Every action can have an `onError` block:
 | `{{file.path}}` | File path |
 | `{{file.name}}` | File name with extension |
 | `{{file.basename}}` | File name without extension |
+| `{{file.frontmatter}}` | YAML frontmatter object for the current Markdown file (or `null` if absent) |
 | `{{task.text}}` | Task text (if in task context) |
 | `{{task.completed}}` | Whether task is completed |
 | `{{task.status}}` | Task status character |
@@ -771,9 +775,9 @@ Every action can have an `onError` block:
 
 #### File metadata variables
 
-- Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`
-- Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`)
-- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, etc.
+- Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`, `{{file.frontmatter}}`
+- Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`), including `frontmatter` for Markdown notes
+- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, `{{linkFile.frontmatter}}`, etc.
 
 ### Trigger Event Variables (Status Transitions)
 

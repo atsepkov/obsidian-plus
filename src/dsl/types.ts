@@ -106,6 +106,18 @@ export type ActionType =
     | 'date';
 
 /**
+ * Metadata exposed for resolved files/wikilinks
+ */
+export type FileMetadata = {
+    path: string;
+    name: string;
+    basename: string;
+    extension: string;
+    resourcePath: string;
+    frontmatter?: any | null;
+};
+
+/**
  * Shell action - executes a command within the vault directory
  */
 export interface ShellActionNode extends BaseActionNode {

@@ -22,6 +22,10 @@ import { getActionHandler, ActionHandler } from './actions';
  * Create a new DSL execution context
  */
 export function createContext(options: CreateContextOptions): DSLContext {
+    const frontmatter = options.file.extension.toLowerCase() === 'md'
+        ? options.app.metadataCache.getFileCache(options.file)?.frontmatter ?? null
+        : null;
+
     const context: DSLContext = {
         task: options.task,
         line: options.line || '',
@@ -34,7 +38,9 @@ export function createContext(options: CreateContextOptions): DSLContext {
                 path: options.file.path,
                 name: options.file.name,
                 basename: options.file.basename,
-                extension: options.file.extension
+                extension: options.file.extension,
+                resourcePath: options.app.vault.getResourcePath(options.file),
+                frontmatter
             },
             ...(options.initialVars || {})
         },

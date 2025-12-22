@@ -33,7 +33,8 @@ import type {
     FilterActionNode,
     MapActionNode,
     DateActionNode,
-    TransformChild
+    TransformChild,
+    FileMetadata
 } from './types';
 import {
     extractValues,
@@ -44,14 +45,6 @@ import {
 
 const execAsync = promisify(exec);
 const SHELL_MAX_BUFFER = 10 * 1024 * 1024;
-
-type FileMetadata = {
-    path: string;
-    name: string;
-    basename: string;
-    extension: string;
-    resourcePath: string;
-};
 
 async function appendChildBullet(context: DSLContext, text: string, bullet: '+' | '*', indentLevel = 1): Promise<void> {
     const trimmed = text.trim();
@@ -158,12 +151,16 @@ export function resolveWikilinkToFile(context: DSLContext, wikilink: string): TF
 }
 
 function buildFileMetadata(context: DSLContext, file: TFile): FileMetadata {
+    const isMarkdown = (file.extension || '').toLowerCase() === 'md';
+    const frontmatter = isMarkdown ? context.app.metadataCache.getFileCache(file)?.frontmatter ?? null : null;
+
     return {
         path: file.path,
         name: file.name,
         basename: file.basename,
         extension: file.extension,
-        resourcePath: context.app.vault.getResourcePath(file)
+        resourcePath: context.app.vault.getResourcePath(file),
+        frontmatter
     };
 }
 
