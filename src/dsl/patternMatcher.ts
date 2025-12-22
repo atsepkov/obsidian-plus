@@ -327,59 +327,7 @@ function evaluateTemplateExpression(expression: string, context: Record<string, 
  * @returns Interpolated string
  */
 export function interpolate(template: string, context: Record<string, any>): string {
-    if (!template || typeof template !== 'string') {
-        return template;
-    }
-
-    validateTemplatePlaceholders(template);
-
-    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier, extra) => {
-        // {{cursor}} is a control marker used by transform; it is NOT a normal variable.
-        // Preserve it verbatim so transform can locate it after interpolation.
-        if (name === 'cursor') {
-            return match;
-        }
-
-        const expressionTail = !modifier && extra?.trim();
-
-        if (expressionTail) {
-            const result = evaluateTemplateExpression(`${name}${extra}`, context);
-
-            if (result === undefined || result === null) {
-                return '';
-            }
-
-            if (typeof result === 'object') {
-                try {
-                    return JSON.stringify(result);
-                } catch {
-                    return String(result);
-                }
-            }
-
-            return String(result);
-        }
-
-        const value = resolvePath(context, name);
-
-        if (value === undefined || value === null) {
-            // Strict-by-default:
-            // - {{var}} is required and should error if missing
-            // - {{var?}} is optional and becomes empty string if missing
-            if (modifier === '?') return '';
-            throw new Error(`Missing required variable: ${name}`);
-        }
-        
-        if (typeof value === 'object') {
-            try {
-                return JSON.stringify(value);
-            } catch {
-                return String(value);
-            }
-        }
-        
-        return String(value);
-    });
+    return interpolateWithFormatter(template, context, stringifyInterpolatedValue);
 }
 
 /**
@@ -417,6 +365,66 @@ export function interpolateToValue(template: string, context: Record<string, any
     }
 
     return value;
+}
+
+/**
+ * Interpolate a template string with a custom value formatter.
+ * The formatter receives the resolved value for each token (after required/optional checks).
+ */
+export function interpolateWithFormatter(
+    template: string,
+    context: Record<string, any>,
+    formatter: (value: any, modifier?: string) => string
+): string {
+    if (!template || typeof template !== 'string') {
+        return template;
+    }
+
+    validateTemplatePlaceholders(template);
+
+    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier, extra) => {
+        // {{cursor}} is a control marker used by transform; it is NOT a normal variable.
+        // Preserve it verbatim so transform can locate it after interpolation.
+        if (name === 'cursor') {
+            return match;
+        }
+
+        const expressionTail = !modifier && extra?.trim();
+
+        if (expressionTail) {
+            const result = evaluateTemplateExpression(`${name}${extra}`, context);
+
+            if (result === undefined || result === null) {
+                return '';
+            }
+
+            return formatter(result, modifier);
+        }
+
+        const value = resolvePath(context, name);
+
+        if (value === undefined || value === null) {
+            // Strict-by-default:
+            // - {{var}} is required and should error if missing
+            // - {{var?}} is optional and becomes empty string if missing
+            if (modifier === '?') return '';
+            throw new Error(`Missing required variable: ${name}`);
+        }
+
+        return formatter(value, modifier);
+    });
+}
+
+function stringifyInterpolatedValue(value: any): string {
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return String(value);
+        }
+    }
+
+    return String(value);
 }
 
 /**

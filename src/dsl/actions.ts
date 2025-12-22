@@ -40,6 +40,7 @@ import {
     extractValues,
     interpolate,
     interpolateToValue,
+    interpolateWithFormatter,
     evaluateCondition,
     cleanTemplate
 } from './patternMatcher';
@@ -688,7 +689,14 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
  * Executes a command scoped to the vault root and surfaces output as + children
  */
 export const shellAction: ActionHandler<ShellActionNode> = async (action, context) => {
-    const interpolated = interpolate(action.command, context.vars);
+    const interpolated = interpolateWithFormatter(action.command, context.vars, value => {
+        const str = typeof value === 'object'
+            ? (() => { try { return JSON.stringify(value); } catch { return String(value); } })()
+            : String(value);
+
+        // Escape characters that would break quoted shell commands while preserving user-provided quotes.
+        return str.replace(/(["`\\$])/g, '\\$1');
+    });
     const command = interpolated.replace(/[\r\n]+/g, ' ').trim();
     if (!command) throw new Error('shell: command is empty after interpolation');
 

@@ -370,6 +370,7 @@ Executes a shell command from the vault root so relative paths stay inside your 
 **Behavior & safety:**
 - Commands are run with the vault root as the working directory.
 - Absolute paths (`/`, `~`, drive letters) and parent segments (`..`) are rejected to keep execution inside the vault. Symlink external folders into the vault if needed.
+- Interpolated values are escaped for double quotes, backticks, backslashes, and `$` so you can safely quote paths with spaces (e.g., `shell: \`cp "{{noteFile.path}}" dest/\``).
 - Combined stdout/stderr is stored in `as:` (if provided) and echoed as a `+` child bullet.
 - Non-zero exit codes produce a `* Error (shell): ...` bullet with the failure details.
 
