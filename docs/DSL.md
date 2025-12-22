@@ -409,6 +409,7 @@ Sets a variable to a value (string or parsed JSON). Can also extract values usin
 **JavaScript expressions inside `{{ ... }}`:**
 - When a placeholder continues past the variable name (e.g., `{{note.path.toLowerCase()}}`), the full expression is executed with all current variables in scope.
 - The expression result is stringified (objects become JSON) and spliced into the template; `null`/`undefined` become empty strings.
+- When the entire value is a single `{{ ... }}` token, the expression result is stored as-is (e.g., a `Date` instance stays a `Date`), which is useful for chaining calculations in later `set` steps.
 
 Example — slugify a wikilinked file path:
 ```yaml

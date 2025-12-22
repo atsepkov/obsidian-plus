@@ -383,6 +383,43 @@ export function interpolate(template: string, context: Record<string, any>): str
 }
 
 /**
+ * Interpolate a template string and, when it is a single token, return the raw value instead of stringifying.
+ * This allows actions like `set` to preserve objects (e.g., Date instances) for downstream expressions.
+ */
+export function interpolateToValue(template: string, context: Record<string, any>): any {
+    if (!template || typeof template !== 'string') {
+        return template;
+    }
+
+    validateTemplatePlaceholders(template);
+
+    const trimmed = template.trim();
+    PATTERN_TOKEN_REGEX.lastIndex = 0;
+    const match = PATTERN_TOKEN_REGEX.exec(trimmed);
+    const isSingleToken = match && match.index === 0 && PATTERN_TOKEN_REGEX.lastIndex === trimmed.length;
+
+    if (!isSingleToken) {
+        return interpolate(template, context);
+    }
+
+    const [, name, modifier, extra] = match as RegExpExecArray;
+
+    const expressionTail = !modifier && extra?.trim();
+    if (expressionTail) {
+        return evaluateTemplateExpression(`${name}${extra}`, context);
+    }
+
+    const value = resolvePath(context, name);
+
+    if (value === undefined || value === null) {
+        if (modifier === '?') return '';
+        throw new Error(`Missing required variable: ${name}`);
+    }
+
+    return value;
+}
+
+/**
  * Ensure there are no stray/unmatched `{{` placeholders in the template.
  *
  * We scan for every `{{` sequence and require that it belongs to a token matched

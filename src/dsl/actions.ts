@@ -39,6 +39,7 @@ import type {
 import {
     extractValues,
     interpolate,
+    interpolateToValue,
     evaluateCondition,
     cleanTemplate
 } from './patternMatcher';
@@ -1034,8 +1035,9 @@ export const queryAction: ActionHandler<QueryActionNode> = async (action, contex
  * Sets a variable in context
  */
 export const setAction: ActionHandler<SetActionNode> = async (action, context) => {
-    const value = interpolate(action.value, context.vars);
-    
+    const rawValue = interpolateToValue(action.value, context.vars);
+    const value = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue);
+
     // If pattern is provided, extract using pattern (like read does)
     if (action.pattern) {
         const result = extractValues(value, action.pattern);
@@ -1049,19 +1051,23 @@ export const setAction: ActionHandler<SetActionNode> = async (action, context) =
         if (extractedVarNames.length > 0) {
             // Prefer extracted variable with same name as target, otherwise use first
             const matchingVar = extractedVarNames.find(v => v === action.name);
-            context.vars[action.name] = matchingVar 
-                ? result.values[matchingVar] 
+            context.vars[action.name] = matchingVar
+                ? result.values[matchingVar]
                 : result.values[extractedVarNames[0]];
         }
     } else {
         // Original behavior: try JSON parse, fallback to string
-        try {
-            context.vars[action.name] = JSON.parse(value);
-        } catch {
-            context.vars[action.name] = value;
+        if (typeof rawValue === 'string') {
+            try {
+                context.vars[action.name] = JSON.parse(rawValue);
+            } catch {
+                context.vars[action.name] = rawValue;
+            }
+        } else {
+            context.vars[action.name] = rawValue;
         }
     }
-    
+
     return context;
 };
 
