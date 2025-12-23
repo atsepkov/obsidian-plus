@@ -1280,9 +1280,72 @@ export default class ObsidianPlus extends Plugin {
                                 const afterBullet = line.slice(bulletMatch[0].length);
                                 const colonIndex = afterBullet.indexOf(':');
                                 if (colonIndex > 0) {
+                                        const subjectPrefix = afterBullet.slice(0, colonIndex);
                                         const cmLine = state.doc.line(i + 1);
-                                        const from = cmLine.from + bulletMatch[0].length;
-                                        decorations.push(colonSubjectMark.range(from, from + colonIndex));
+                                        const baseOffset = cmLine.from + bulletMatch[0].length;
+                                        const segments: { start: number; end: number }[] = [];
+                                        let inBacktick = false;
+                                        let segmentStart: number | null = null;
+
+                                        for (let j = 0; j < subjectPrefix.length; j++) {
+                                                const ch = subjectPrefix[j];
+
+                                                if (ch === '`') {
+                                                        if (!inBacktick && segmentStart !== null) {
+                                                                segments.push({ start: segmentStart, end: j });
+                                                                segmentStart = null;
+                                                        }
+                                                        inBacktick = !inBacktick;
+                                                        continue;
+                                                }
+
+                                                if (inBacktick) {
+                                                        continue;
+                                                }
+
+                                                if (ch === '#' && (j === 0 || /\s/.test(subjectPrefix[j - 1] ?? ''))) {
+                                                        if (segmentStart !== null) {
+                                                                segments.push({ start: segmentStart, end: j });
+                                                                segmentStart = null;
+                                                        }
+                                                        let k = j + 1;
+                                                        while (k < subjectPrefix.length && !/\s/.test(subjectPrefix[k])) {
+                                                                k++;
+                                                        }
+                                                        j = k - 1;
+                                                        continue;
+                                                }
+
+                                                if (/\s/.test(ch)) {
+                                                        if (segmentStart !== null) {
+                                                                segments.push({ start: segmentStart, end: j });
+                                                                segmentStart = null;
+                                                        }
+                                                        continue;
+                                                }
+
+                                                if (segmentStart === null) {
+                                                        segmentStart = j;
+                                                }
+                                        }
+
+                                        if (segmentStart !== null) {
+                                                segments.push({ start: segmentStart, end: subjectPrefix.length });
+                                        }
+
+                                        if (segments.length > 0) {
+                                                const lastIndex = segments.length - 1;
+                                                const trailing = subjectPrefix.slice(segments[lastIndex].end);
+                                                const extendToColon = trailing.trim().length === 0;
+                                                const lastEnd = extendToColon ? colonIndex + 1 : segments[lastIndex].end;
+                                                segments[lastIndex] = { start: segments[lastIndex].start, end: lastEnd };
+
+                                                for (const segment of segments) {
+                                                        decorations.push(
+                                                                colonSubjectMark.range(baseOffset + segment.start, baseOffset + segment.end)
+                                                        );
+                                                }
+                                        }
                                 }
                         }
 

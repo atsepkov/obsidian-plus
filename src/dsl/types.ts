@@ -83,6 +83,7 @@ export interface BaseActionNode {
 export type ActionType =
     | 'read'
     | 'file'
+    | 'write'
     | 'fetch'
     | 'shell'
     | 'transform'
@@ -148,6 +149,21 @@ export interface ShellActionNode extends BaseActionNode {
     as?: string;
     /** Optional timeout in milliseconds */
     timeout?: number;
+}
+
+/**
+ * Write action - writes string content to a vault file
+ */
+export interface WriteActionNode extends BaseActionNode {
+    type: 'write';
+    /** Target path or wikilink */
+    to: string;
+    /** Content to write (template-supported) */
+    content: string;
+    /** Optional write mode (overwrite or append) */
+    mode?: 'overwrite' | 'append';
+    /** Store resulting file metadata here */
+    asFile?: string;
 }
 
 /**
@@ -490,6 +506,7 @@ export interface DateActionNode extends BaseActionNode {
 export type ActionNode =
     | ReadActionNode
     | FileActionNode
+    | WriteActionNode
     | FetchActionNode
     | ShellActionNode
     | TransformActionNode

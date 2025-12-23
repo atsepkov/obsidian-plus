@@ -36,6 +36,7 @@ import type {
     MapActionNode,
     DateActionNode,
     ShellActionNode,
+    WriteActionNode,
     AuthConfig
 } from './types';
 import { cleanTemplate } from './patternMatcher';
@@ -61,6 +62,7 @@ const TRIGGER_NAMES: TriggerType[] = [
 const ACTION_TYPES: ActionType[] = [
     'read',
     'file',
+    'write',
     'fetch',
     'shell',
     'transform',
@@ -299,6 +301,8 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
             return parseReadAction(mainValue, inlineKV, regularChildren, onError);
         case 'file':
             return parseFileAction(mainValue, inlineKV, regularChildren, onError);
+        case 'write':
+            return parseWriteAction(mainValue, inlineKV, regularChildren, onError);
         case 'fetch':
             return parseFetchAction(mainValue, inlineKV, regularChildren, onError);
         case 'shell':
@@ -445,6 +449,37 @@ function parseFileAction(
         from,
         as,
         format: formatValue ? (formatValue as any) : undefined,
+        onError
+    };
+}
+
+/**
+ * Parse a write action
+ */
+function parseWriteAction(
+    content: string,
+    inlineKV: Record<string, string>,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): WriteActionNode {
+    const options = parseChildrenAsRecord(children);
+
+    const to = cleanTemplate(inlineKV.to ?? options.to ?? '').trim();
+    if (!to) throw new Error('write: requires to: <path or wikilink>');
+
+    const mode = (inlineKV.mode ?? options.mode ?? 'overwrite') as 'overwrite' | 'append';
+    if (mode !== 'overwrite' && mode !== 'append') {
+        throw new Error('write: mode must be overwrite or append');
+    }
+
+    const asFile = inlineKV.asFile ?? options.asFile;
+
+    return {
+        type: 'write',
+        content: cleanTemplate(content),
+        to,
+        mode,
+        asFile: asFile ? cleanTemplate(asFile) : undefined,
         onError
     };
 }

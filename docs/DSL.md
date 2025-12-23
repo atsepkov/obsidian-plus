@@ -386,6 +386,30 @@ Use this for lightweight local automations that should only touch files inside t
 
 ---
 
+### `write` — Save Text Back to a File
+
+Persists templated content to a vault-scoped path or wikilink (the reverse of `read`).
+
+```yaml
+- read: ``
+  - from: {{meta.post}}
+  - source: wikilink
+  - as: noteBody
+  - asFile: noteFile
+- write: `{{noteBody}}`
+  - to: `{{noteFile.path}}`
+  - asFile: savedFile
+```
+
+**Behavior & options:**
+- `to:` accepts a vault-relative path or wikilink; parent folders are created automatically.
+- `mode: append` appends instead of replacing the file contents (default: `overwrite`).
+- `asFile:` stores the written file's metadata (path, name, basename, extension, resourcePath, etc.).
+
+Use this when you need to modify content in-memory (e.g., with `transform`) and then save it back to disk without losing newlines.
+
+---
+
 ### `transform` — Reshape Your Content
 
 Replaces the current line and adds child bullets.

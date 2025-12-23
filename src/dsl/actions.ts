@@ -5,7 +5,7 @@
  * Each action receives the DSL context and returns an updated context.
  */
 
-import { App, Notice, requestUrl, TFile } from 'obsidian';
+import { App, Notice, requestUrl, TFile, normalizePath } from 'obsidian';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type {
@@ -33,6 +33,7 @@ import type {
     FilterActionNode,
     MapActionNode,
     DateActionNode,
+    WriteActionNode,
     TransformChild,
     FileMetadata,
     FileMetadataFormat
@@ -123,6 +124,21 @@ function ensureVaultScopedCommand(command: string): void {
             throw new Error('shell: parent path segments are not allowed; use a vault symlink instead');
         }
     }
+}
+
+function ensureVaultScopedPath(rawPath: string): string {
+    if (!rawPath) throw new Error('write: target path is empty');
+    if (/^[A-Za-z]:\\/.test(rawPath)) {
+        throw new Error('write: absolute drive paths are not allowed (stay within the vault)');
+    }
+    if (rawPath.startsWith('/') || rawPath.startsWith('~')) {
+        throw new Error('write: absolute paths are not allowed; use vault-relative paths');
+    }
+    if (rawPath === '..' || rawPath.startsWith('../') || rawPath.includes('/../')) {
+        throw new Error('write: parent path segments are not allowed; use a vault symlink instead');
+    }
+
+    return normalizePath(rawPath);
 }
 
 export function parseWikilink(raw: string): { path: string; anchor: string | null } {
@@ -560,6 +576,65 @@ export const fileAction: ActionHandler<FileActionNode> = async (action, context)
 
     const metadataFormat = action.format === 'markdown' ? 'markdown' : undefined;
     context.vars[varName] = buildFileMetadata(context.app, file, metadataFormat);
+    return context;
+};
+
+/**
+ * Write action handler
+ * Writes templated content to a vault-scoped path or wikilink
+ */
+export const writeAction: ActionHandler<WriteActionNode> = async (action, context) => {
+    const targetRaw = interpolate(action.to, context.vars).trim();
+    if (!targetRaw) throw new Error('write: requires to: <path or wikilink>');
+
+    const mode = action.mode ?? 'overwrite';
+    const isAppend = mode === 'append';
+
+    const rawContent = interpolate(action.content ?? '', context.vars);
+    const content = typeof rawContent === 'string' ? rawContent : String(rawContent ?? '');
+
+    let file: TFile | null = null;
+    let targetPath: string;
+    if (/^\[\[[\s\S]+\]\]$/.test(targetRaw)) {
+        file = resolveWikilinkToFile(context, targetRaw);
+        targetPath = ensureVaultScopedPath(file.path);
+    } else {
+        targetPath = ensureVaultScopedPath(targetRaw);
+    }
+
+    const vault = context.app.vault;
+
+    const folderPath = targetPath.includes('/') ? targetPath.slice(0, targetPath.lastIndexOf('/')) : '';
+    if (folderPath && !vault.getAbstractFileByPath(folderPath)) {
+        try {
+            await vault.createFolder(folderPath);
+        } catch (err) {
+            if (!(err instanceof Error) || !/exists/i.test(err.message)) {
+                throw err;
+            }
+        }
+    }
+
+    const existing = vault.getAbstractFileByPath(targetPath);
+    if (!file && existing instanceof TFile) {
+        file = existing;
+    }
+
+    if (file) {
+        if (isAppend) {
+            await vault.append(file, content);
+        } else {
+            await vault.modify(file, content);
+        }
+    } else {
+        file = await vault.create(targetPath, content);
+    }
+
+    if (action.asFile) {
+        const metadataFormat = file.extension?.toLowerCase() === 'md' ? 'markdown' : undefined;
+        context.vars[action.asFile] = buildFileMetadata(context.app, file, metadataFormat);
+    }
+
     return context;
 };
 
@@ -1546,6 +1621,7 @@ export const taskAction: ActionHandler<TaskActionNode> = async (action, context)
 export const actionHandlers: Record<string, ActionHandler<any>> = {
     read: readAction,
     file: fileAction,
+    write: writeAction,
     fetch: fetchAction,
     shell: shellAction,
     transform: transformAction,
