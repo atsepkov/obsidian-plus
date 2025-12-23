@@ -177,6 +177,9 @@ export function buildFileMetadata(app: App, file: TFile, format?: FileMetadataFo
     return {
         ...base,
         frontmatter,
+        links,
+        images,
+        sections,
         markdown: {
             frontmatter,
             links,

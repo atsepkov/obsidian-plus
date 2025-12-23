@@ -127,6 +127,12 @@ export type FileMetadata = {
     format: FileMetadataFormat;
     /** Shortcut to the markdown frontmatter (when format = markdown) */
     frontmatter?: any | null;
+    /** Shortcut to markdown links (when format = markdown) */
+    links?: string[];
+    /** Shortcut to markdown images/embeds (when format = markdown) */
+    images?: string[];
+    /** Shortcut to markdown heading outline (when format = markdown) */
+    sections?: { heading: string; level: number; line: number }[];
     /** Markdown-specific metadata populated when format = markdown */
     markdown?: MarkdownMetadata;
 };

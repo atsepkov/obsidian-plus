@@ -120,7 +120,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 ```
 
 After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
-`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath). If `format: markdown` is active (default for `.md`), it also exposes `frontmatter`, `markdown.links`, `markdown.images`, and `markdown.sections`.
+`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath). If `format: markdown` is active (default for `.md`), it also exposes `frontmatter` plus markdown-aware arrays for links, images, and sections (available both as `{{fromFile.links/images/sections}}` and inside `{{fromFile.markdown.*}}`).
 
 **Reading a specific section:**
 
@@ -147,9 +147,9 @@ This will:
 **Markdown format metadata:**
 - Set `format: markdown` (default for `.md` files) on `read` or `file` actions to enrich the `asFile` variable with:
   - `frontmatter` — YAML frontmatter object (empty object if none)
-  - `markdown.links` — array of wikilinks in the note
-  - `markdown.images` — array of embedded images/attachments
-  - `markdown.sections` — heading outline with `{ heading, level, line }`
+  - `links` / `markdown.links` — array of wikilinks in the note
+  - `images` / `markdown.images` — array of embedded images/attachments
+  - `sections` / `markdown.sections` — heading outline with `{ heading, level, line }`
 
 **Example:**
 ```markdown
@@ -786,9 +786,9 @@ Every action can have an `onError` block:
 #### File metadata variables
 
 - Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`
-- Markdown metadata (when `format: markdown` applies): `{{file.frontmatter}}` plus `{{file.markdown.links}}`, `{{file.markdown.images}}`, `{{file.markdown.sections}}`
+- Markdown metadata (when `format: markdown` applies): `{{file.frontmatter}}` plus `{{file.links}}`/`{{file.images}}`/`{{file.sections}}` (also available under `{{file.markdown.*}}`)
 - Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`); use `format: markdown` to include markdown metadata on the resolved file
-- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, and when `format: markdown` is set, `{{linkFile.frontmatter}}`, `{{linkFile.markdown.*}}`, etc.
+- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, and when `format: markdown` is set, `{{linkFile.frontmatter}}`, `{{linkFile.links}}`, `{{linkFile.images}}`, `{{linkFile.sections}}`, or `{{linkFile.markdown.*}}`
 
 ### Trigger Event Variables (Status Transitions)
 
