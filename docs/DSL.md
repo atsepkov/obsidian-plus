@@ -403,6 +403,7 @@ Persists templated content to a vault-scoped path or wikilink (the reverse of `r
 
 **Behavior & options:**
 - `to:` accepts a vault-relative path or wikilink; parent folders are created automatically.
+- Surrounding quotes/backticks on `to:` are ignored, so both `to: {{path}}` and `to: "{{path}}"` work.
 - `mode: append` appends instead of replacing the file contents (default: `overwrite`).
 - `asFile:` stores the written file's metadata (path, name, basename, extension, resourcePath, etc.).
 

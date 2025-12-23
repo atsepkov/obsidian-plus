@@ -1278,7 +1278,22 @@ export default class ObsidianPlus extends Plugin {
 
                         if (!inCodeFence && bulletMatch && bulletMatch[2] === '-') {
                                 const afterBullet = line.slice(bulletMatch[0].length);
-                                const colonIndex = afterBullet.indexOf(':');
+                                let colonIndex = -1;
+                                let inBacktickGlobal = false;
+
+                                for (let j = 0; j < afterBullet.length; j++) {
+                                        const ch = afterBullet[j];
+                                        if (ch === '`') {
+                                                inBacktickGlobal = !inBacktickGlobal;
+                                                continue;
+                                        }
+
+                                        if (!inBacktickGlobal && ch === ':') {
+                                                colonIndex = j;
+                                                break;
+                                        }
+                                }
+
                                 if (colonIndex > 0) {
                                         const subjectPrefix = afterBullet.slice(0, colonIndex);
                                         const cmLine = state.doc.line(i + 1);

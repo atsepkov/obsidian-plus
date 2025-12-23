@@ -128,17 +128,26 @@ function ensureVaultScopedCommand(command: string): void {
 
 function ensureVaultScopedPath(rawPath: string): string {
     if (!rawPath) throw new Error('write: target path is empty');
-    if (/^[A-Za-z]:\\/.test(rawPath)) {
+
+    const trimmed = rawPath.trim();
+    const unwrapped =
+        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+        (trimmed.startsWith('`') && trimmed.endsWith('`'))
+            ? trimmed.slice(1, -1).trim()
+            : trimmed;
+
+    if (/^[A-Za-z]:\\/.test(unwrapped)) {
         throw new Error('write: absolute drive paths are not allowed (stay within the vault)');
     }
-    if (rawPath.startsWith('/') || rawPath.startsWith('~')) {
+    if (unwrapped.startsWith('/') || unwrapped.startsWith('~')) {
         throw new Error('write: absolute paths are not allowed; use vault-relative paths');
     }
-    if (rawPath === '..' || rawPath.startsWith('../') || rawPath.includes('/../')) {
+    if (unwrapped === '..' || unwrapped.startsWith('../') || unwrapped.includes('/../')) {
         throw new Error('write: parent path segments are not allowed; use a vault symlink instead');
     }
 
-    return normalizePath(rawPath);
+    return normalizePath(unwrapped);
 }
 
 export function parseWikilink(raw: string): { path: string; anchor: string | null } {
