@@ -146,7 +146,8 @@ export function parseWikilink(raw: string): { path: string; anchor: string | nul
 }
 
 export function resolveWikilinkToFile(context: DSLContext, wikilink: string): TFile {
-    const { path } = parseWikilink(wikilink);
+    const normalized = wikilink.trim().replace(/^!\[\[/, '[[');
+    const { path } = parseWikilink(normalized);
     if (!path) throw new Error('wikilink resolution requires a non-empty from: [[File]]');
     const basePath = context.file?.path ?? '';
     const dest = context.app.metadataCache.getFirstLinkpathDest(path, basePath);

@@ -790,7 +790,7 @@ Every action can have an `onError` block:
 - Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`
 - Markdown metadata (when `format: markdown` applies): `{{file.frontmatter}}` plus `{{file.links}}`/`{{file.images}}`/`{{file.sections}}` (also available under `{{file.markdown.*}}`)
 - Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`); use `format: markdown` to include markdown metadata on the resolved file
-- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, and when `format: markdown` is set, `{{linkFile.frontmatter}}`, `{{linkFile.links}}`, `{{linkFile.images}}`, `{{linkFile.sections}}`, or `{{linkFile.markdown.*}}`
+- Standalone resolution: `file: [[Note]] as: linkFile` (or `file: ![[image.png]] as: imageFile`) exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, and when `format: markdown` is set, `{{linkFile.frontmatter}}`, `{{linkFile.links}}`, `{{linkFile.images}}`, `{{linkFile.sections}}`, or `{{linkFile.markdown.*}}`
 
 ### Trigger Event Variables (Status Transitions)
 

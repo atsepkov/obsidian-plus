@@ -29,6 +29,8 @@ const dimLineDecoration = Decoration.line({
   attributes: { class: 'dim-line' },
 });
 
+const colonSubjectMark = Decoration.mark({ class: 'op-bullet-colon-subject' });
+
 const BULLET_MARKERS = ['-', '+', '*'] as const;
 const BULLET_MARKER_PATTERN = /^(\s*(?:>\s*)*)([-+*])(\s+)/;
 type BulletMarker = typeof BULLET_MARKERS[number];
@@ -1153,10 +1155,16 @@ export default class ObsidianPlus extends Plugin {
                 const bulletRegex = /^(\s*)([-*+])\s+/;
                 const tagRegex = /#[^\s#]+/g;
 
+                let inCodeFence = false;
+
                 let prevLine = ''
                 for (let i = 0; i < lines.length; i++) {
                         const line = lines[i];
                         const cleanLine = line.trim();
+
+                        if (cleanLine.startsWith('```') || cleanLine.startsWith('~~~')) {
+                                inCodeFence = !inCodeFence;
+                        }
 
                         const leadingWhitespace = (line.match(/^\s*/) ?? [""])[0];
                         const hasIndentation = leadingWhitespace.length > 0;
@@ -1266,6 +1274,16 @@ export default class ObsidianPlus extends Plugin {
                                 decorations.push(
                                         Decoration.line({ class: "cm-flagged-line" }).range(cmLine.from)
                                 );
+                        }
+
+                        if (!inCodeFence && bulletMatch && bulletMatch[2] === '-') {
+                                const afterBullet = line.slice(bulletMatch[0].length);
+                                const colonIndex = afterBullet.indexOf(':');
+                                if (colonIndex > 0) {
+                                        const cmLine = state.doc.line(i + 1);
+                                        const from = cmLine.from + bulletMatch[0].length;
+                                        decorations.push(colonSubjectMark.range(from, from + colonIndex));
+                                }
                         }
 
                         if (isBullet) {
