@@ -165,19 +165,21 @@ export function extractValues(text: string, pattern: string): PatternExtractionR
                 regexStr += '(.+)';
             }
         } else {
-            // Simple or optional - match non-greedy word-like content
+            // Simple or optional - match non-greedy content (single word when no following literal)
             const nextLiteral = literals[literalIndex];
             if (token.optional) {
                 if (nextLiteral) {
                     regexStr += `(.*?)(?=${escapeRegex(nextLiteral)})`;
                 } else {
-                    regexStr += '(.*)';
+                    // Optional tokens at the end should only consume a single word, not the whole line
+                    regexStr += '(\\S*)';
                 }
             } else {
                 if (nextLiteral) {
                     regexStr += `(.+?)(?=${escapeRegex(nextLiteral)})`;
                 } else {
-                    regexStr += '(.+)';
+                    // Required tokens at the end should capture the first word only (use * for greedy)
+                    regexStr += '(\\S+)';
                 }
             }
         }
@@ -275,7 +277,7 @@ export function extractValues(text: string, pattern: string): PatternExtractionR
  * Resolve a dot-notation path in an object
  * e.g., "response.data.items" from { response: { data: { items: [...] } } }
  */
-function resolvePath(obj: Record<string, any>, path: string): any {
+export function resolvePath(obj: Record<string, any>, path: string): any {
     const parts = path.split('.');
     let current: any = obj;
     
@@ -303,6 +305,20 @@ function resolvePath(obj: Record<string, any>, path: string): any {
     return current;
 }
 
+function evaluateTemplateExpression(expression: string, context: Record<string, any>): any {
+    const keys = Object.keys(context);
+    const values = Object.values(context);
+
+    try {
+        // Provide variables as direct parameters for convenient access
+        const fn = new Function(...keys, `return (${expression});`);
+        return fn(...values);
+    } catch (err: any) {
+        const message = err?.message ?? String(err);
+        throw new Error(`Template expression "{{${expression}}}" failed: ${message}`);
+    }
+}
+
 /**
  * Interpolate a template string with values from context
  * 
@@ -311,19 +327,82 @@ function resolvePath(obj: Record<string, any>, path: string): any {
  * @returns Interpolated string
  */
 export function interpolate(template: string, context: Record<string, any>): string {
+    return interpolateWithFormatter(template, context, stringifyInterpolatedValue);
+}
+
+/**
+ * Interpolate a template string and, when it is a single token, return the raw value instead of stringifying.
+ * This allows actions like `set` to preserve objects (e.g., Date instances) for downstream expressions.
+ */
+export function interpolateToValue(template: string, context: Record<string, any>): any {
     if (!template || typeof template !== 'string') {
         return template;
     }
-    
-    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier) => {
+
+    validateTemplatePlaceholders(template);
+
+    const trimmed = template.trim();
+    PATTERN_TOKEN_REGEX.lastIndex = 0;
+    const match = PATTERN_TOKEN_REGEX.exec(trimmed);
+    const isSingleToken = match && match.index === 0 && PATTERN_TOKEN_REGEX.lastIndex === trimmed.length;
+
+    if (!isSingleToken) {
+        return interpolate(template, context);
+    }
+
+    const [, name, modifier, extra] = match as RegExpExecArray;
+
+    const expressionTail = !modifier && extra?.trim();
+    if (expressionTail) {
+        return evaluateTemplateExpression(`${name}${extra}`, context);
+    }
+
+    const value = resolvePath(context, name);
+
+    if (value === undefined || value === null) {
+        if (modifier === '?') return '';
+        throw new Error(`Missing required variable: ${name}`);
+    }
+
+    return value;
+}
+
+/**
+ * Interpolate a template string with a custom value formatter.
+ * The formatter receives the resolved value for each token (after required/optional checks).
+ */
+export function interpolateWithFormatter(
+    template: string,
+    context: Record<string, any>,
+    formatter: (value: any, modifier?: string) => string
+): string {
+    if (!template || typeof template !== 'string') {
+        return template;
+    }
+
+    validateTemplatePlaceholders(template);
+
+    return template.replace(PATTERN_TOKEN_REGEX, (match, name, modifier, extra) => {
         // {{cursor}} is a control marker used by transform; it is NOT a normal variable.
         // Preserve it verbatim so transform can locate it after interpolation.
         if (name === 'cursor') {
             return match;
         }
 
+        const expressionTail = !modifier && extra?.trim();
+
+        if (expressionTail) {
+            const result = evaluateTemplateExpression(`${name}${extra}`, context);
+
+            if (result === undefined || result === null) {
+                return '';
+            }
+
+            return formatter(result, modifier);
+        }
+
         const value = resolvePath(context, name);
-        
+
         if (value === undefined || value === null) {
             // Strict-by-default:
             // - {{var}} is required and should error if missing
@@ -331,17 +410,45 @@ export function interpolate(template: string, context: Record<string, any>): str
             if (modifier === '?') return '';
             throw new Error(`Missing required variable: ${name}`);
         }
-        
-        if (typeof value === 'object') {
-            try {
-                return JSON.stringify(value);
-            } catch {
-                return String(value);
-            }
-        }
-        
-        return String(value);
+
+        return formatter(value, modifier);
     });
+}
+
+function stringifyInterpolatedValue(value: any): string {
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch {
+            return String(value);
+        }
+    }
+
+    return String(value);
+}
+
+/**
+ * Ensure there are no stray/unmatched `{{` placeholders in the template.
+ *
+ * We scan for every `{{` sequence and require that it belongs to a token matched
+ * by PATTERN_TOKEN_REGEX. If not, we throw to prevent silently running commands
+ * with literal placeholders (e.g. an unclosed `{{name}`).
+ */
+function validateTemplatePlaceholders(template: string): void {
+    if (!template.includes('{{')) return;
+    let searchIndex = 0;
+    while (true) {
+        const idx = template.indexOf('{{', searchIndex);
+        if (idx === -1) break;
+
+        const closeIdx = template.indexOf('}}', idx + 2);
+        if (closeIdx === -1) {
+            const context = template.slice(idx, Math.min(template.length, idx + 30));
+            throw new Error(`Unmatched template placeholder near: ${context}`);
+        }
+
+        searchIndex = closeIdx + 2;
+    }
 }
 
 /**

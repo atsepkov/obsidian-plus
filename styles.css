@@ -47,6 +47,10 @@ Obsidian Plus Theme
     color: rgb(105, 151, 236);
 }
 
+.cm-line .op-bullet-colon-subject {
+    color: var(--op-colon-subject-color, #a3e635);
+}
+
 /* Multi-level indentation guides */
 .markdown-source-view.mod-cm6 .cm-line.op-indent-colored-line span.cm-indent {
     box-shadow: none;

@@ -5,12 +5,16 @@
  * Each action receives the DSL context and returns an updated context.
  */
 
-import { Notice, requestUrl, TFile } from 'obsidian';
+import { App, Notice, requestUrl, TFile } from 'obsidian';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 import type {
     DSLContext,
     ActionNode,
     ReadActionNode,
+    FileActionNode,
     FetchActionNode,
+    ShellActionNode,
     TransformActionNode,
     BuildActionNode,
     QueryActionNode,
@@ -29,14 +33,163 @@ import type {
     FilterActionNode,
     MapActionNode,
     DateActionNode,
-    TransformChild
+    TransformChild,
+    FileMetadata,
+    FileMetadataFormat
 } from './types';
-import { 
-    extractValues, 
-    interpolate, 
-    evaluateCondition, 
-    cleanTemplate 
+import {
+    extractValues,
+    interpolate,
+    interpolateToValue,
+    interpolateWithFormatter,
+    evaluateCondition,
+    cleanTemplate,
+    resolvePath
 } from './patternMatcher';
+
+const execAsync = promisify(exec);
+const SHELL_MAX_BUFFER = 10 * 1024 * 1024;
+
+async function appendChildBullet(context: DSLContext, text: string, bullet: '+' | '*', indentLevel = 1): Promise<void> {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+
+    if (context.task && context.taskManager) {
+        await context.taskManager.updateDvTask(context.task, {
+            appendChildren: [{
+                indent: Math.max(0, indentLevel - 1),
+                text: trimmed,
+                bullet
+            }],
+            useBullet: bullet
+        });
+        return;
+    }
+
+    if (context.editor) {
+        const editor = context.editor;
+        const cursorLine = context.cursor?.line ?? editor.getCursor().line;
+        const currentLine = editor.getLine(cursorLine);
+        const baseIndent = currentLine.match(/^(\s*)/)?.[1] || '';
+        const indentUnit = '  ';
+        const childIndent = baseIndent + indentUnit.repeat(indentLevel);
+
+        let insertLine = cursorLine;
+        const totalLines = editor.lineCount();
+        for (let i = cursorLine + 1; i < totalLines; i++) {
+            const line = editor.getLine(i);
+            const lineIndent = line.match(/^(\s*)/)?.[1] || '';
+            if (lineIndent.length <= baseIndent.length && line.trim() !== '') {
+                break;
+            }
+            if (line.trim() !== '') {
+                insertLine = i;
+            }
+        }
+
+        const newLine = `${childIndent}${bullet} ${trimmed}`;
+        const insertPos = { line: insertLine, ch: editor.getLine(insertLine).length };
+        editor.replaceRange('\n' + newLine, insertPos);
+
+        const newCursorLine = insertLine + 1;
+        editor.setCursor({ line: newCursorLine, ch: newLine.length });
+        context.cursor = { line: newCursorLine, ch: newLine.length };
+    }
+}
+
+function getVaultBasePath(context: DSLContext): string {
+    const adapter = (context.app.vault as any)?.adapter;
+    const basePath = typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : adapter?.basePath;
+
+    if (!basePath || typeof basePath !== 'string') {
+        throw new Error('shell: vault base path is unavailable; shell commands require a filesystem vault');
+    }
+
+    return basePath;
+}
+
+function ensureVaultScopedCommand(command: string): void {
+    const tokens = command.split(/\s+/).filter(Boolean).map(t => t.replace(/^['"]|['"]$/g, ''));
+
+    for (const token of tokens) {
+        if (!token) continue;
+        if (/^[A-Za-z]:\\/.test(token)) {
+            throw new Error('shell: commands must stay within the vault (no absolute drive paths)');
+        }
+        if (token.startsWith('/') || token.startsWith('~')) {
+            throw new Error('shell: commands must stay within the vault (no absolute paths). Symlink external folders into the vault if needed.');
+        }
+        if (token === '..' || token.startsWith('../') || token.includes('/../')) {
+            throw new Error('shell: parent path segments are not allowed; use a vault symlink instead');
+        }
+    }
+}
+
+export function parseWikilink(raw: string): { path: string; anchor: string | null } {
+    const s = (raw ?? '').trim();
+    if (!s) return { path: '', anchor: null };
+
+    // [[path|alias]] or [[path#anchor|alias]] -> extract path and anchor
+    const bracket = s.match(/^\[\[([\s\S]+)\]\]$/);
+    const inner = bracket ? bracket[1] : s;
+    const beforeAlias = inner.split('|')[0].trim();
+
+    // Split on # to get path and anchor
+    const hashIndex = beforeAlias.indexOf('#');
+    if (hashIndex >= 0) {
+        return {
+            path: beforeAlias.slice(0, hashIndex).trim(),
+            anchor: beforeAlias.slice(hashIndex + 1).trim() || null
+        };
+    }
+    return { path: beforeAlias, anchor: null };
+}
+
+export function resolveWikilinkToFile(context: DSLContext, wikilink: string): TFile {
+    const normalized = wikilink.trim().replace(/^!\[\[/, '[[');
+    const { path } = parseWikilink(normalized);
+    if (!path) throw new Error('wikilink resolution requires a non-empty from: [[File]]');
+    const basePath = context.file?.path ?? '';
+    const dest = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
+    if (!dest) throw new Error(`Could not resolve wikilink: ${wikilink}`);
+    return dest;
+}
+
+export function buildFileMetadata(app: App, file: TFile, format?: FileMetadataFormat): FileMetadata {
+    const ext = (file.extension || '').toLowerCase();
+    const effectiveFormat: FileMetadataFormat = format || (ext === 'md' ? 'markdown' : 'raw');
+
+    const base = {
+        path: file.path,
+        name: file.name,
+        basename: file.basename,
+        extension: file.extension,
+        resourcePath: app.vault.getResourcePath(file),
+        format: effectiveFormat
+    } satisfies FileMetadata;
+
+    if (effectiveFormat !== 'markdown') return base;
+
+    const cache = app.metadataCache.getFileCache(file);
+    const frontmatter = cache?.frontmatter ?? {};
+    const links = (cache?.links ?? []).map(l => l.link).filter(Boolean);
+    const images = (cache?.embeds ?? []).map(e => e.link).filter(Boolean);
+    const sections = (cache?.headings ?? []).map(h => ({ heading: h.heading, level: h.level, line: h.position.start.line }));
+
+    return {
+        ...base,
+        frontmatter,
+        links,
+        images,
+        sections,
+        markdown: {
+            frontmatter,
+            links,
+            images,
+            sections
+        }
+    };
+}
 
 /**
  * Action handler type
@@ -85,26 +238,6 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         if (end === -1) return { frontmatter: null, body: md };
         const body = md.slice(end + '\n---'.length).replace(/^\r?\n/, '');
         return { frontmatter: null, body };
-    };
-
-    const parseWikilink = (raw: string): { path: string; anchor: string | null } => {
-        const s = (raw ?? '').trim();
-        if (!s) return { path: '', anchor: null };
-        
-        // [[path|alias]] or [[path#anchor|alias]] -> extract path and anchor
-        const bracket = s.match(/^\[\[([\s\S]+)\]\]$/);
-        const inner = bracket ? bracket[1] : s;
-        const beforeAlias = inner.split('|')[0].trim();
-        
-        // Split on # to get path and anchor
-        const hashIndex = beforeAlias.indexOf('#');
-        if (hashIndex >= 0) {
-            return {
-                path: beforeAlias.slice(0, hashIndex).trim(),
-                anchor: beforeAlias.slice(hashIndex + 1).trim() || null
-            };
-        }
-        return { path: beforeAlias, anchor: null };
     };
 
     const slugifyHeading = (value: string): string => {
@@ -163,15 +296,6 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         return result.join('\n');
     };
 
-    const resolveWikilinkToFile = (wikilink: string): TFile => {
-        const { path } = parseWikilink(wikilink);
-        if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
-        const basePath = context.file?.path ?? '';
-        const dest = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
-        if (!dest) throw new Error(`Could not resolve wikilink: ${wikilink}`);
-        return dest;
-    };
-
     const isImageFile = (file: TFile): boolean => {
         const ext = file.extension.toLowerCase();
         return ['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp'].includes(ext);
@@ -218,14 +342,20 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             }
             break;
         case 'wikilink': {
+            if (action.format && action.format !== 'markdown') {
+                throw new Error('read: source=wikilink supports only format: markdown');
+            }
+
             const from = action.from ? interpolate(action.from, context.vars) : '';
             const { path, anchor } = parseWikilink(from);
             if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
-            
-            const basePath = context.file?.path ?? '';
-            const file = context.app.metadataCache.getFirstLinkpathDest(path, basePath);
-            if (!file) throw new Error(`Could not resolve wikilink: ${from}`);
-            
+
+            const file = resolveWikilinkToFile(context, from);
+
+            const fileVar = action.asFile ?? 'fromFile';
+            const metadataFormat = action.format === 'markdown' ? 'markdown' : undefined;
+            context.vars[fileVar] = buildFileMetadata(context.app, file, metadataFormat);
+
             const fullText = await context.app.vault.read(file);
             
             // If anchor is specified, extract just that section
@@ -242,7 +372,7 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             }
 
             if (action.includeFrontmatter) {
-                const fm = context.app.metadataCache.getFileCache(file)?.frontmatter ?? null;
+                const fm = context.app.metadataCache.getFileCache(file)?.frontmatter ?? {};
                 const fmVar = action.frontmatterAs || 'frontmatter';
                 context.vars[fmVar] = fm;
             }
@@ -329,7 +459,10 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
                 // Wikilink: resolve to file and convert to base64
                 // Handle both ![[image.png]] and [[image.png]] formats
                 const wikilink = from.replace(/^!\[\[/, '[[').replace(/\]\]$/, ']]');
-                const file = resolveWikilinkToFile(wikilink);
+                const file = resolveWikilinkToFile(context, wikilink);
+
+                const fileVar = action.asFile ?? 'fromFile';
+                context.vars[fileVar] = buildFileMetadata(context.app, file);
                 
                 if (!isImageFile(file)) {
                     throw new Error(`read: source=image - file "${file.name}" is not a recognized image file (supported: png, jpg, jpeg, gif, webp, svg, bmp)`);
@@ -357,13 +490,26 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             text = context.line || '';
     }
     
+    const stripTaskMetadata = (content: string): string => {
+        // Remove trailing task metadata tokens (e.g., completion/due dates like "✅ 2025-12-21").
+        // This keeps pattern matching focused on the user-provided text rather than auto-appended status fields.
+        const metadataPattern = /\s*(?:[✅⏳📅🔁🛫🛬🚩]\s+[^\s]+(?:\s+[^\s]+)*)$/;
+        let result = content.trimEnd();
+
+        while (metadataPattern.test(result)) {
+            result = result.replace(metadataPattern, '').trimEnd();
+        }
+
+        return result;
+    };
+
     // Extract variables from text using pattern (skip for images - they're binary)
     if (action.pattern && source !== 'image') {
         // IMPORTANT: Do NOT interpolate patterns used for extraction.
         // Interpolation would delete capture tokens (e.g. {{url}}) when vars are unset,
         // turning "#podcast {{url}}" into "#podcast " and causing false mismatches.
         const pattern = action.pattern;
-        const haystack = textForMatching ?? text;
+        const haystack = stripTaskMetadata(textForMatching ?? text);
         const result = extractValues(haystack, pattern);
         
         if (result.success) {
@@ -393,6 +539,27 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
         context.vars[action.as] = text;
     }
     
+    return context;
+};
+
+/**
+ * File action handler
+ * Resolves a wikilink/path to a vault file and exposes its metadata for downstream actions
+ */
+export const fileAction: ActionHandler<FileActionNode> = async (action, context) => {
+    const from = interpolate(action.from, context.vars).trim();
+    if (!from) throw new Error('file: requires a from value (wikilink or path)');
+
+    const file = resolveWikilinkToFile(context, from);
+    const varName = action.as?.trim();
+    if (!varName) throw new Error('file: requires as: <variable> to store metadata');
+
+    if (action.format && action.format !== 'markdown') {
+        throw new Error('file: only format: markdown is supported');
+    }
+
+    const metadataFormat = action.format === 'markdown' ? 'markdown' : undefined;
+    context.vars[varName] = buildFileMetadata(context.app, file, metadataFormat);
     return context;
 };
 
@@ -550,6 +717,53 @@ export const fetchAction: ActionHandler<FetchActionNode> = async (action, contex
     }
     
     return context;
+};
+
+/**
+ * Shell action handler
+ * Executes a command scoped to the vault root and surfaces output as + children
+ */
+export const shellAction: ActionHandler<ShellActionNode> = async (action, context) => {
+    const interpolated = interpolateWithFormatter(action.command, context.vars, value => {
+        const str = typeof value === 'object'
+            ? (() => { try { return JSON.stringify(value); } catch { return String(value); } })()
+            : String(value);
+
+        // Escape characters that would break quoted shell commands while preserving user-provided quotes.
+        return str.replace(/(["`\\$])/g, '\\$1');
+    });
+    const command = interpolated.replace(/[\r\n]+/g, ' ').trim();
+    if (!command) throw new Error('shell: command is empty after interpolation');
+
+    ensureVaultScopedCommand(command);
+    const cwd = getVaultBasePath(context);
+
+    try {
+        const result = await execAsync(command, {
+            cwd,
+            timeout: action.timeout,
+            windowsHide: true,
+            maxBuffer: SHELL_MAX_BUFFER
+        });
+
+        const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim();
+        if (action.as) {
+            context.vars[action.as] = output;
+        }
+
+        if (output) {
+            await appendChildBullet(context, output, '+');
+        }
+
+        return context;
+    } catch (err: any) {
+        const stdout = err?.stdout ?? '';
+        const stderr = err?.stderr ?? '';
+        const combined = `${stdout}${stderr}`.trim();
+        const codeInfo = err?.code !== undefined ? `exit ${err.code}` : (err?.signal ? `signal ${err.signal}` : 'failed');
+        const message = combined ? `${combined} (${codeInfo})` : `Command failed (${codeInfo})`;
+        throw new Error(`shell failed: ${message}`);
+    }
 };
 
 /**
@@ -864,8 +1078,9 @@ export const queryAction: ActionHandler<QueryActionNode> = async (action, contex
  * Sets a variable in context
  */
 export const setAction: ActionHandler<SetActionNode> = async (action, context) => {
-    const value = interpolate(action.value, context.vars);
-    
+    const rawValue = interpolateToValue(action.value, context.vars);
+    const value = typeof rawValue === 'string' ? rawValue : JSON.stringify(rawValue);
+
     // If pattern is provided, extract using pattern (like read does)
     if (action.pattern) {
         const result = extractValues(value, action.pattern);
@@ -879,19 +1094,23 @@ export const setAction: ActionHandler<SetActionNode> = async (action, context) =
         if (extractedVarNames.length > 0) {
             // Prefer extracted variable with same name as target, otherwise use first
             const matchingVar = extractedVarNames.find(v => v === action.name);
-            context.vars[action.name] = matchingVar 
-                ? result.values[matchingVar] 
+            context.vars[action.name] = matchingVar
+                ? result.values[matchingVar]
                 : result.values[extractedVarNames[0]];
         }
     } else {
         // Original behavior: try JSON parse, fallback to string
-        try {
-            context.vars[action.name] = JSON.parse(value);
-        } catch {
-            context.vars[action.name] = value;
+        if (typeof rawValue === 'string') {
+            try {
+                context.vars[action.name] = JSON.parse(rawValue);
+            } catch {
+                context.vars[action.name] = rawValue;
+            }
+        } else {
+            context.vars[action.name] = rawValue;
         }
     }
-    
+
     return context;
 };
 
@@ -988,7 +1207,7 @@ export const extractAction: ActionHandler<ExtractActionNode> = async (action, co
  * Iterates over arrays
  */
 export const foreachAction: ActionHandler<ForeachActionNode> = async (action, context, executeAction) => {
-    const items = context.vars[action.items];
+    const items = resolvePath(context.vars, action.items);
     
     if (!Array.isArray(items)) {
         throw new Error(`Variable '${action.items}' is not an array`);
@@ -1326,7 +1545,9 @@ export const taskAction: ActionHandler<TaskActionNode> = async (action, context)
  */
 export const actionHandlers: Record<string, ActionHandler<any>> = {
     read: readAction,
+    file: fileAction,
     fetch: fetchAction,
+    shell: shellAction,
     transform: transformAction,
     build: buildAction,
     query: queryAction,

@@ -16,7 +16,7 @@ import type {
     CreateContextOptions,
     TriggerType
 } from './types';
-import { getActionHandler, ActionHandler } from './actions';
+import { getActionHandler, ActionHandler, buildFileMetadata } from './actions';
 
 /**
  * Create a new DSL execution context
@@ -30,12 +30,7 @@ export function createContext(options: CreateContextOptions): DSLContext {
         vars: {
             // Pre-populate with useful context variables
             line: options.line || '',
-            file: {
-                path: options.file.path,
-                name: options.file.name,
-                basename: options.file.basename,
-                extension: options.file.extension
-            },
+            file: buildFileMetadata(options.app, options.file),
             ...(options.initialVars || {})
         },
         app: options.app,
@@ -92,11 +87,10 @@ async function defaultErrorHandler(
     // If we have a task, add error as child bullet
     if (context.task && context.taskManager) {
         try {
-            const timestamp = new Date().toLocaleString();
-            const errorMessage = `Error (${action.type}): ${error.message} (${timestamp})`;
-            
+            const errorMessage = `Error (${action.type}): ${error.message}`;
+
             await context.taskManager.updateDvTask(context.task, {
-                prependChildren: [{
+                appendChildren: [{
                     indent: 0,
                     text: errorMessage,
                     bullet: '*'
@@ -196,6 +190,10 @@ async function executeActionSafe(
         if ('as' in (action as any)) {
             const normalized = validateVarName((action as any).as, 'variable name for "as"');
             if (normalized !== undefined) (action as any).as = normalized;
+        }
+        if ('asFile' in (action as any)) {
+            const normalized = validateVarName((action as any).asFile, 'variable name for "asFile"');
+            if (normalized !== undefined) (action as any).asFile = normalized;
         }
         if ('name' in (action as any)) {
             const normalized = validateVarName((action as any).name, 'variable name for "name"');

@@ -14,6 +14,7 @@ import type {
     RawConfigItem,
     ParseResult,
     ReadActionNode,
+    FileActionNode,
     FetchActionNode,
     TransformActionNode,
     TransformChild,
@@ -34,6 +35,7 @@ import type {
     FilterActionNode,
     MapActionNode,
     DateActionNode,
+    ShellActionNode,
     AuthConfig
 } from './types';
 import { cleanTemplate } from './patternMatcher';
@@ -58,7 +60,9 @@ const TRIGGER_NAMES: TriggerType[] = [
  */
 const ACTION_TYPES: ActionType[] = [
     'read',
+    'file',
     'fetch',
+    'shell',
     'transform',
     'build',
     'query',
@@ -254,12 +258,13 @@ function parseTransformChildren(children: RawConfigItem[] | undefined, baseInden
  */
 function parseActionNode(item: RawConfigItem): ActionNode | null {
     const text = item.text.trim();
-    
+    const normalizedText = text.replace(/^[-+*]\s+/, '');
+
     // Parse inline key-value pairs (for actions like "fetch: `url` as: `name`")
-    const inlineKV = parseInlineKeyValues(text);
-    
+    const inlineKV = parseInlineKeyValues(normalizedText);
+
     // Get the main action type
-    const mainKV = parseKeyValue(text);
+    const mainKV = parseKeyValue(normalizedText);
     if (!mainKV) return null;
     
     const actionType = mainKV.key;
@@ -292,8 +297,12 @@ function parseActionNode(item: RawConfigItem): ActionNode | null {
     switch (actionType) {
         case 'read':
             return parseReadAction(mainValue, inlineKV, regularChildren, onError);
+        case 'file':
+            return parseFileAction(mainValue, inlineKV, regularChildren, onError);
         case 'fetch':
             return parseFetchAction(mainValue, inlineKV, regularChildren, onError);
+        case 'shell':
+            return parseShellAction(mainValue, inlineKV, regularChildren, onError);
         case 'transform':
             return parseTransformAction(mainValue, regularChildren, onError);
         case 'build':
@@ -393,19 +402,49 @@ function parseReadAction(
     onError?: ActionNode[]
 ): ReadActionNode {
     const options = parseChildrenAsRecord(children);
-    
+
     return {
         type: 'read',
         pattern: cleanTemplate(pattern),
         source: options.source as 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image' | undefined,
         from: inlineKV.from ? cleanTemplate(inlineKV.from) : (options.from ? cleanTemplate(options.from) : undefined),
         as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
+        asFile: options.asFile ? cleanTemplate(options.asFile) : undefined,
         stripFrontmatter: options.stripFrontmatter === true || options.stripFrontmatter === 'true',
         includeFrontmatter: options.includeFrontmatter === true || options.includeFrontmatter === 'true',
         frontmatterAs: options.frontmatterAs ? cleanTemplate(options.frontmatterAs) : undefined,
         childrenAs: options.childrenAs ? cleanTemplate(options.childrenAs) : undefined,
         childrenLinesAs: options.childrenLinesAs ? cleanTemplate(options.childrenLinesAs) : undefined,
-        format: inlineKV.format ? (inlineKV.format as 'base64' | 'dataUri' | 'url') : (options.format ? (options.format as 'base64' | 'dataUri' | 'url') : undefined),
+        format: inlineKV.format
+            ? (inlineKV.format as 'base64' | 'dataUri' | 'url' | 'markdown')
+            : (options.format ? (options.format as 'base64' | 'dataUri' | 'url' | 'markdown') : undefined),
+        onError
+    };
+}
+
+/**
+ * Parse a file action
+ */
+function parseFileAction(
+    fromValue: string,
+    inlineKV: Record<string, string>,
+    children: RawConfigItem[],
+    onError?: ActionNode[]
+): FileActionNode {
+    const options = parseChildrenAsRecord(children);
+    const from = cleanTemplate(inlineKV.file ?? options.from ?? fromValue).trim();
+    if (!from) throw new Error('file: requires a from value (wikilink or path)');
+
+    const as = cleanTemplate(inlineKV.as ?? options.as ?? '').trim();
+    if (!as) throw new Error('file: requires as: <variable> to store metadata');
+
+    const formatValue = inlineKV.format ?? options.format;
+
+    return {
+        type: 'file',
+        from,
+        as,
+        format: formatValue ? (formatValue as any) : undefined,
         onError
     };
 }
@@ -466,6 +505,34 @@ function parseFetchAction(
         }
     }
     
+    return node;
+}
+
+/**
+ * Parse a shell action
+ */
+function parseShellAction(
+    command: string,
+    inlineKV: Record<string, string>,
+    _children: RawConfigItem[],
+    onError?: ActionNode[]
+): ShellActionNode {
+    const trimmedCommand = cleanTemplate(command).trim();
+    if (!trimmedCommand) throw new Error('shell: requires a command to run');
+
+    const node: ShellActionNode = {
+        type: 'shell',
+        command: trimmedCommand,
+        onError
+    };
+
+    if (inlineKV.as) node.as = cleanTemplate(inlineKV.as);
+    if (inlineKV.timeout) {
+        const parsed = Number(inlineKV.timeout);
+        if (!Number.isFinite(parsed)) throw new Error('shell: timeout must be a number (ms)');
+        node.timeout = parsed;
+    }
+
     return node;
 }
 

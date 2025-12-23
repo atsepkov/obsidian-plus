@@ -90,11 +90,13 @@ Reads the current line (or file/selection) and extracts variables using patterns
 
 | Pattern | Meaning | Example |
 |---------|---------|---------|
-| `{{var}}` | Capture required value | `{{url}}` → must exist |
+| `{{var}}` | Capture required value (first word) | `{{url}}` → must exist |
 | `{{var?}}` | Capture optional value | `{{subtitle?}}` → can be empty |
 | `{{var*}}` | Greedy (rest of line) | `{{description*}}` |
 | `{{items+}}` | Space-separated list | `apple banana` → `["apple", "banana"]` |
 | `{{items+:, }}` | Custom delimiter list | `a, b, c` → `["a", "b", "c"]` |
+
+> **Tip:** Placeholders must be closed. An unbalanced token such as `{{name` will throw an error during execution instead of running with the literal text.
 
 **Options:**
 - `source: file` — read entire file instead of current line
@@ -102,6 +104,10 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: children` — read child bullets
 - `source: wikilink` — read the contents of another note by wikilink
 - `source: image` — read image file (wikilink or URL) and convert to base64
+- `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath)
+- `format: markdown` — when reading a wikilink/file, also populate markdown metadata on the file variable (frontmatter, links, images, sections)
+- `includeFrontmatter: true` — when reading another Markdown note by wikilink, also expose its YAML frontmatter
+- `frontmatterAs: meta` — rename the frontmatter variable (defaults to `frontmatter`)
 
 #### Reading another note by wikilink
 
@@ -114,6 +120,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 ```
 
 After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
+`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath). If `format: markdown` is active (default for `.md`), it also exposes `frontmatter` plus markdown-aware arrays for links, images, and sections (available both as `{{fromFile.links/images/sections}}` and inside `{{fromFile.markdown.*}}`).
 
 **Reading a specific section:**
 
@@ -136,6 +143,13 @@ This will:
 - Supports all heading levels (`#`, `##`, `###`, etc.)
 - Extracts content until the next heading of equal or higher level
 - If the section isn't found, throws an error with a clear message
+
+**Markdown format metadata:**
+- Set `format: markdown` (default for `.md` files) on `read` or `file` actions to enrich the `asFile` variable with:
+  - `frontmatter` — YAML frontmatter object (empty object if none)
+  - `links` / `markdown.links` — array of wikilinks in the note
+  - `images` / `markdown.images` — array of embedded images/attachments
+  - `sections` / `markdown.sections` — heading outline with `{ heading, level, line }`
 
 **Example:**
 ```markdown
@@ -180,6 +194,7 @@ Read image files and convert them to base64 for sending to APIs:
   - Reads the binary data
   - Converts to base64 string or data URI
   - Supported formats: `.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.svg`, `.bmp`
+  - Also exposes file metadata at `{{fromFile}}` (or your custom `asFile` variable)
 
 **Format options:**
 - `format: base64` — returns just the base64 string (e.g., `iVBORw0KGgo...`)
@@ -220,6 +235,24 @@ Now you can reference:
 - `{{meta.title}}`
 - `{{meta.tags}}` (string unless you parse it)
 - raw: `{{meta_lines}}`
+
+---
+
+### `file` — Resolve Wikilinks to File Metadata
+
+Resolve a wikilink or path to the underlying vault file without reading its contents. The resolved metadata is safe to hand to `shell` or other actions that need on-disk paths.
+
+```yaml
+- file: `[[My Note]]` as: `noteFile`
+- shell: `cat "{{noteFile.path}}"`
+```
+
+**Metadata fields:**
+- `path`, `name`, `basename`, `extension`
+- `resourcePath` (Obsidian resource URL for embeds)
+- `frontmatter` (Markdown files expose their YAML object; empty object for files without frontmatter or non-Markdown)
+
+If you already `read` a wikilink or image, `{{fromFile}}` (or your `asFile:` override) contains the same metadata without needing a separate `file` action.
 
 ---
 
@@ -333,6 +366,26 @@ Fetches data from APIs and stores the response.
 
 ---
 
+### `shell` — Run Local Commands (Vault-Scoped)
+
+Executes a shell command from the vault root so relative paths stay inside your vault.
+
+```yaml
+- shell: `ls templates`
+  - as: `listing`
+```
+
+**Behavior & safety:**
+- Commands are run with the vault root as the working directory.
+- Absolute paths (`/`, `~`, drive letters) and parent segments (`..`) are rejected to keep execution inside the vault. Symlink external folders into the vault if needed.
+- Interpolated values are escaped for double quotes, backticks, backslashes, and `$` so you can safely quote paths with spaces (e.g., `shell: \`cp "{{noteFile.path}}" dest/\``).
+- Combined stdout/stderr is stored in `as:` (if provided) and echoed as a `+` child bullet.
+- Non-zero exit codes produce a `* Error (shell): ...` bullet with the failure details.
+
+Use this for lightweight local automations that should only touch files inside the vault.
+
+---
+
 ### `transform` — Reshape Your Content
 
 Replaces the current line and adds child bullets.
@@ -362,6 +415,17 @@ Sets a variable to a value (string or parsed JSON). Can also extract values usin
 - set: `myVar` value: `Hello {{name}}`
 ```
 
+**JavaScript expressions inside `{{ ... }}`:**
+- When a placeholder continues past the variable name (e.g., `{{note.path.toLowerCase()}}`), the full expression is executed with all current variables in scope.
+- The expression result is stringified (objects become JSON) and spliced into the template; `null`/`undefined` become empty strings.
+- When the entire value is a single `{{ ... }}` token, the expression result is stored as-is (e.g., a `Date` instance stays a `Date`), which is useful for chaining calculations in later `set` steps.
+
+Example — slugify a wikilinked file path:
+```yaml
+- set: `slug`
+  value: `{{noteFile.path.toLowerCase().replace(/[^a-z0-9]+/g, '-')}}`
+```
+
 **Extract using pattern (e.g., parse comma-separated list into array):**
 ```yaml
 - set: `tags` value: `{{meta.tags}}` pattern: `{{tags+:, }}`
@@ -386,6 +450,8 @@ Iterates over an array variable, running child actions for each item.
 - foreach: `items` as: `item`
   - append: `[ ] {{item}}`
 ```
+
+`items` can reference nested paths (e.g., `noteFile.images` or `response.data[0].tags`).
 
 **Available Loop Variables:**
 - `{{item}}` — current item (or custom name via `as:`)
@@ -713,10 +779,18 @@ Every action can have an `onError` block:
 | `{{file.path}}` | File path |
 | `{{file.name}}` | File name with extension |
 | `{{file.basename}}` | File name without extension |
+| `{{file.frontmatter}}` | YAML frontmatter object when `format: markdown` is active for the current file (empty object if absent) |
 | `{{task.text}}` | Task text (if in task context) |
 | `{{task.completed}}` | Whether task is completed |
 | `{{task.status}}` | Task status character |
 | `{{cursor}}` | Special: marks cursor position in transforms |
+
+#### File metadata variables
+
+- Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`
+- Markdown metadata (when `format: markdown` applies): `{{file.frontmatter}}` plus `{{file.links}}`/`{{file.images}}`/`{{file.sections}}` (also available under `{{file.markdown.*}}`)
+- Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`); use `format: markdown` to include markdown metadata on the resolved file
+- Standalone resolution: `file: [[Note]] as: linkFile` (or `file: ![[image.png]] as: imageFile`) exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, and when `format: markdown` is set, `{{linkFile.frontmatter}}`, `{{linkFile.links}}`, `{{linkFile.images}}`, `{{linkFile.sections}}`, or `{{linkFile.markdown.*}}`
 
 ### Trigger Event Variables (Status Transitions)
 

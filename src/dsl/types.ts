@@ -80,9 +80,11 @@ export interface BaseActionNode {
 /**
  * All supported action types
  */
-export type ActionType = 
+export type ActionType =
     | 'read'
+    | 'file'
     | 'fetch'
+    | 'shell'
     | 'transform'
     | 'build'
     | 'query'
@@ -102,6 +104,51 @@ export type ActionType =
     | 'filter'
     | 'map'
     | 'date';
+
+/**
+ * Metadata exposed for resolved files/wikilinks
+ */
+export type FileMetadataFormat = 'raw' | 'markdown';
+
+export type MarkdownMetadata = {
+    frontmatter: any | null;
+    links: string[];
+    images: string[];
+    sections: { heading: string; level: number; line: number }[];
+};
+
+export type FileMetadata = {
+    path: string;
+    name: string;
+    basename: string;
+    extension: string;
+    resourcePath: string;
+    /** Effective format transformer applied to this metadata */
+    format: FileMetadataFormat;
+    /** Shortcut to the markdown frontmatter (when format = markdown) */
+    frontmatter?: any | null;
+    /** Shortcut to markdown links (when format = markdown) */
+    links?: string[];
+    /** Shortcut to markdown images/embeds (when format = markdown) */
+    images?: string[];
+    /** Shortcut to markdown heading outline (when format = markdown) */
+    sections?: { heading: string; level: number; line: number }[];
+    /** Markdown-specific metadata populated when format = markdown */
+    markdown?: MarkdownMetadata;
+};
+
+/**
+ * Shell action - executes a command within the vault directory
+ */
+export interface ShellActionNode extends BaseActionNode {
+    type: 'shell';
+    /** Command to execute (will be run from the vault root) */
+    command: string;
+    /** Optional variable name to store combined stdout/stderr */
+    as?: string;
+    /** Optional timeout in milliseconds */
+    timeout?: number;
+}
 
 /**
  * Task action - safely manipulates the current task
@@ -140,6 +187,8 @@ export interface ReadActionNode extends BaseActionNode {
     from?: string;
     /** Optional variable name to store the read text into (in addition to vars.text) */
     as?: string;
+    /** When reading another file/image, also expose its metadata into this variable (defaults to `fromFile`) */
+    asFile?: string;
     /** If true, strip YAML frontmatter from the read content (when reading a file/wikilink) */
     stripFrontmatter?: boolean;
     /** If true, also expose the frontmatter object (when reading a file/wikilink) */
@@ -155,8 +204,12 @@ export interface ReadActionNode extends BaseActionNode {
     childrenAs?: string;
     /** Variable name to store raw child lines array into (defaults to `childrenLines`) */
     childrenLinesAs?: string;
-    /** Format for image output: 'base64' (just base64 string), 'dataUri' (data:image/...;base64,...), 'url' (pass through external URLs) */
-    format?: 'base64' | 'dataUri' | 'url';
+    /**
+     * Format transformer for the read content/metadata.
+     * - For images: 'base64' | 'dataUri' | 'url'
+     * - For wikilinks/files: 'markdown' to expose markdown metadata (frontmatter, links, images, sections)
+     */
+    format?: 'base64' | 'dataUri' | 'url' | 'markdown';
 }
 
 /**
@@ -176,6 +229,19 @@ export interface FetchActionNode extends BaseActionNode {
     as?: string;
     /** Authentication configuration */
     auth?: AuthConfig;
+}
+
+/**
+ * File action - resolves a wikilink/path to a vault file and exposes its metadata
+ */
+export interface FileActionNode extends BaseActionNode {
+    type: 'file';
+    /** Wikilink or path to resolve */
+    from: string;
+    /** Variable name to store file metadata (path/name/basename/extension/resourcePath) */
+    as: string;
+    /** Optional format transformer (e.g., markdown) */
+    format?: FileMetadataFormat;
 }
 
 /**
@@ -421,9 +487,11 @@ export interface DateActionNode extends BaseActionNode {
 /**
  * Union type of all action nodes
  */
-export type ActionNode = 
+export type ActionNode =
     | ReadActionNode
+    | FileActionNode
     | FetchActionNode
+    | ShellActionNode
     | TransformActionNode
     | BuildActionNode
     | QueryActionNode
