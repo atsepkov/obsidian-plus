@@ -5,7 +5,7 @@
  * Each action receives the DSL context and returns an updated context.
  */
 
-import { Notice, requestUrl, TFile } from 'obsidian';
+import { App, Notice, requestUrl, TFile } from 'obsidian';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import type {
@@ -34,7 +34,8 @@ import type {
     MapActionNode,
     DateActionNode,
     TransformChild,
-    FileMetadata
+    FileMetadata,
+    FileMetadataFormat
 } from './types';
 import {
     extractValues,
@@ -152,17 +153,36 @@ export function resolveWikilinkToFile(context: DSLContext, wikilink: string): TF
     return dest;
 }
 
-function buildFileMetadata(context: DSLContext, file: TFile): FileMetadata {
-    const isMarkdown = (file.extension || '').toLowerCase() === 'md';
-    const frontmatter = isMarkdown ? context.app.metadataCache.getFileCache(file)?.frontmatter ?? {} : {};
+export function buildFileMetadata(app: App, file: TFile, format?: FileMetadataFormat): FileMetadata {
+    const ext = (file.extension || '').toLowerCase();
+    const effectiveFormat: FileMetadataFormat = format || (ext === 'md' ? 'markdown' : 'raw');
 
-    return {
+    const base = {
         path: file.path,
         name: file.name,
         basename: file.basename,
         extension: file.extension,
-        resourcePath: context.app.vault.getResourcePath(file),
-        frontmatter
+        resourcePath: app.vault.getResourcePath(file),
+        format: effectiveFormat
+    } satisfies FileMetadata;
+
+    if (effectiveFormat !== 'markdown') return base;
+
+    const cache = app.metadataCache.getFileCache(file);
+    const frontmatter = cache?.frontmatter ?? {};
+    const links = (cache?.links ?? []).map(l => l.link).filter(Boolean);
+    const images = (cache?.embeds ?? []).map(e => e.link).filter(Boolean);
+    const sections = (cache?.headings ?? []).map(h => ({ heading: h.heading, level: h.level, line: h.position.start.line }));
+
+    return {
+        ...base,
+        frontmatter,
+        markdown: {
+            frontmatter,
+            links,
+            images,
+            sections
+        }
     };
 }
 
@@ -317,6 +337,10 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             }
             break;
         case 'wikilink': {
+            if (action.format && action.format !== 'markdown') {
+                throw new Error('read: source=wikilink supports only format: markdown');
+            }
+
             const from = action.from ? interpolate(action.from, context.vars) : '';
             const { path, anchor } = parseWikilink(from);
             if (!path) throw new Error('read: source=wikilink requires a non-empty from: [[File]]');
@@ -324,7 +348,8 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             const file = resolveWikilinkToFile(context, from);
 
             const fileVar = action.asFile ?? 'fromFile';
-            context.vars[fileVar] = buildFileMetadata(context, file);
+            const metadataFormat = action.format === 'markdown' ? 'markdown' : undefined;
+            context.vars[fileVar] = buildFileMetadata(context.app, file, metadataFormat);
 
             const fullText = await context.app.vault.read(file);
             
@@ -432,7 +457,7 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
                 const file = resolveWikilinkToFile(context, wikilink);
 
                 const fileVar = action.asFile ?? 'fromFile';
-                context.vars[fileVar] = buildFileMetadata(context, file);
+                context.vars[fileVar] = buildFileMetadata(context.app, file);
                 
                 if (!isImageFile(file)) {
                     throw new Error(`read: source=image - file "${file.name}" is not a recognized image file (supported: png, jpg, jpeg, gif, webp, svg, bmp)`);
@@ -524,7 +549,12 @@ export const fileAction: ActionHandler<FileActionNode> = async (action, context)
     const varName = action.as?.trim();
     if (!varName) throw new Error('file: requires as: <variable> to store metadata');
 
-    context.vars[varName] = buildFileMetadata(context, file);
+    if (action.format && action.format !== 'markdown') {
+        throw new Error('file: only format: markdown is supported');
+    }
+
+    const metadataFormat = action.format === 'markdown' ? 'markdown' : undefined;
+    context.vars[varName] = buildFileMetadata(context.app, file, metadataFormat);
     return context;
 };
 

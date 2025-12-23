@@ -108,13 +108,27 @@ export type ActionType =
 /**
  * Metadata exposed for resolved files/wikilinks
  */
+export type FileMetadataFormat = 'raw' | 'markdown';
+
+export type MarkdownMetadata = {
+    frontmatter: any | null;
+    links: string[];
+    images: string[];
+    sections: { heading: string; level: number; line: number }[];
+};
+
 export type FileMetadata = {
     path: string;
     name: string;
     basename: string;
     extension: string;
     resourcePath: string;
+    /** Effective format transformer applied to this metadata */
+    format: FileMetadataFormat;
+    /** Shortcut to the markdown frontmatter (when format = markdown) */
     frontmatter?: any | null;
+    /** Markdown-specific metadata populated when format = markdown */
+    markdown?: MarkdownMetadata;
 };
 
 /**
@@ -184,8 +198,12 @@ export interface ReadActionNode extends BaseActionNode {
     childrenAs?: string;
     /** Variable name to store raw child lines array into (defaults to `childrenLines`) */
     childrenLinesAs?: string;
-    /** Format for image output: 'base64' (just base64 string), 'dataUri' (data:image/...;base64,...), 'url' (pass through external URLs) */
-    format?: 'base64' | 'dataUri' | 'url';
+    /**
+     * Format transformer for the read content/metadata.
+     * - For images: 'base64' | 'dataUri' | 'url'
+     * - For wikilinks/files: 'markdown' to expose markdown metadata (frontmatter, links, images, sections)
+     */
+    format?: 'base64' | 'dataUri' | 'url' | 'markdown';
 }
 
 /**
@@ -216,6 +234,8 @@ export interface FileActionNode extends BaseActionNode {
     from: string;
     /** Variable name to store file metadata (path/name/basename/extension/resourcePath) */
     as: string;
+    /** Optional format transformer (e.g., markdown) */
+    format?: FileMetadataFormat;
 }
 
 /**

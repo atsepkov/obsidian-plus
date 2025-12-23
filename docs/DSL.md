@@ -104,7 +104,8 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: children` — read child bullets
 - `source: wikilink` — read the contents of another note by wikilink
 - `source: image` — read image file (wikilink or URL) and convert to base64
-- `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath, frontmatter on Markdown)
+- `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath)
+- `format: markdown` — when reading a wikilink/file, also populate markdown metadata on the file variable (frontmatter, links, images, sections)
 - `includeFrontmatter: true` — when reading another Markdown note by wikilink, also expose its YAML frontmatter
 - `frontmatterAs: meta` — rename the frontmatter variable (defaults to `frontmatter`)
 
@@ -119,7 +120,7 @@ Reads the current line (or file/selection) and extracts variables using patterns
 ```
 
 After this, `{{post_md}}` contains the linked note's markdown body, and `{{text}}` is also set to the same content.
-`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath/frontmatter) unless you set `asFile` to a different variable name.
+`{{fromFile}}` holds the linked note's metadata (path/name/basename/extension/resourcePath). If `format: markdown` is active (default for `.md`), it also exposes `frontmatter`, `markdown.links`, `markdown.images`, and `markdown.sections`.
 
 **Reading a specific section:**
 
@@ -142,6 +143,13 @@ This will:
 - Supports all heading levels (`#`, `##`, `###`, etc.)
 - Extracts content until the next heading of equal or higher level
 - If the section isn't found, throws an error with a clear message
+
+**Markdown format metadata:**
+- Set `format: markdown` (default for `.md` files) on `read` or `file` actions to enrich the `asFile` variable with:
+  - `frontmatter` — YAML frontmatter object (empty object if none)
+  - `markdown.links` — array of wikilinks in the note
+  - `markdown.images` — array of embedded images/attachments
+  - `markdown.sections` — heading outline with `{ heading, level, line }`
 
 **Example:**
 ```markdown
@@ -769,7 +777,7 @@ Every action can have an `onError` block:
 | `{{file.path}}` | File path |
 | `{{file.name}}` | File name with extension |
 | `{{file.basename}}` | File name without extension |
-| `{{file.frontmatter}}` | YAML frontmatter object for the current Markdown file (empty object if absent or non-Markdown) |
+| `{{file.frontmatter}}` | YAML frontmatter object when `format: markdown` is active for the current file (empty object if absent) |
 | `{{task.text}}` | Task text (if in task context) |
 | `{{task.completed}}` | Whether task is completed |
 | `{{task.status}}` | Task status character |
@@ -777,9 +785,10 @@ Every action can have an `onError` block:
 
 #### File metadata variables
 
-- Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`, `{{file.frontmatter}}`
-- Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`), including `frontmatter` for Markdown notes
-- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, `{{linkFile.frontmatter}}`, etc.
+- Current note: `{{file.path}}`, `{{file.name}}`, `{{file.basename}}`, `{{file.extension}}`
+- Markdown metadata (when `format: markdown` applies): `{{file.frontmatter}}` plus `{{file.markdown.links}}`, `{{file.markdown.images}}`, `{{file.markdown.sections}}`
+- Resolved wikilinks/images: `{{fromFile.*}}` (or your custom `asFile:` variable on `read`); use `format: markdown` to include markdown metadata on the resolved file
+- Standalone resolution: `file: [[Note]] as: linkFile` exposes `{{linkFile.path}}`, `{{linkFile.resourcePath}}`, and when `format: markdown` is set, `{{linkFile.frontmatter}}`, `{{linkFile.markdown.*}}`, etc.
 
 ### Trigger Event Variables (Status Transitions)
 

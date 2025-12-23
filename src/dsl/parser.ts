@@ -415,7 +415,9 @@ function parseReadAction(
         frontmatterAs: options.frontmatterAs ? cleanTemplate(options.frontmatterAs) : undefined,
         childrenAs: options.childrenAs ? cleanTemplate(options.childrenAs) : undefined,
         childrenLinesAs: options.childrenLinesAs ? cleanTemplate(options.childrenLinesAs) : undefined,
-        format: inlineKV.format ? (inlineKV.format as 'base64' | 'dataUri' | 'url') : (options.format ? (options.format as 'base64' | 'dataUri' | 'url') : undefined),
+        format: inlineKV.format
+            ? (inlineKV.format as 'base64' | 'dataUri' | 'url' | 'markdown')
+            : (options.format ? (options.format as 'base64' | 'dataUri' | 'url' | 'markdown') : undefined),
         onError
     };
 }
@@ -436,10 +438,13 @@ function parseFileAction(
     const as = cleanTemplate(inlineKV.as ?? options.as ?? '').trim();
     if (!as) throw new Error('file: requires as: <variable> to store metadata');
 
+    const formatValue = inlineKV.format ?? options.format;
+
     return {
         type: 'file',
         from,
         as,
+        format: formatValue ? (formatValue as any) : undefined,
         onError
     };
 }
