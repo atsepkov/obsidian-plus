@@ -1126,9 +1126,9 @@ export default class ObsidianPlus extends Plugin {
         private buildDecorationSet(state: EditorState): DecorationSet {
                 // console.log('STATE', state, this)
                 const activeFile = this.app.workspace.getActiveFile();
-                if (activeFile?.path === this.settings.tagListFilePath) {
-                                return Decoration.none;
-                }
+                // if (activeFile?.path === this.settings.tagListFilePath) {
+                //                 return Decoration.none;
+                // }
 
                 const configuredTagColorMap = new Map<string, string>();
                 for (const tagColor of this.settings.tagColors ?? []) {
