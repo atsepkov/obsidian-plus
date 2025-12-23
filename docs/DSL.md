@@ -451,6 +451,8 @@ Iterates over an array variable, running child actions for each item.
   - append: `[ ] {{item}}`
 ```
 
+`items` can reference nested paths (e.g., `noteFile.images` or `response.data[0].tags`).
+
 **Available Loop Variables:**
 - `{{item}}` — current item (or custom name via `as:`)
 - `{{item_index}}` — zero-based index

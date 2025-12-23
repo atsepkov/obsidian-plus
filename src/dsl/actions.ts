@@ -43,7 +43,8 @@ import {
     interpolateToValue,
     interpolateWithFormatter,
     evaluateCondition,
-    cleanTemplate
+    cleanTemplate,
+    resolvePath
 } from './patternMatcher';
 
 const execAsync = promisify(exec);
@@ -1205,7 +1206,7 @@ export const extractAction: ActionHandler<ExtractActionNode> = async (action, co
  * Iterates over arrays
  */
 export const foreachAction: ActionHandler<ForeachActionNode> = async (action, context, executeAction) => {
-    const items = context.vars[action.items];
+    const items = resolvePath(context.vars, action.items);
     
     if (!Array.isArray(items)) {
         throw new Error(`Variable '${action.items}' is not an array`);

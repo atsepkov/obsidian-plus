@@ -277,7 +277,7 @@ export function extractValues(text: string, pattern: string): PatternExtractionR
  * Resolve a dot-notation path in an object
  * e.g., "response.data.items" from { response: { data: { items: [...] } } }
  */
-function resolvePath(obj: Record<string, any>, path: string): any {
+export function resolvePath(obj: Record<string, any>, path: string): any {
     const parts = path.split('.');
     let current: any = obj;
     
