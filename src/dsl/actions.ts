@@ -126,6 +126,37 @@ function ensureVaultScopedCommand(command: string): void {
     }
 }
 
+function findUnbalancedQuote(command: string): '"' | "'" | null {
+    let inSingle = false;
+    let inDouble = false;
+    let escaped = false;
+
+    for (const ch of command) {
+        if (escaped) {
+            escaped = false;
+            continue;
+        }
+
+        if (ch === '\\') {
+            escaped = true;
+            continue;
+        }
+
+        if (ch === "'" && !inDouble) {
+            inSingle = !inSingle;
+            continue;
+        }
+
+        if (ch === '"' && !inSingle) {
+            inDouble = !inDouble;
+        }
+    }
+
+    if (inSingle) return "'";
+    if (inDouble) return '"';
+    return null;
+}
+
 function ensureVaultScopedPath(rawPath: string): string {
     if (!rawPath) throw new Error('write: target path is empty');
 
@@ -818,6 +849,11 @@ export const shellAction: ActionHandler<ShellActionNode> = async (action, contex
     });
     const command = interpolated.replace(/[\r\n]+/g, ' ').trim();
     if (!command) throw new Error('shell: command is empty after interpolation');
+
+    const unbalancedQuote = findUnbalancedQuote(command);
+    if (unbalancedQuote) {
+        throw new Error(`shell: command has an unmatched ${unbalancedQuote} quote after interpolation: ${command}`);
+    }
 
     ensureVaultScopedCommand(command);
     const cwd = getVaultBasePath(context);
@@ -1659,4 +1695,3 @@ export const actionHandlers: Record<string, ActionHandler<any>> = {
 export function getActionHandler(type: string): ActionHandler | undefined {
     return actionHandlers[type];
 }
-

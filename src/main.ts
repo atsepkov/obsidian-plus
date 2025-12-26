@@ -1278,17 +1278,51 @@ export default class ObsidianPlus extends Plugin {
 
                         if (!inCodeFence && bulletMatch && bulletMatch[2] === '-') {
                                 const afterBullet = line.slice(bulletMatch[0].length);
-                                let colonIndex = -1;
-                                let inBacktickGlobal = false;
+                                const cmLine = state.doc.line(i + 1);
+                                const baseOffset = cmLine.from + bulletMatch[0].length;
 
-                                for (let j = 0; j < afterBullet.length; j++) {
-                                        const ch = afterBullet[j];
-                                        if (ch === '`') {
-                                                inBacktickGlobal = !inBacktickGlobal;
-                                                continue;
+                                const getInlineCodeRanges = (text: string): { start: number; end: number }[] => {
+                                        const ranges: { start: number; end: number }[] = [];
+                                        let fenceLength = 0;
+                                        let rangeStart = -1;
+
+                                        for (let j = 0; j < text.length; j++) {
+                                                if (text[j] !== '`') continue;
+
+                                                let k = j;
+                                                while (k < text.length && text[k] === '`') k++;
+                                                const runLength = k - j;
+
+                                                if (fenceLength === 0) {
+                                                        fenceLength = runLength;
+                                                        rangeStart = j;
+                                                        j = k - 1;
+                                                        continue;
+                                                }
+
+                                                if (runLength === fenceLength) {
+                                                        ranges.push({ start: rangeStart, end: k });
+                                                        fenceLength = 0;
+                                                        rangeStart = -1;
+                                                        j = k - 1;
+                                                }
                                         }
 
-                                        if (!inBacktickGlobal && ch === ':') {
+                                        return ranges;
+                                };
+
+                                const isInRanges = (index: number, ranges: { start: number; end: number }[]): boolean => {
+                                        for (const range of ranges) {
+                                                if (index >= range.start && index < range.end) return true;
+                                        }
+                                        return false;
+                                };
+
+                                const codeRanges = getInlineCodeRanges(afterBullet);
+                                let colonIndex = -1;
+
+                                for (let j = 0; j < afterBullet.length; j++) {
+                                        if (!isInRanges(j, codeRanges) && afterBullet[j] === ':') {
                                                 colonIndex = j;
                                                 break;
                                         }
@@ -1296,25 +1330,20 @@ export default class ObsidianPlus extends Plugin {
 
                                 if (colonIndex > 0) {
                                         const subjectPrefix = afterBullet.slice(0, colonIndex);
-                                        const cmLine = state.doc.line(i + 1);
-                                        const baseOffset = cmLine.from + bulletMatch[0].length;
+                                        const subjectCodeRanges = codeRanges
+                                                .filter(range => range.start < colonIndex)
+                                                .map(range => ({ start: range.start, end: Math.min(range.end, colonIndex) }));
                                         const segments: { start: number; end: number }[] = [];
-                                        let inBacktick = false;
                                         let segmentStart: number | null = null;
 
                                         for (let j = 0; j < subjectPrefix.length; j++) {
                                                 const ch = subjectPrefix[j];
 
-                                                if (ch === '`') {
-                                                        if (!inBacktick && segmentStart !== null) {
+                                                if (isInRanges(j, subjectCodeRanges)) {
+                                                        if (segmentStart !== null) {
                                                                 segments.push({ start: segmentStart, end: j });
                                                                 segmentStart = null;
                                                         }
-                                                        inBacktick = !inBacktick;
-                                                        continue;
-                                                }
-
-                                                if (inBacktick) {
                                                         continue;
                                                 }
 
