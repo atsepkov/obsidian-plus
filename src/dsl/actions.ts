@@ -182,7 +182,15 @@ function ensureVaultScopedPath(rawPath: string): string {
 }
 
 export function parseWikilink(raw: string): { path: string; anchor: string | null } {
-    const s = (raw ?? '').trim();
+    const trimmed = (raw ?? '').trim();
+    const unwrapped =
+        (trimmed.startsWith('"') && trimmed.endsWith('"')) ||
+        (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+        (trimmed.startsWith('`') && trimmed.endsWith('`'))
+            ? trimmed.slice(1, -1).trim()
+            : trimmed;
+    const embedded = unwrapped.match(/\[\[[\s\S]+?\]\]/);
+    const s = embedded ? embedded[0].trim() : unwrapped;
     if (!s) return { path: '', anchor: null };
 
     // [[path|alias]] or [[path#anchor|alias]] -> extract path and anchor
