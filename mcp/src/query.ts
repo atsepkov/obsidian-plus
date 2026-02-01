@@ -127,7 +127,7 @@ function extractTagsFromContent(content: string): string[] {
  * Query tagged items matching the query
  */
 export async function queryTag(options: QueryTagOptions): Promise<TaggedItem[]> {
-  const { tag, subject, parentContext, date, query: textQuery, includeChildren = true, status } = options;
+  const { tag, subject, parentContext, date, path, query: textQuery, includeChildren = true, status } = options;
 
   const queryNode = parseTagQuery(tag);
   let files: string[];
@@ -139,6 +139,8 @@ export async function queryTag(options: QueryTagOptions): Promise<TaggedItem[]> 
     const parts = dailyNotePath.split('/');
     const relativePath = parts.slice(-2).join('/'); // "Daily Notes/YYYY-MM-DD.md"
     files = [relativePath];
+  } else if (path) {
+    files = [path];
   } else {
     files = await listMarkdownFiles();
   }
@@ -156,6 +158,9 @@ export async function queryTag(options: QueryTagOptions): Promise<TaggedItem[]> 
         includeChildren,
         status,
       });
+      for (const item of matchingItems) {
+        item.path = file;
+      }
       results.push(...matchingItems);
     } catch (error) {
       // Skip files that can't be read
