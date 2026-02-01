@@ -8,9 +8,6 @@ import ObsidianPlus from './main';
 import { advanceStatus, normalizeStatusChar, type TaskStatusChar } from './statusFilters';
 import type { ThoughtLinkPreview } from './treeOfThought';
 
-// Type alias for the main plugin class
-type ObsidianPlus = any;
-
 // Define TaskInfo structure used by findDvTask
 interface TaskInfo {
     file: TFile;
@@ -516,13 +513,13 @@ export class TaskManager {
                 text: child.text
             });
 
-            child.children?.forEach(grandChild => processChild(grandChild, childIndentLength));
+            child.children?.forEach((grandChild: any) => processChild(grandChild, childIndentLength));
         }
 
         const parentLineText = lines[parentLineNum];
         const parentIndentLength = (parentLineText.match(/^\s*/)?.[0] || "").length;
 
-        listItem.children.forEach(child => processChild(child, parentIndentLength));
+        listItem.children.forEach((child: any) => processChild(child, parentIndentLength));
 
         return entries;
     }
@@ -984,7 +981,7 @@ export class TaskManager {
                 const headingText = heading.heading.trim();
                 const slug = this.slugifyHeading(headingText);
                 if (slug === normalizedAnchor || headingText.toLowerCase() === anchor.trim().toLowerCase()) {
-                    const index = heading.position?.start?.line ?? heading.position?.line ?? -1;
+                    const index = heading.position?.start?.line ?? (heading.position as any)?.line ?? -1;
                     if (index >= 0) {
                         return { index, level: heading.level ?? 1 };
                     }
@@ -1199,12 +1196,10 @@ export class TaskManager {
             const html = await this.getCleanContent(response.text, hostname); // Pass text directly
 
             // Ensure TurndownService is available (might need adjustment based on how it's loaded)
-            // @ts-ignore - TurndownService is a global provided by Obsidian
             if (typeof (window as any).TurndownService === 'undefined') {
                 console.error("TurndownService is not loaded.");
                 return `Error: TurndownService not available. HTML content:\n${html}`;
             }
-            // @ts-ignore - TurndownService is a global provided by Obsidian
             const turndown = new (window as any).TurndownService();
             const markdown = turndown.turndown(html);
             // const markdown = htmlToMarkdown(html);

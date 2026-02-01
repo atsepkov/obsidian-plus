@@ -31,13 +31,12 @@ export class TaskOutlineView extends ItemView {
         console.log('Updating task outline view');
         const container = this.containerEl;
         container.empty();
-        // @ts-ignore - getTagUnderCursor exists on plugin at runtime
-        const tag = (this.plugin as any).getTagUnderCursor?.();
+        const tag = (this.plugin as any).getTagUnderCursor();
         if (!tag) {
             container.createEl('p', { text: 'No tag at cursor.' });
             return;
         }
-        const dv = this.plugin.app.plugins.plugins['dataview']?.api;
+        const dv = (this.plugin.app as any).plugins.plugins['dataview']?.api;
         if (!dv || !this.plugin.tagQuery) {
             container.createEl('p', { text: 'Dataview plugin not available.' });
             return;
@@ -52,5 +51,5 @@ export class TaskOutlineView extends ItemView {
         }
     }
 
-    async onClose(): Promise<void> {}
+    async onClose() {}
 }
