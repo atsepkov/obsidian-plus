@@ -1169,13 +1169,26 @@ export default class ObsidianPlus extends Plugin {
 	async updateTask(task: Task, options: UpdateTaskOptions): void {
 		await this.taskManager.updateDvTask(task, options);
 	}
-	async getTaskContext(task): any[] {
-		return {
-			parents: await this.taskManager.getDvTaskParents(task),
-			children: await this.taskManager.getDvTaskChildren(task),
-			links: await this.taskManager.getDvTaskLinks(task),
-		}
-	}
+        async getTaskContext(task): Promise<any> {
+                if (!task) {
+                        return null;
+                }
+
+                const parents = await this.taskManager.getDvTaskParents(task);
+                const children = await this.taskManager.getDvTaskChildren(task);
+                const linksFromTask = await this.taskManager.getDvTaskLinks(task);
+                const linksToTask = await this.taskManager.getDvTaskLinksTo(task);
+                const blockId = await this.taskManager.resolveTaskBlockId(task);
+
+                return {
+                        parents,
+                        children,
+                        links: linksFromTask,
+                        linksFromTask,
+                        linksToTask,
+                        blockId,
+                };
+        }
 }
 
 class SampleModal extends Modal {

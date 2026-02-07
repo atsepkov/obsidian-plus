@@ -1,10 +1,19 @@
-import { 
+import {
     App, EventRef, FuzzySuggestModal, MarkdownRenderer, MarkdownView,
     prepareFuzzySearch, FuzzyMatch, Plugin, TFile
   } from "obsidian";
+import {
+  loadTreeOfThought,
+  collectThoughtPreview,
+  type ThoughtReference,
+  type ThoughtSection,
+  type TreeOfThoughtResult,
+  type TaskContextSnapshot,
+  type ThoughtOriginSection
+} from "./treeOfThought";
 import { isActiveStatus, parseStatusFilter } from "./statusFilters";
   
-interface TaskEntry {
+export interface TaskEntry {
   file:   TFile;
   line:   number;
   text:   string;
@@ -12,6 +21,25 @@ interface TaskEntry {
   path?:  string;        // returned by Dataview
   lines:  string[];
   status?: string;       // task status char: 'x', '-', '!', ' ', '/'
+}
+
+interface ThoughtViewState {
+  key: string;
+  cacheIndex: number;
+  task: TaskEntry;
+  file: TFile | null;
+  headerMarkdown?: string;
+  initialSections: ThoughtSection[];
+  references: ThoughtReference[];
+  fullResult?: TreeOfThoughtResult;
+  blockId?: string;
+  context?: TaskContextSnapshot | null;
+  tagHint?: string | null;
+  prefetchedLines?: string[] | null;
+  prefetchedOrigin?: ThoughtOriginSection | null;
+  loading: boolean;
+  error?: string;
+  promise: Promise<void> | null;
 }
 
 function escapeCssIdentifier(value: string): string {
@@ -45,26 +73,127 @@ function escapeCssIdentifier(value: string): string {
   
     /** Add a block‑ID to a task bullet if it doesn’t have one yet */
     async function ensureBlockId(app: App, entry: TaskEntry): Promise<string> {
-        /* 1️⃣  Already cached in the object → reuse */
         if (entry.id) return entry.id;
-    
-        /* 2️⃣  ID is in the line but wasn’t parsed (e.g. Dataview result) */
+
         const inline = entry.text.match(/\^(\w+)\b/);
         if (inline) {
-        entry.id = inline[1];          // cache for future calls
-        return entry.id;
+            entry.id = inline[1];
+            return entry.id;
         }
-    
-        /* 3️⃣  No ID anywhere → append a new one */
+
+        const filePath = entry.path ?? entry.file?.path;
+        if (!filePath) {
+            console.warn("Task entry is missing an associated file path; cannot assign block id.", entry);
+            return entry.id ?? "";
+        }
+
+        const file = app.vault.getFileByPath(filePath);
+        if (!file) {
+            console.warn("Unable to resolve task file for block-id assignment", { filePath, entry });
+            return entry.id ?? "";
+        }
+
+        const contents = await app.vault.read(file);
+        const lines = contents.split(/\r?\n/);
+
+        const lineIndex = resolveTaskLineIndex(entry, lines);
+        if (lineIndex == null) {
+            console.warn("Unable to locate task line for block-id assignment", { entry, filePath });
+            return entry.id ?? "";
+        }
+
+        const existing = lines[lineIndex].match(/\^(\w+)\b/);
+        if (existing) {
+            entry.id = existing[1];
+            return entry.id;
+        }
+
         const id = Math.random().toString(36).slice(2, 7);
-        const file = this.app.vault.getFileByPath(entry.path ?? entry.file.path);
-        const fileContents = await app.vault.read(file);
-        const lines = fileContents.split("\n");
-        lines[entry.line] += ` ^${id}`;
+        lines[lineIndex] = `${lines[lineIndex]} ^${id}`;
         await app.vault.modify(file, lines.join("\n"));
-    
+
         entry.id = id;
         return id;
+    }
+
+    function resolveTaskLineIndex(entry: TaskEntry, lines: string[]): number | null {
+        const total = lines.length;
+        const clamp = (line: number) => {
+            if (!Number.isFinite(line)) return null;
+            const idx = Math.floor(line);
+            if (idx < 0 || idx >= total) return null;
+            return idx;
+        };
+
+        const preferred = clamp(entry.line);
+        if (preferred != null && lineMatchesTask(lines[preferred], entry)) {
+            return preferred;
+        }
+
+        const needles = collectTaskNeedles(entry);
+        if (!needles.length) {
+            return preferred;
+        }
+
+        const normalizedNeedles = needles.map(normalizeTaskLine).filter(Boolean);
+        const loweredNeedles = needles.map(n => n.toLowerCase());
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i];
+            if (!line.trim()) {
+                continue;
+            }
+            const normalized = normalizeTaskLine(line);
+            if (normalized && normalizedNeedles.some(needle => normalized.includes(needle))) {
+                return i;
+            }
+            const lowered = line.toLowerCase();
+            if (loweredNeedles.some(needle => lowered.includes(needle))) {
+                return i;
+            }
+        }
+
+        return preferred;
+    }
+
+    function lineMatchesTask(line: string | undefined, entry: TaskEntry): boolean {
+        if (!line) return false;
+        const needles = collectTaskNeedles(entry);
+        if (needles.length === 0) {
+            return false;
+        }
+        const normalized = normalizeTaskLine(line);
+        const lowered = line.toLowerCase();
+        return needles.some(needle => {
+            const normalizedNeedle = normalizeTaskLine(needle);
+            if (normalizedNeedle && normalized.includes(normalizedNeedle)) {
+                return true;
+            }
+            return lowered.includes(needle.toLowerCase());
+        });
+    }
+
+    function collectTaskNeedles(entry: TaskEntry): string[] {
+        const set = new Set<string>();
+        if (entry.text) {
+            set.add(entry.text.trim());
+        }
+        if (Array.isArray(entry.lines)) {
+            for (const line of entry.lines) {
+                if (line && typeof line === "string") {
+                    set.add(line.trim());
+                }
+            }
+        }
+        return Array.from(set).filter(Boolean);
+    }
+
+    function normalizeTaskLine(value: string): string {
+        return value
+            .replace(/\^\w+\b/, "")
+            .replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "")
+            .trim()
+            .toLowerCase();
     }
 
     /* --------------------------------------------------------------- */
@@ -170,6 +299,16 @@ function escapeCssIdentifier(value: string): string {
     /** true  → tag‑list mode  |  false → task‑list mode */
     private tagMode = true;
     private activeTag = "#";
+    private thoughtMode = false;
+    private thoughtTaskIndex: number | null = null;
+    private thoughtDisplayIndex: number | null = null;
+    private thoughtSearchQuery = "";
+    private thoughtCacheKey: string | null = null;
+    private thoughtState: ThoughtViewState | null = null;
+    private thoughtLoadToken = 0;
+    private thoughtRerenderScheduled = false;
+    private autoThoughtGuard: string | null = null;
+    private lastTaskSuggestions: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
     private cachedTag   = "";          // cache key currently loaded
     private taskCache: Record<string, TaskEntry[]> = {};   // tasks by cache key
     private projectTag: string | null = null;              // current project scope
@@ -194,7 +333,7 @@ function escapeCssIdentifier(value: string): string {
       /* Keep mode in sync while user edits */
       this.inputEl.value = "#";
       this.inputEl.addEventListener("input", () => {
-        this.detectMode()
+        this.detectMode();
       });
       this.inputEl.addEventListener("keydown", evt => this.handleKeys(evt));
       this.detectMode(); // initial
@@ -231,18 +370,66 @@ function escapeCssIdentifier(value: string): string {
     }
 
     private handleKeys(evt: KeyboardEvent) {
-        if (!this.tagMode) return;                // only in TAG mode
-      
         const list  = this.chooser;               // ul.suggestion-container
-        const item  = list?.values[list.selectedItem];
+        const item  = list?.values?.[list.selectedItem];
         const chosen = item?.item ?? item;        // unwrap FuzzyMatch
-      
-        /* ---- Tab: autocomplete tag, keep modal open ---- */
-        if (evt.key === "Tab" && typeof chosen === "object") {
+
+        if (evt.key === "Tab") {
+          if (this.tagMode && typeof chosen === "object" && "tag" in chosen) {
+            evt.preventDefault();
+            this.inputEl.value = chosen.tag + " ";  // autocomplete
+            this.detectMode();                      // switches to task mode
+            return;
+          }
+
+          if (!this.tagMode && !this.thoughtMode) {
+            evt.preventDefault();
+            const key = this.getTaskCacheKey();
+            if (!key) {
+              return;
+            }
+            const selectedIndex = list?.selectedItem ?? 0;
+            const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
+            const suggestion = this.lastTaskSuggestions[displayIndex];
+            if (!suggestion) {
+              return;
+            }
+            const task = suggestion.item as TaskEntry;
+            const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, task);
+            if (cacheIndex == null) {
+              return;
+            }
+            this.inputEl.value = `${this.activeTag} ${task.text}`.trimEnd() + " ";
+            this.detectMode();
+            this.enterThoughtMode(key, {
+              displayIndex,
+              cacheIndex,
+              task,
+              showIndex: true
+            });
+            return;
+          }
+        }
+
+        if (!this.tagMode && !this.thoughtMode && evt.key === ">") {
           evt.preventDefault();
-          this.inputEl.value = chosen.tag + " ";  // autocomplete
-          this.detectMode();                      // switches to task mode
-          return;
+          const key = this.getTaskCacheKey();
+          if (!key) {
+            return;
+          }
+          const selectedIndex = list?.selectedItem ?? 0;
+          const displayIndex = selectedIndex >= 0 ? selectedIndex : 0;
+          const suggestion = this.lastTaskSuggestions[displayIndex];
+          if (!suggestion) {
+            return;
+          }
+          const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, suggestion.item as TaskEntry);
+          this.enterThoughtMode(key, {
+            displayIndex,
+            cacheIndex: cacheIndex ?? null,
+            task: suggestion.item as TaskEntry,
+            showIndex: true
+          });
         }
     }
 
@@ -259,7 +446,6 @@ function escapeCssIdentifier(value: string): string {
         const isTask = (this.plugin.settings.taskTags ?? []).includes(tag);
         const bullet = isTask ? "- [ ] " : "- ";
         const line   = `${indent}${bullet}${tag} `;
-        console.log({ tag, isTask, bullet, line });
       
         ed.replaceRange(line,
           { line: ln, ch: 0 },
@@ -271,11 +457,19 @@ function escapeCssIdentifier(value: string): string {
     /* ---------- dynamic mode detection ---------- */
     private detectMode() {
         const q = this.inputEl.value;
-        const m = q.match(/^#\S+\s/);          // “#tag␠...”
-      
-        if (m) {
+        if (this.autoThoughtGuard && this.autoThoughtGuard !== q) {
+          this.autoThoughtGuard = null;
+        }
+
+        const thought = this.parseThoughtQuery(q);
+        const baseQuery = thought.baseQuery;
+        const tagMatch = baseQuery.match(/^#\S+/);
+        const remainder = tagMatch ? baseQuery.slice(tagMatch[0].length) : "";
+        const hasTaskSpace = /^\s/.test(remainder);
+
+        if (tagMatch && hasTaskSpace) {
           this.tagMode   = false;
-          this.activeTag = m[0].trim();        // “#tag”
+          this.activeTag = tagMatch[0];        // “#tag”
 
           const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
               ? this.projectTag
@@ -287,32 +481,608 @@ function escapeCssIdentifier(value: string): string {
             this.taskCache[key] = this.collectTasks(this.activeTag, project);
             this.cachedTag = key;
           }
+
+          if (thought.active) {
+            this.thoughtMode = true;
+            this.thoughtSearchQuery = thought.search.trim();
+            if (thought.index !== null) {
+              this.thoughtDisplayIndex = thought.index;
+              const resolved = this.resolveCacheIndexFromDisplay(key, this.thoughtDisplayIndex);
+              if (resolved.cacheIndex != null) {
+                this.thoughtTaskIndex = resolved.cacheIndex;
+                if (resolved.task) {
+                  this.ensureTaskCached(key, resolved.task, resolved.cacheIndex);
+                }
+              }
+            }
+            this.thoughtCacheKey = key;
+          } else {
+            this.exitThoughtMode();
+          }
         } else {
           this.tagMode   = true;
-          this.activeTag = "#";
+          this.activeTag = tagMatch ? tagMatch[0] : "#";
+          this.exitThoughtMode();
         }
 
-        /* after you build instructions array */
-        const enterInstruction = this.allowInsertion
-            ? (this.tagMode
-                ? { command: "⏎", purpose: "insert new bullet · close" }
-                : { command: "⏎", purpose: "link task · close" })
-            : (this.tagMode
-                ? { command: "⏎", purpose: "select tag" }
-                : { command: "⏎", purpose: "open task" });
-
-        const tabInstruction = this.tagMode
-            ? { command: "Tab", purpose: "autocomplete tag" }
-            : { command: "Tab", purpose: "—" };
-
-        this.setInstructions([
-            enterInstruction,
-            tabInstruction,
-            { command: "Esc", purpose: "cancel" }
-        ]);
+        this.configureInstructionBar();
 
         /* 👇 force redraw immediately (fixes space‑switch lag) */
         this.updateSuggestions();
+    }
+
+    private parseThoughtQuery(query: string): { baseQuery: string; index: number | null; active: boolean; search: string } {
+        const trimmed = query.replace(/\s+$/, " ");
+        const thoughtMatch = trimmed.match(/^(.*?)(?:\s*\((\d+)\))?\s*>\s*(.*)$/s);
+        if (!thoughtMatch) {
+          return { baseQuery: query, index: null, active: false, search: "" };
+        }
+        const base = thoughtMatch[1] ?? "";
+        const idxRaw = thoughtMatch[2] != null ? Number(thoughtMatch[2]) : null;
+        const idx = Number.isFinite(idxRaw) ? Math.max(0, (idxRaw as number) - 1) : null;
+        const search = (thoughtMatch[3] ?? "").replace(/\s+$/, "");
+        return {
+          baseQuery: base.trimEnd(),
+          index: idx,
+          active: true,
+          search
+        };
+    }
+
+    private configureInstructionBar() {
+        const instructions = [] as { command: string; purpose: string }[];
+
+        if (this.tagMode) {
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "insert new bullet · close" });
+          } else {
+            instructions.push({ command: "⏎", purpose: "select tag" });
+          }
+          instructions.push({ command: "␠", purpose: "view tag tasks" });
+          instructions.push({ command: "Tab", purpose: "autocomplete tag" });
+        } else if (this.thoughtMode) {
+          instructions.push({ command: "Esc", purpose: "return to results" });
+          instructions.push({ command: "Type", purpose: "search within thought" });
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "close" });
+          }
+        } else {
+          if (this.allowInsertion) {
+            instructions.push({ command: "⏎", purpose: "link task · close" });
+          } else {
+            instructions.push({ command: "⏎", purpose: "open task" });
+          }
+          instructions.push({ command: ">", purpose: "expand into thought tree" });
+          instructions.push({ command: "Esc", purpose: "back to tags" });
+        }
+
+        if (!this.tagMode && !this.thoughtMode) {
+          instructions.push({ command: "Tab", purpose: "—" });
+        }
+
+        if (!instructions.find(inst => inst.command === "Esc")) {
+          instructions.push({ command: "Esc", purpose: "cancel" });
+        }
+
+        this.setInstructions(instructions);
+    }
+
+    private exitThoughtMode() {
+        this.thoughtMode = false;
+        this.thoughtTaskIndex = null;
+        this.thoughtDisplayIndex = null;
+        this.thoughtSearchQuery = "";
+        this.thoughtCacheKey = null;
+        this.thoughtState = null;
+        this.thoughtLoadToken++;
+        this.autoThoughtGuard = this.inputEl.value;
+    }
+
+    private getTaskCacheKey(): string | null {
+        if (this.tagMode) return null;
+        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
+          ? this.projectTag
+          : null;
+        return project ? `${project}|${this.activeTag}` : this.activeTag;
+    }
+
+    private lookupTaskIndex(key: string, task: TaskEntry): number | null {
+        const list = this.taskCache[key];
+        if (!list) return null;
+        const idx = list.indexOf(task);
+        return idx >= 0 ? idx : null;
+    }
+
+    private resolveCacheIndexFromDisplay(key: string, displayIndex: number | null): { cacheIndex: number | null; task: TaskEntry | null } {
+        if (displayIndex == null || displayIndex < 0) {
+          return { cacheIndex: null, task: null };
+        }
+        const suggestion = this.lastTaskSuggestions[displayIndex];
+        if (!suggestion) {
+          return { cacheIndex: null, task: null };
+        }
+        const cacheIndex = suggestion.sourceIdx ?? this.lookupTaskIndex(key, suggestion.item as TaskEntry);
+        return {
+          cacheIndex: cacheIndex ?? null,
+          task: cacheIndex != null ? (suggestion.item as TaskEntry) : null
+        };
+    }
+
+    private enterThoughtMode(key: string, payload: { displayIndex: number | null; cacheIndex: number | null; task?: TaskEntry; showIndex?: boolean; search?: string }) {
+        const { displayIndex, cacheIndex, task, showIndex = false } = payload;
+        const search = payload.search ?? this.thoughtSearchQuery;
+        if (cacheIndex == null) {
+          return;
+        }
+        const normalizedSearch = search.trim();
+
+        if (this.thoughtMode &&
+            this.thoughtCacheKey === key &&
+            this.thoughtTaskIndex === cacheIndex &&
+            this.thoughtDisplayIndex === displayIndex &&
+            this.thoughtSearchQuery === normalizedSearch) {
+          return;
+        }
+
+        const base = this.parseThoughtQuery(this.inputEl.value).baseQuery;
+        const indexFragment = showIndex && displayIndex != null ? ` (${displayIndex + 1})` : "";
+        let next = `${base}${indexFragment} > `;
+        if (normalizedSearch.length) {
+          next += `${normalizedSearch} `;
+        }
+        if (!next.endsWith(" ")) {
+          next += " ";
+        }
+        if (this.inputEl.value !== next) {
+          this.inputEl.value = next;
+        }
+
+        this.thoughtCacheKey = key;
+        this.thoughtTaskIndex = cacheIndex;
+        this.thoughtDisplayIndex = displayIndex;
+        this.thoughtSearchQuery = normalizedSearch;
+        if (task) {
+          this.ensureTaskCached(key, task, cacheIndex);
+        }
+        this.thoughtMode = true;
+        this.autoThoughtGuard = null;
+        this.detectMode();
+    }
+
+    private ensureTaskCached(key: string, task: TaskEntry, index: number | null) {
+        if (index == null) {
+          return;
+        }
+        if (!this.taskCache[key]) {
+          this.taskCache[key] = [];
+        }
+        if (!this.taskCache[key][index]) {
+          this.taskCache[key][index] = task;
+        }
+    }
+
+    private resolveTaskFile(task: TaskEntry): TFile | null {
+        if (task.file) {
+          return task.file;
+        }
+
+        const path = task.path ?? task.file?.path ?? "";
+        if (!path) {
+          return null;
+        }
+
+        const file = this.app.vault.getFileByPath(path);
+        if (file) {
+          task.file = file;
+          return file;
+        }
+
+        return null;
+    }
+
+  private buildThoughtHeaderMarkdown(task: TaskEntry, tagHint?: string | null): string {
+      const status = typeof task.status === "string" && task.status.length ? task.status : " ";
+      const activeTag = (tagHint ?? this.activeTag ?? "").trim();
+
+      const pickLine = () => {
+          if (Array.isArray(task.lines) && task.lines.length) {
+            const firstLine = (task.lines[0] ?? "").trim();
+            if (firstLine) {
+              return firstLine;
+            }
+          }
+          return (task.text ?? "").trim();
+        };
+
+        let line = pickLine();
+        if (!line && activeTag) {
+          line = activeTag;
+        }
+
+        if (line) {
+          const normalized = line.replace(/^\s*[-*+]\s*(\[[^\]]*\]\s*)?/, "").trim();
+          if (normalized) {
+            const prefixed = activeTag && !normalized.includes(activeTag)
+              ? `${activeTag} ${normalized}`.trim()
+              : normalized;
+            return `- [${status}] ${prefixed}`.trim();
+          }
+        }
+
+        const fallback = activeTag ? `- [${status}] ${activeTag}` : `- [${status}]`;
+        return fallback.trim();
+    }
+
+    private resolveThoughtTagHint(key: string, task: TaskEntry): string | null {
+        const explicit = (this.activeTag ?? "").trim();
+        if (explicit && explicit !== "#") {
+          return explicit;
+        }
+
+        const fromKey = this.extractTagFromCacheKey(key);
+        if (fromKey) {
+          return fromKey;
+        }
+
+        const fromTask = this.extractTagFromTask(task);
+        if (fromTask) {
+          return fromTask;
+        }
+
+        return null;
+    }
+
+    private extractTagFromCacheKey(key: string): string | null {
+        if (!key) {
+          return null;
+        }
+
+        const parts = key.split("|");
+        const candidate = parts[parts.length - 1];
+        if (candidate && candidate.startsWith("#")) {
+          return candidate;
+        }
+
+        return null;
+    }
+
+    private extractTagFromTask(task: TaskEntry): string | null {
+        const sources: string[] = [];
+        if (Array.isArray(task.lines)) {
+          for (const line of task.lines) {
+            if (typeof line === "string") {
+              sources.push(line);
+            }
+          }
+        }
+        if (typeof task.text === "string") {
+          sources.push(task.text);
+        }
+
+        for (const source of sources) {
+          const match = source.match(/#[^\s#]+/);
+          if (match && match[0]) {
+            return match[0];
+          }
+        }
+
+        return null;
+    }
+
+    private chooseThoughtHeader(
+      task: TaskEntry,
+      previewHeader: string | undefined,
+      tagHint: string | null | undefined
+    ): string {
+        const fallback = this.buildThoughtHeaderMarkdown(task, tagHint);
+        const trimmedPreview = (previewHeader ?? "").trim();
+        if (!trimmedPreview) {
+          return fallback;
+        }
+
+        const tag = (tagHint ?? "").trim();
+        if (tag && !trimmedPreview.includes(tag) && fallback.includes(tag)) {
+          return fallback;
+        }
+
+        return trimmedPreview || fallback;
+    }
+
+    private prepareThoughtState(key: string, index: number, task: TaskEntry): ThoughtViewState | null {
+        if (!task) {
+          return null;
+        }
+
+        const file = this.resolveTaskFile(task);
+        const tagHint = this.resolveThoughtTagHint(key, task);
+        const previousState = this.thoughtState;
+        const reusePreviewHeader =
+          previousState && previousState.key === key && previousState.cacheIndex === index
+            ? previousState.prefetchedOrigin?.headerMarkdown
+            : undefined;
+        const headerChoice = this.chooseThoughtHeader(task, reusePreviewHeader, tagHint);
+
+        if (!previousState || previousState.key !== key || previousState.cacheIndex !== index) {
+          this.thoughtState = {
+            key,
+            cacheIndex: index,
+            task,
+            file,
+            headerMarkdown: headerChoice || this.buildThoughtHeaderMarkdown(task, tagHint),
+            tagHint,
+            initialSections: [],
+            references: [],
+            loading: false,
+            error: undefined,
+            promise: null,
+            prefetchedLines: null,
+            prefetchedOrigin: null
+          };
+        } else {
+          this.thoughtState = previousState;
+          this.thoughtState.task = task;
+          if (!this.thoughtState.file && file) {
+            this.thoughtState.file = file;
+          }
+          if (!this.thoughtState.tagHint) {
+            this.thoughtState.tagHint = tagHint;
+          }
+          if (headerChoice && headerChoice !== this.thoughtState.headerMarkdown) {
+            this.thoughtState.headerMarkdown = headerChoice;
+          }
+        }
+
+        if (this.thoughtState) {
+          this.startThoughtLoad(this.thoughtState);
+        }
+
+        return this.thoughtState;
+    }
+
+    private startThoughtLoad(state: ThoughtViewState): void {
+        if (!this.thoughtMode) {
+          return;
+        }
+
+        if (state.promise || state.fullResult || state.error) {
+          return;
+        }
+
+        const token = ++this.thoughtLoadToken;
+        state.loading = true;
+
+        const run = async () => {
+          try {
+            let previewBlockId = state.blockId ?? state.task.id ?? "";
+
+            const previewChanged = await this.applyThoughtPreview(state, token, previewBlockId, state.context ?? undefined);
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+            if (previewChanged) {
+              this.scheduleThoughtRerender();
+            }
+
+            const blockId = await ensureBlockId(this.app, state.task);
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+            state.blockId = blockId;
+
+            let context = state.context ?? null;
+            const provider = (this.plugin as any)?.getTaskContext;
+            if (!context && typeof provider === "function") {
+              try {
+                context = await provider.call(this.plugin, state.task);
+              } catch (error) {
+                console.error("Failed to load task context for thought view", error);
+              }
+            }
+
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+
+            state.context = context;
+
+            if (blockId && blockId !== previewBlockId) {
+              previewBlockId = blockId;
+            }
+
+            const needsRefresh =
+              !state.prefetchedOrigin ||
+              !state.initialSections.length ||
+              (blockId && blockId !== state.prefetchedOrigin?.targetAnchor?.replace(/^\^/, ""));
+
+            if (needsRefresh) {
+              const refreshed = await this.applyThoughtPreview(state, token, previewBlockId, context ?? undefined);
+              if (!this.isCurrentThoughtState(state, token)) {
+                return;
+              }
+              if (refreshed) {
+                this.scheduleThoughtRerender();
+              }
+            }
+
+            const thought = await loadTreeOfThought({
+              app: this.app,
+              task: state.task,
+              blockId,
+              context,
+              prefetchedLines: state.prefetchedLines ?? undefined,
+              prefetchedOrigin: state.prefetchedOrigin ?? undefined
+            });
+
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+
+            state.fullResult = thought;
+            state.loading = false;
+            state.promise = null;
+            state.error = thought.error;
+            if (thought.sourceFile) {
+              state.file = thought.sourceFile;
+            }
+            if (thought.headerMarkdown) {
+              const ensured = this.chooseThoughtHeader(state.task, thought.headerMarkdown, state.tagHint);
+              if (ensured) {
+                state.headerMarkdown = ensured;
+              }
+            }
+
+            this.scheduleThoughtRerender();
+          } catch (error) {
+            if (!this.isCurrentThoughtState(state, token)) {
+              return;
+            }
+            console.error("Failed to load tree-of-thought content", error);
+            state.error = "Failed to load tree of thought.";
+            state.loading = false;
+            state.promise = null;
+            this.scheduleThoughtRerender();
+          }
+        };
+
+        state.promise = run();
+    }
+
+    private async applyThoughtPreview(
+      state: ThoughtViewState,
+      token: number,
+      blockId: string,
+      context?: TaskContextSnapshot | null
+    ): Promise<boolean> {
+        try {
+          const previewResult = await collectThoughtPreview({
+            app: this.app,
+            task: state.task,
+            blockId,
+            context: context ?? undefined,
+            prefetchedLines: state.prefetchedLines ?? undefined,
+            prefetchedOrigin: state.prefetchedOrigin ?? undefined
+          });
+
+          if (!this.isCurrentThoughtState(state, token)) {
+            return false;
+          }
+
+          if (previewResult.sourceFile && !state.file) {
+            state.file = previewResult.sourceFile;
+          }
+
+          state.prefetchedLines = previewResult.lines ?? null;
+          state.prefetchedOrigin = previewResult.origin ?? null;
+
+          let changed = false;
+
+          const headerChoice = this.chooseThoughtHeader(
+            state.task,
+            previewResult.headerMarkdown,
+            state.tagHint
+          );
+
+          if (headerChoice && headerChoice !== state.headerMarkdown) {
+            state.headerMarkdown = headerChoice;
+            changed = true;
+          }
+
+          const previewSection = previewResult.section || null;
+          const needsUpdate = (() => {
+            if (!previewSection && !state.initialSections.length) {
+              return false;
+            }
+            if (!previewSection) {
+              return state.initialSections.length > 0;
+            }
+            const existing = state.initialSections[0];
+            if (!existing) {
+              return true;
+            }
+            return (
+              existing.markdown !== previewSection.markdown ||
+              existing.label !== previewSection.label ||
+              existing.file.path !== previewSection.file.path
+            );
+          })();
+
+          if (needsUpdate) {
+            state.initialSections = previewSection ? [previewSection] : [];
+            changed = true;
+          }
+
+          return changed;
+        } catch (error) {
+          console.error("Failed to build thought preview", error);
+          return false;
+        }
+    }
+
+    private isCurrentThoughtState(state: ThoughtViewState, token: number): boolean {
+        return this.thoughtState === state && this.thoughtLoadToken === token;
+    }
+
+    private scheduleThoughtRerender(): void {
+        if (this.thoughtRerenderScheduled) {
+          return;
+        }
+        if (!this.thoughtMode) {
+          return;
+        }
+        this.thoughtRerenderScheduled = true;
+        window.requestAnimationFrame(() => {
+          this.thoughtRerenderScheduled = false;
+          if (this.thoughtMode) {
+            this.updateSuggestions();
+          }
+        });
+    }
+
+    private filterThoughtContent(
+        sections: ThoughtSection[] = [],
+        references: ThoughtReference[] = [],
+        search: string
+    ): { sections: ThoughtSection[]; references: ThoughtReference[]; message?: string } {
+        const trimmed = search.trim();
+        if (!trimmed) {
+          return { sections, references };
+        }
+
+        const needle = trimmed.toLowerCase();
+        const sectionMatches = (section: ThoughtSection): boolean => {
+          if (!section) return false;
+          if (section.markdown?.toLowerCase().includes(needle)) return true;
+          if (section.label?.toLowerCase().includes(needle)) return true;
+          if (section.linktext?.toLowerCase().includes(needle)) return true;
+          if (Array.isArray(section.segments)) {
+            return section.segments.some(segment => segment?.text?.toLowerCase().includes(needle));
+          }
+          return false;
+        };
+
+        const referenceMatches = (reference: ThoughtReference): boolean => {
+          if (!reference) return false;
+          if (reference.summary?.toLowerCase().includes(needle)) return true;
+          if (reference.label?.toLowerCase().includes(needle)) return true;
+          if (reference.linktext?.toLowerCase().includes(needle)) return true;
+          if (Array.isArray(reference.segments)) {
+            return reference.segments.some(segment => segment?.text?.toLowerCase().includes(needle));
+          }
+          return false;
+        };
+
+        const filteredSections = sections.filter(sectionMatches);
+        const filteredReferences = references.filter(referenceMatches);
+
+        if (!filteredSections.length && !filteredReferences.length) {
+          return {
+            sections: [],
+            references: [],
+            message: `No matches for “${trimmed}” in this thought.`
+          };
+        }
+
+        return { sections: filteredSections, references: filteredReferences };
     }
   
     /* ---------- data ---------- */
@@ -326,55 +1096,74 @@ function escapeCssIdentifier(value: string): string {
   
     /* ---------- display text in query preview ---------- */
     getItemText(item) {
+        if (item == null) {
+          return "";
+        }
         let text = typeof item === "string" ? item : item.text;
         // in non-tag mode, prepend active tag
         if (!this.tagMode) text = this.activeTag + " " + text;
         return text;
-    }      
+    }
   
     /* ---------- suggestion renderer ---------- */
     async renderSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
-        el.empty();
-        let text = "";
-        let file: TFile;
-        let hit = null;
-        let task: TaskEntry;
-    
-        if (item.item && "tag" in item.item) {
-            /* TAG row */
-            const { tag, count } = (item.item as { tag: string; count: number });
-            const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
-            // el.createSpan({ text: tag });
-            // if (desc) el.createSpan({ text: " — " + desc, cls: "tag-desc" });
-            file = this.app.vault.getAbstractFileByPath(tag) as TFile;
-            text = `${tag} ${desc ? " " + desc : ""}`;
-        } else {
-            /* TASK row – markdown */
-            task = item.item as TaskEntry;
-            hit    = (item as any).matchLine;        // the line that matched
-            file = this.app.vault.getFileByPath(task.path ?? task.file.path);
-            const linktext = this.app.metadataCache.fileToLinktext(file);
-            text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
-            const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
-            if (showCheckbox) {
-              const status = task.status ?? " ";
-              // always render checkbox before the tag for valid markdown
-              text = `- [${status}] ${text}`;
-            }
+        if (this.thoughtMode) {
+          await this.renderThoughtPane(el);
+          return;
         }
-        /* parent line (always shown) */
-        await MarkdownRenderer.renderMarkdown(
+
+        el.empty();
+        if (item.item && "tag" in item.item) {
+            await this.renderTagSuggestion(item, el);
+            return;
+        }
+
+        await this.renderTaskSuggestion(item as any as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }), el);
+    }
+
+    private async renderTagSuggestion(item: FuzzyMatch<string | TaskEntry>, el: HTMLElement) {
+        let file: TFile;
+        const { tag, count } = (item.item as { tag: string; count: number });
+        const desc = ((this.plugin.settings.tagDescriptions ?? {})[tag] || "") + ` (${count})`;
+        file = this.app.vault.getAbstractFileByPath(tag) as TFile;
+        const text = `${tag} ${desc ? " " + desc : ""}`;
+        await MarkdownRenderer.render(this.app, text, el, file?.path ?? "", this.plugin);
+    }
+
+    private async renderTaskSuggestion(item: FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx?: number }, el: HTMLElement) {
+        let text = "";
+        const task = item.item;
+        const hit    = item.matchLine;
+        const filePath = task.path ?? task.file?.path ?? "";
+        const file = filePath ? this.app.vault.getFileByPath(filePath) : null;
+        const linktext = file
+          ? this.app.metadataCache.fileToLinktext(file)
+          : filePath.replace(/\.md$/i, "");
+        text = `${this.activeTag} ${task.text}  [[${linktext}]]`;
+        const showCheckbox = (this.plugin.settings.taskTags ?? []).includes(this.activeTag);
+        if (showCheckbox) {
+          const status = task.status ?? " ";
+          // always render checkbox before the tag for valid markdown
+          text = `- [${status}] ${text}`;
+        }
+
+        if (file && !task.file) {
+          task.file = file;
+        }
+
+        await MarkdownRenderer.render(
+            this.app,
             text,
             el,
-            file?.path,
+            file?.path ?? this.app.workspace.getActiveFile()?.path ?? "",
             this.plugin
         );
-        /*  matched child line (if it's not the parent)  */
+
         if (hit && hit !== task.text) {
             const div = el.createDiv({ cls: "child-line" });   // style below
-            await MarkdownRenderer.renderMarkdown('- ' + hit, div, file.path, this.plugin);
+            await MarkdownRenderer.render(this.app, '- ' + hit, div, file?.path ?? filePath ?? "", this.plugin);
         }
-        /* 👇 stop link‑clicks from bubbling to the list item */
+
         el.querySelectorAll("a.internal-link").forEach(a => {
             a.addEventListener("click", evt => {
                 evt.preventDefault();
@@ -385,9 +1174,366 @@ function escapeCssIdentifier(value: string): string {
             });
         });
     }
-  
+
+    private async renderThoughtPane(host?: HTMLElement) {
+        const container = host ?? (this.resultContainerEl?.querySelector<HTMLElement>(".tree-of-thought__container") ?? null);
+        if (!container) {
+          return;
+        }
+
+        container.empty();
+        container.addClass("tree-of-thought__container");
+
+        if (!this.thoughtMode) {
+          return;
+        }
+
+        const key = this.thoughtCacheKey ?? this.getTaskCacheKey();
+        if (!key) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Select a tag to view its tasks." });
+          return;
+        }
+
+        const cacheList = this.taskCache[key];
+        if (!Array.isArray(cacheList) || cacheList.length === 0) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Loading tasks…" });
+          return;
+        }
+
+        const index = this.thoughtTaskIndex;
+        if (index == null || !cacheList[index]) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Task not available." });
+          return;
+        }
+
+        const task = cacheList[index];
+        this.resolveTaskFile(task);
+
+        const state = this.prepareThoughtState(key, index, task);
+        if (!state) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: "Unable to load this task." });
+          return;
+        }
+
+        const header = container.createDiv({ cls: "tree-of-thought__header" });
+        const headerRow = header.createDiv({ cls: "tree-of-thought__header-row" });
+        const headerLine = headerRow.createDiv({ cls: "tree-of-thought__header-content" });
+
+        const headerFile = state.fullResult?.sourceFile ?? state.file ?? this.resolveTaskFile(task);
+        const headerSource = headerFile?.path ?? task.path ?? task.file?.path ?? "";
+        const headerMarkdown = (state.fullResult?.headerMarkdown ?? state.headerMarkdown ?? "").trim();
+
+        if (headerMarkdown) {
+          try {
+            await MarkdownRenderer.render(this.app, headerMarkdown, headerLine, headerSource, this.plugin);
+          } catch (error) {
+            console.error("Failed to render thought header", error);
+            headerLine.setText(headerMarkdown);
+          }
+        } else {
+          headerLine.setText(`${this.activeTag} ${task.text}`.trim());
+        }
+
+        headerLine.querySelectorAll("a.internal-link").forEach(link => {
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+            if (!target) {
+              return;
+            }
+            this.app.workspace.openLinkText(target, headerSource, false);
+            this.close();
+          });
+        });
+
+        if (headerFile) {
+          const linktext = this.app.metadataCache.fileToLinktext(headerFile, "");
+          const noteLink = headerRow.createEl("a", {
+            text: `[[${linktext}]]`,
+            cls: "internal-link tree-of-thought__header-link"
+          });
+          noteLink.setAttr("href", headerFile.path);
+          noteLink.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.app.workspace.openLinkText(headerFile.path, headerFile.path, false);
+            this.close();
+          });
+        }
+
+        const errorMessage = state.error ?? state.fullResult?.error;
+        if (errorMessage) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: errorMessage });
+          return;
+        }
+
+        const baseSections = state.fullResult?.sections?.length
+          ? state.fullResult.sections
+          : state.initialSections;
+        const baseReferences = state.fullResult?.references ?? [];
+        const { sections, references, message } = this.filterThoughtContent(
+          baseSections,
+          baseReferences,
+          this.thoughtSearchQuery
+        );
+
+        if ((!sections.length && !references.length) && message) {
+          container.createDiv({ cls: "tree-of-thought__empty", text: message });
+        } else if (!sections.length && !references.length && !state.loading) {
+          const fallback = state.fullResult?.message ?? "No outline available for this task yet.";
+          container.createDiv({ cls: "tree-of-thought__empty", text: fallback });
+        }
+
+        let firstSection = true;
+        for (const section of sections) {
+          if (!firstSection) {
+            container.createEl("hr", { cls: "tree-of-thought__divider" });
+          }
+          firstSection = false;
+
+          const sectionEl = container.createDiv({ cls: "tree-of-thought__section" });
+          const meta = sectionEl.createDiv({ cls: "tree-of-thought__meta" });
+          meta.setAttr("data-role", section.role);
+
+          const labelContainer = meta.createDiv({ cls: "tree-of-thought__label" });
+          if (section.tooltip) {
+            labelContainer.setAttr("title", section.tooltip);
+          }
+
+          let firstAnchor: string | null =
+            typeof section.targetAnchor === "string" && section.targetAnchor.trim()
+              ? section.targetAnchor.replace(/^#/, "")
+              : null;
+          let firstLine: number | undefined =
+            typeof section.targetLine === "number"
+              ? Math.max(0, Math.floor(section.targetLine))
+              : undefined;
+
+          if (Array.isArray(section.segments) && section.segments.length) {
+            let renderedCount = 0;
+            for (const segment of section.segments) {
+              const segmentText = (segment?.text ?? "").trim();
+              if (!segmentText) {
+                continue;
+              }
+              if (renderedCount > 0) {
+                labelContainer.createSpan({ text: " > ", cls: "tree-of-thought__label-separator" });
+              }
+
+              const segmentEl = labelContainer.createSpan({ cls: "tree-of-thought__label-segment" });
+              try {
+                await this.renderReferenceSegmentMarkdown(segmentEl, segmentText, section.file.path);
+              } catch (error) {
+                console.error("Failed to render section label segment", error);
+                segmentEl.setText(segmentText);
+              }
+
+
+              const anchorSource = typeof segment?.anchor === "string" ? segment.anchor : "";
+              const anchor = anchorSource ? `#${anchorSource.replace(/^#/, "")}` : "";
+              const openTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
+              const line = typeof segment?.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+
+              if (!firstAnchor && anchorSource) {
+                firstAnchor = anchorSource.replace(/^#/, "");
+              }
+              if (firstLine === undefined && typeof line === "number") {
+                firstLine = line;
+              }
+
+              segmentEl.addClass("tree-of-thought__label-link");
+              segmentEl.addEventListener("click", evt => {
+                evt.preventDefault();
+                evt.stopPropagation();
+                const stateLine = typeof line === "number" ? { eState: { line } } : undefined;
+                this.app.workspace.openLinkText(openTarget, section.file.path, false, stateLine);
+                this.close();
+              });
+
+              renderedCount++;
+            }
+          }
+
+          if (!labelContainer.hasChildNodes()) {
+            labelContainer.createSpan({ text: section.label, cls: "tree-of-thought__label-text" });
+          }
+
+          if (labelContainer.hasChildNodes()) {
+            labelContainer.addClass("tree-of-thought__label--interactive");
+            labelContainer.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              const anchor = firstAnchor ? `#${firstAnchor}` : "";
+              const target = anchor ? `${section.file.path}${anchor}` : section.file.path;
+              const stateLine = typeof firstLine === "number" ? { eState: { line: firstLine } } : undefined;
+              this.app.workspace.openLinkText(target, section.file.path, false, stateLine);
+              this.close();
+            });
+
+          }
+
+          const actions = meta.createDiv({ cls: "tree-of-thought__actions" });
+
+          if (firstAnchor || typeof firstLine === "number") {
+            const anchor = firstAnchor ? `#${firstAnchor}` : "";
+            const scrollTarget = anchor ? `${section.file.path}${anchor}` : section.file.path;
+            const scrollLink = actions.createEl("a", {
+              text: "↧",
+              cls: "tree-of-thought__scroll-link"
+            });
+            scrollLink.setAttr("href", scrollTarget);
+            scrollLink.setAttr("title", "Scroll to section");
+            scrollLink.setAttr("aria-label", "Scroll to section");
+            scrollLink.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              const stateLine = typeof firstLine === "number" ? { eState: { line: firstLine } } : undefined;
+              this.app.workspace.openLinkText(scrollTarget, section.file.path, false, stateLine);
+            });
+          }
+
+          const link = actions.createEl("a", {
+            text: `[[${section.linktext}]]`,
+            cls: "internal-link tree-of-thought__link"
+          });
+          link.setAttr("href", section.file.path);
+          link.addEventListener("click", evt => {
+            evt.preventDefault();
+            evt.stopPropagation();
+            this.app.workspace.openLinkText(section.file.path, section.file.path, false);
+            this.close();
+          });
+
+          const body = sectionEl.createDiv({ cls: "tree-of-thought__markdown" });
+          try {
+            await MarkdownRenderer.render(this.app, section.markdown, body, section.file.path, this.plugin);
+            await this.waitForNextFrame();
+          } catch (error) {
+            console.error("Failed to render tree-of-thought markdown", error);
+            body.createEl("pre", { text: section.markdown });
+            continue;
+          }
+
+          if (!body.childElementCount && !body.textContent?.trim()) {
+            body.createEl("pre", { text: section.markdown });
+          }
+
+          body.querySelectorAll("a.internal-link").forEach(link => {
+            link.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              const target = (link as HTMLAnchorElement).getAttribute("href") ?? "";
+              if (!target) {
+                return;
+              }
+              this.app.workspace.openLinkText(target, section.file.path, false);
+              this.close();
+            });
+          });
+        }
+
+        if (references.length) {
+          if (!firstSection) {
+            container.createEl("hr", { cls: "tree-of-thought__divider" });
+          }
+
+          const refsEl = container.createDiv({ cls: "tree-of-thought__section tree-of-thought__section--references" });
+          const meta = refsEl.createDiv({ cls: "tree-of-thought__meta" });
+          meta.createSpan({ text: "References", cls: "tree-of-thought__label" });
+
+          const list = refsEl.createEl("ul", { cls: "tree-of-thought__reference-list" });
+
+          for (const ref of references) {
+            const item = list.createEl("li", { cls: "tree-of-thought__reference-item" });
+            if (ref.tooltip) {
+              item.setAttr("title", ref.tooltip);
+            }
+
+            const lineEl = item.createDiv({ cls: "tree-of-thought__reference-line" });
+
+            if (Array.isArray(ref.segments) && ref.segments.length) {
+              for (let index = 0; index < ref.segments.length; index++) {
+                const segment = ref.segments[index];
+                const segmentEl = lineEl.createSpan({ cls: "tree-of-thought__reference-link" });
+
+                try {
+                  await this.renderReferenceSegmentMarkdown(segmentEl, segment.text, ref.file.path);
+                } catch (error) {
+                  console.error("Failed to render reference segment", error);
+                  segmentEl.setText(segment.text);
+                }
+
+                const anchor = segment.anchor ? `#${segment.anchor.replace(/^#/, "")}` : "";
+                const openTarget = anchor ? `${ref.file.path}${anchor}` : ref.file.path;
+                const line = typeof segment.line === "number" ? Math.max(0, Math.floor(segment.line)) : undefined;
+
+                segmentEl.addEventListener("click", evt => {
+                  evt.preventDefault();
+                  evt.stopPropagation();
+                  const stateLine = typeof line === "number" ? { eState: { line } } : undefined;
+                  this.app.workspace.openLinkText(openTarget, ref.file.path, false, stateLine);
+                  this.close();
+                });
+                if (index < ref.segments.length - 1) {
+                  lineEl.createSpan({ text: " > ", cls: "tree-of-thought__reference-separator" });
+                }
+              }
+            } else if (ref.summary) {
+              lineEl.createSpan({ text: ref.summary, cls: "tree-of-thought__reference-text" });
+            }
+
+            if (lineEl.childNodes.length) {
+              lineEl.createSpan({ text: " ", cls: "tree-of-thought__reference-gap" });
+            }
+
+            const noteLink = lineEl.createEl("a", {
+              text: `[[${ref.linktext}]]`,
+              cls: "internal-link tree-of-thought__reference-note"
+            });
+            noteLink.setAttr("href", ref.file.path);
+            noteLink.addEventListener("click", evt => {
+              evt.preventDefault();
+              evt.stopPropagation();
+              this.app.workspace.openLinkText(ref.file.path, ref.file.path, false);
+              this.close();
+            });
+          }
+        }
+    }
+
+    private async renderReferenceSegmentMarkdown(target: HTMLElement, markdown: string, filePath: string) {
+        const temp = document.createElement("div");
+        await MarkdownRenderer.render(this.app, markdown, temp, filePath, this.plugin);
+
+        const fragment = document.createDocumentFragment();
+        const shouldUnwrapParagraph =
+            temp.childElementCount === 1 &&
+            temp.childNodes.length <= 1 &&
+            temp.firstElementChild instanceof HTMLElement &&
+            temp.firstElementChild.tagName === "P";
+
+        if (shouldUnwrapParagraph) {
+            const paragraph = temp.firstElementChild as HTMLElement;
+            while (paragraph.firstChild) {
+                fragment.appendChild(paragraph.firstChild);
+            }
+        } else {
+            while (temp.firstChild) {
+                fragment.appendChild(temp.firstChild);
+            }
+        }
+
+        target.appendChild(fragment);
+        temp.remove();
+    }
+
     /* ---------- choose behavior ---------- */
     async onChooseItem(raw) {
+        if (this.thoughtMode) {
+            return;
+        }
+
         const item = raw.item ?? raw;
     
         if ("tag" in item) {
@@ -815,6 +1961,7 @@ function escapeCssIdentifier(value: string): string {
     getSuggestions(query: string) {
         /* ---------- TAG MODE ---------- */
         if (this.tagMode) {
+            this.lastTaskSuggestions = [];
             const tags      = getAllTags(this.app);   // already sorted
             const q         = query.replace(/^#/, "").trim();
 
@@ -859,14 +2006,25 @@ function escapeCssIdentifier(value: string): string {
         /* ②  build lazily if still missing */
         if (!this.taskCache[key]) {
           collectTasksLazy(tag, this.plugin, () => this.updateSuggestions(), project);
+          this.lastTaskSuggestions = [];
           return [];                                         // nothing yet
         }
 
         /* ③  we now have tasks → fuzzy‑filter and display */
         const scorer = prepareFuzzySearch(body);
         const tokens = body.toLowerCase().split(/\s+/).filter(Boolean);
+        const tokenRegexes = tokens
+          .map(tok => {
+            const escaped = tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+            try {
+              return new RegExp(`\\b${escaped}\\b`, "i");
+            } catch (_error) {
+              return null;
+            }
+          })
+          .filter((value): value is RegExp => value instanceof RegExp);
 
-        return this.taskCache[key]!.flatMap(t => {
+        const suggestions = this.taskCache[key]!.flatMap((t, idx) => {
             const statusChar = t.status ?? " ";
 
             if (hadStatusFilter) {
@@ -884,9 +2042,11 @@ function escapeCssIdentifier(value: string): string {
           
               /* bonus for whole-word hits on THAT line */
               let bonus = 0;
-              tokens.forEach(tok => {
-                if (new RegExp(`\\b${tok}\\b`, "i").test(line)) bonus += 500;
-              });
+              for (const regex of tokenRegexes) {
+                if (regex.test(line)) {
+                  bonus += 500;
+                }
+              }
           
               const total = m.score + bonus;
               if (total > bestScore) {
@@ -899,9 +2059,36 @@ function escapeCssIdentifier(value: string): string {
             return [{
               item:  t,                   // original TaskEntry
               score: bestScore,
-              matchLine: bestLine         // 👈 keep only the line that matched
+              matchLine: bestLine,        // 👈 keep only the line that matched
+              sourceIdx: idx
             }];
         }).sort((a, b) => b.score - a.score);
+
+        this.lastTaskSuggestions = suggestions;
+
+        if (this.thoughtMode) {
+          return [{ item: null as any, match: null as any, score: 0 } as FuzzyMatch<string | TaskEntry>];
+        }
+
+        if (!this.thoughtMode && !this.autoThoughtGuard && suggestions.length === 1) {
+          const [first] = suggestions;
+          if (first?.item) {
+            const snapshot = this.inputEl.value;
+            window.setTimeout(() => {
+              if (this.thoughtMode) return;
+              if (this.inputEl.value !== snapshot) return;
+              const resolvedIdx = (first as any).sourceIdx ?? this.lookupTaskIndex(key, first.item as TaskEntry);
+              this.enterThoughtMode(key, {
+                displayIndex: 0,
+                cacheIndex: resolvedIdx ?? null,
+                task: first.item as TaskEntry,
+                showIndex: false
+              });
+            }, 0);
+          }
+        }
+
+        return suggestions;
     }
   }
   
