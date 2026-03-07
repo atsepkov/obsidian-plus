@@ -1,0 +1,11 @@
+{
+	"id": "obsidian-plus",
+	"name": "Obsidian Plus",
+	"version": "0.0.1",
+	"minAppVersion": "0.15.0",
+	"description": "Enhances Obsidian with additional features",
+	"author": "Alex Tsepkov",
+	"authorUrl": "https:/host,horse",
+	"fundingUrl": "https://host.horse",
+	"isDesktopOnly": false
+}
