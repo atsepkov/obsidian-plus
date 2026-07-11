@@ -176,6 +176,7 @@ export async function batchAppendToTag(input: BatchAppendInput): Promise<BatchAp
   const queryOptions: QueryTagOptions = {
     tag: input.tag,
     date: input.date,
+    path: input.path,
     query: input.query,
     includeChildren: false,
   };
@@ -317,17 +318,30 @@ export async function batchAppendToTag(input: BatchAppendInput): Promise<BatchAp
     const firstTag = contentTrimmed.match(/^(#[^\s#\[\]:]+)/)?.[1];
     const isTaskTag = firstTag && config.taskTags && config.taskTags.includes(firstTag);
 
-    // Format content with appropriate bullet
-    let formattedContent: string;
-    if (isTaskTag) {
-      // Task tag detected - use checkbox format
-      formattedContent = `${newIndent}- [ ] ${contentTrimmed}`;
+    // Transform all "-" bullets in content to the target bullet type (matches append.ts behavior)
+    const transformedContent = contentTrimmed.replace(/^(\s*)- /gm, `$1${bulletType} `);
+
+    // Split into lines for multiline handling
+    const contentLines = transformedContent.split('\n');
+
+    // Build formatted lines
+    const formattedLines: string[] = [];
+
+    if (isTaskTag && !input.bulletType) {
+      // First line with task checkbox
+      formattedLines.push(`${newIndent}- [ ] ${contentLines[0]}`);
     } else {
-      formattedContent = `${newIndent}${bulletType} ${contentTrimmed}`;
+      // First line with bullet
+      formattedLines.push(`${newIndent}${bulletType} ${contentLines[0]}`);
     }
 
-    // Insert the content
-    lines.splice(insertPoint, 0, formattedContent);
+    // Subsequent lines preserve their relative indentation, just add base indent
+    for (let i = 1; i < contentLines.length; i++) {
+      formattedLines.push(`${newIndent}${contentLines[i]}`);
+    }
+
+    // Insert all content lines
+    lines.splice(insertPoint, 0, ...formattedLines);
     insertedLines.push(insertPoint);
 
     // Update offset for this base position so next item at same position goes after this one

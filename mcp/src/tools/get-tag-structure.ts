@@ -145,6 +145,7 @@ export async function getTagStructure(input: GetTagStructureInput): Promise<GetT
   const queryOptions: QueryTagOptions = {
     tag: input.tag,
     date: input.date,
+    path: input.path,
     query: input.query,
     includeChildren: false,
   };

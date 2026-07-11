@@ -28,6 +28,7 @@ import { getTagStructureSchema, getTagStructure } from './tools/get-tag-structur
 import { batchAppendToTagSchema, batchAppendToTag } from './tools/batch-append-to-tag.js';
 import { getImageSchema, getImage } from './tools/get-image.js';
 import { writeNoteSchema, writeNoteTool } from './tools/write-note.js';
+import { updateTaskStatusSchema, updateTaskStatus } from './tools/update-task-status.js';
 
 // Create MCP server
 const server = new Server(
@@ -57,6 +58,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       batchAppendToTagSchema,
       getImageSchema,
       writeNoteSchema,
+      updateTaskStatusSchema,
     ],
   };
 });
@@ -135,6 +137,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           throw new Error('path and content parameters are required');
         }
         result = await writeNoteTool(args as unknown as Parameters<typeof writeNoteTool>[0]);
+        break;
+
+      case 'update_task_status':
+        if (!args?.tag || !args?.query || !args?.status) {
+          throw new Error('tag, query, and status parameters are required');
+        }
+        result = await updateTaskStatus(args as unknown as Parameters<typeof updateTaskStatus>[0]);
         break;
 
       default:

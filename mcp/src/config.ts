@@ -307,7 +307,23 @@ function parseMCPConfigSection(content: string): Partial<MCPConfig> {
 }
 
 /**
- * Load MCP configuration from Tags.md or Config/MCP.md
+ * Load plugin settings from .obsidian/plugins/obsidian-plus/data.json
+ */
+async function loadPluginSettings(): Promise<{ tagListFilePath?: string } | null> {
+  const settingsPath = '.obsidian/plugins/obsidian-plus/data.json';
+  if (await fileExists(settingsPath)) {
+    try {
+      const content = await readFileContent(settingsPath);
+      return JSON.parse(content);
+    } catch (error) {
+      console.error('Error loading plugin settings:', error);
+    }
+  }
+  return null;
+}
+
+/**
+ * Load MCP configuration from Tags.md (path from plugin settings) or Config/MCP.md
  */
 export async function loadConfig(): Promise<MCPConfig> {
   const config: MCPConfig = { ...DEFAULT_CONFIG };
@@ -320,8 +336,10 @@ export async function loadConfig(): Promise<MCPConfig> {
     return config;
   }
 
-  // Try to load from Config/Tags.md first
-  const tagsPath = 'Config/Tags.md';
+  // Load plugin settings to get the tagListFilePath
+  const pluginSettings = await loadPluginSettings();
+  const tagsPath = pluginSettings?.tagListFilePath || 'Config/Tags.md';
+
   if (await fileExists(tagsPath)) {
     try {
       const content = await readFileContent(tagsPath);

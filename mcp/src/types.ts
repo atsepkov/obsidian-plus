@@ -43,6 +43,7 @@ export interface QueryTagOptions {
   subject?: string;             // Filter by subject (substring match)
   parentContext?: string;       // Filter by parent context (substring match)
   date?: string;                // Filter by date (YYYY-MM-DD or natural language)
+  path?: string;                // Filter by specific note path
   query?: string;               // Search filter within text/children
   includeChildren?: boolean;    // Include nested bullets (default: true)
   status?: 'open' | 'done' | 'all'; // Filter by task status
