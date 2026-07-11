@@ -1702,7 +1702,7 @@ export const actionHandlers: Record<string, ActionHandler<any>> = {
     delay: delayAction,
     filter: filterAction,
     map: mapAction,
-    date: dateAction
+    date: dateAction,
 };
 
 /**

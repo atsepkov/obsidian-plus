@@ -72,7 +72,7 @@ export class TaskManager {
     public async getFileLines(filePath: string): Promise<string[]> {
         const file = this.app.vault.getAbstractFileByPath(filePath);
         if (file instanceof TFile) {
-            return (await this.app.vault.read(file)).split("\n");
+            return (await this.app.vault.cachedRead(file)).split("\n");
         }
         throw new Error(`File not found or not a TFile: ${filePath}`);
     }
@@ -156,7 +156,7 @@ export class TaskManager {
         return Array.from(tags);
     }
 
-    private resolveStatusCycle(tagHint?: string | null, tags: string[] = []): TaskStatusChar[] {
+    public resolveStatusCycle(tagHint?: string | null, tags: string[] = []): TaskStatusChar[] {
         if (tagHint) {
             const normalized = this.obsidianPlus.normalizeTag(tagHint);
             if (normalized) {

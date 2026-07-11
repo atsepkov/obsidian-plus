@@ -64,6 +64,10 @@ export class ConfigLoader {
     private app: App;
     private plugin: ObsidianPlus; // To access settings and other plugin parts
 
+    // True when the last load found tag definitions whose config children were
+    // missing from the Dataview index (cold-start race) — callers should retry.
+    public lastLoadIncomplete = false;
+
     constructor(app: App, plugin: ObsidianPlus) {
         this.app = app;
         this.plugin = plugin;
@@ -151,8 +155,8 @@ export class ConfigLoader {
         console.log('[ConfigLoader][parseTriggersForLine] Base config from resolveConfigForLine:', baseConfig);
         const config: ConnectorConfig = { ...(baseConfig || {}) };
         const triggerNames: TriggerType[] = [
-            'onTrigger', 'onDone', 'onError', 'onInProgress', 
-            'onCancelled', 'onReset', 'onEnter', 'onData'
+            'onTrigger', 'onDone', 'onError', 'onInProgress',
+            'onCancelled', 'onReset', 'onEnter', 'onTab', 'onData'
         ];
         
         console.log('[ConfigLoader][parseTriggersForLine] Parsing triggers for tag:', tag, 'children:', line.children?.length || 0);
@@ -210,6 +214,7 @@ export class ConfigLoader {
     // Moved from main.ts
     public async loadTaskTagsFromFile(): Promise<void> {
         console.log('[ConfigLoader] ===== loadTaskTagsFromFile called =====');
+        this.lastLoadIncomplete = false;
         const path = this.plugin.settings.tagListFilePath;
         console.log('[ConfigLoader] Tag list file path:', path);
 
@@ -425,6 +430,10 @@ export class ConfigLoader {
                     if (!line.tags || line.tags.length === 0) continue;
                     const tag = line.tags[0];
                     const config = await this.resolveConfigForLine(tag, line);
+                    if (!Object.keys(config).length) {
+                        console.warn(`[ConfigLoader] Automated tag "${tag}" resolved with empty config — Dataview children may not be indexed yet`);
+                        this.lastLoadIncomplete = true;
+                    }
                     this.applyStatusCycle(tag, config);
 
                     // Create connector using the factory method (buildTagConnector)
@@ -542,6 +551,11 @@ export class ConfigLoader {
 
                     // Parse triggers directly from children (no config: wrapper needed)
                     console.log('[ConfigLoader] About to parse triggers for', tag, 'children:', line.children?.length ?? 0);
+                    if (!line.children || line.children.length === 0) {
+                        // A top-level Tag Triggers definition always has trigger children;
+                        // none means the Dataview index hasn't caught up yet.
+                        this.lastLoadIncomplete = true;
+                    }
                     if (line.children && line.children.length > 0) {
                         console.log('[ConfigLoader] Children details:', line.children.map((c: any) => ({
                             text: c.text,
@@ -549,6 +563,7 @@ export class ConfigLoader {
                         })));
                     }
                     const config = await this.parseTriggersForLine(tag, line);
+                    this.applyStatusCycle(tag, config);
                     console.log('[ConfigLoader] ✓ Parsed config for', tag);
                     console.log('[ConfigLoader] Config keys:', Object.keys(config));
                     console.log('[ConfigLoader] Config object:', JSON.stringify(config, null, 2));

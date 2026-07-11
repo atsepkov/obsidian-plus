@@ -8,7 +8,7 @@ import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
-import { EditorState, RangeSetBuilder, StateField, StateEffect } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, StateField, StateEffect, Prec } from "@codemirror/state";
 import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { ServerManager, type ServerCredentials } from './serverManager';
@@ -220,54 +220,6 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
 
 }
 
-interface TaskLineInfo {
-	lineNumber: number;
-	text: string;
-}
-  
-// Key by file path to an array of (lineNumber, text)
-let taskCache: Map<string, TaskLineInfo[]> = new Map();
-
-// TODO: remove if no longer in use after refactor
-// Compare old vs new tasks by line number
-function compareTaskLines(
-	oldTasks: TaskLineInfo[],
-	newTasks: TaskLineInfo[]
-): TaskLineInfo[] {
-	const changes: TaskLineInfo[] = [];
-	// You can do a more sophisticated comparison if tasks can be added/removed.
-	// For simplicity, we just check lines in both old and new sets:
-	//   1. Same lineNumber, different text => changed
-	//   2. New lineNumber not in old => new task
-	//   3. Old lineNumber missing => removed task
-	// etc.
-	// For brevity:
-	const oldMap = new Map(oldTasks.map(t => [t.lineNumber, t.text]));
-	const newMap = new Map(newTasks.map(t => [t.lineNumber, t.text]));
-  
-	// Check changed or removed
-	oldMap.forEach((oldText, lineNum) => {
-	  const newText = newMap.get(lineNum);
-	  if (!newText) {
-		// This line was removed
-		changes.push({ lineNumber: lineNum, oldText });
-	  } else if (oldText !== newText) {
-		// This line changed (possibly checkbox toggled)
-		changes.push({ lineNumber: lineNum, oldText, newText });
-	  }
-	});
-  
-	// Check newly added lines
-	newMap.forEach((newText, lineNum) => {
-	  if (!oldMap.has(lineNum)) {
-		// New line was added
-		changes.push({ lineNumber: lineNum, newText });
-	  }
-	});
-  
-	return changes;
-}
-
 // helper function to help generate sticky header text
 const chevron = '❯';
 function updateStickyHeaderText(rootText: string, parentText: string, parentIndent: int) {
@@ -294,6 +246,7 @@ export default class ObsidianPlus extends Plugin {
         public pollingManager: PollingManager;
         public delegateManager: DelegateManager;
         public flaggedLines: number[] = [];
+        private _processingCheckbox = new Set<string>();
         private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
 
 	async onload() {
@@ -460,178 +413,12 @@ export default class ObsidianPlus extends Plugin {
                         this.app.workspace.onLayoutReady(startDataviewInitialization);
                 }
 		
-		// Listen for changes to tags config file and checked off tasks in current file
+		// Listen for changes to tags config file
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
-				// Listen for changes to tags config file in the vault
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
 					await this.configLoader.loadTaskTagsFromFile();
 					this.pollingManager.reload();
-				}
-
-				// Listen for changes to tasks in the current file (if task was marked completed)
-				if (file instanceof TFile && file.extension === "md") {
-					if (!this.taskManager) {
-						console.warn("TaskManager not ready.");
-						return;
-					}
-					let newTasks = await this.extractTaskLines(file);
-					const oldTasks = taskCache.get(file.path) ?? [];
-			  
-					// Compare old vs. new tasks
-					const changed = compareTaskLines(oldTasks, newTasks);
-					if (changed.length === 1) {
-						console.log(`Task changed in ${file.path}:`, changed[0]);
-					  	// console.log(`Tasks changed in ${file.path}:`, changed);
-						for (const task of changed) {
-							if (task.oldText && task.newText) {
-								// for task status to change, it has to exist in both old and new
-								// console.log(`Task changed from "${task.oldText}" to "${task.newText}"`);
-								const oldTaskStatus = task.oldText.match(/\[([ xX!])\]/)[1];
-								const taskStatus = task.newText.match(/\[([ xX!])\]/)[1];
-								if (oldTaskStatus === taskStatus) {
-									continue; // only fire when task changes
-								}
-
-								const oldTaskTag = task.oldText.match(/#[\w/-]+/)[0];
-								const taskTag = task.newText.match(/#[\w/-]+/)[0];
-								if (oldTaskTag !== taskTag) {
-									continue; // user editing the line, not checking off a task
-								}
-
-								const oldTagPosition = task.oldText.indexOf(oldTaskTag);
-								const tagPosition = task.newText.indexOf(taskTag);
-								if (oldTagPosition !== tagPosition) {
-									continue; // tag misalignment implies user editing the line
-								}
-
-								const taskText = task.oldText.slice(oldTagPosition).trim();
-								// set the text to common text between old and new
-								// let taskText = '';
-								// for (let i = oldTagPosition; i < task.oldText.length; i++) {
-								// 	if (task.oldText[i] === task.newText[i]) {
-								// 		taskText += task.oldText[i];
-								// 	} else {
-								// 		break;
-								// 	}
-								// }
-
-								console.log(`Task ${taskStatus === 'x' ? 'completed' : 'incomplete'}: ${taskTag}`, task);
-								
-								const tagConnector = this.settings.webTags[taskTag];
-								if (!tagConnector) {
-									console.log(`[Trigger] No connector found for task tag "${taskTag}" in webTags.`, {
-										taskTag,
-										taskTagType: typeof taskTag,
-										taskTagLength: taskTag?.length,
-										taskTagStartsWithHash: taskTag?.startsWith('#'),
-										webTagsKeys: Object.keys(this.settings.webTags),
-										webTagsKeysDetails: Object.keys(this.settings.webTags).map(k => ({
-											key: k,
-											type: typeof k,
-											length: k?.length,
-											startsWithHash: k?.startsWith('#')
-										})),
-										inTaskTags: this.settings.taskTags.includes(taskTag)
-									});
-									continue;
-								}
-								
-								const dataview = this.app.plugins.getPlugin("dataview");
-								if (!dataview) {
-									throw new Error("Dataview plugin not found");
-								}
-								const dvTask = this.taskManager.findDvTask({ ...task, file, taskText, tag: {
-									pos: tagPosition,
-									name: taskTag,
-								}});
-								if (!dvTask) {
-									console.error(`Could not find task in dataview for ${taskTag}`, task);
-									continue;
-								}
-								if (taskStatus === ' ') {
-									// reset trigger
-									await tagConnector.onReset(dvTask);
-									// if reset updated the task, we need to sync our cache
-									newTasks = await this.extractTaskLines(file);
-								} else if (taskStatus === 'x' && oldTaskStatus === ' ') {
-									// Completion: either run a connector transaction (onTrigger -> onSuccess -> set x),
-									// or if DSL has no onTrigger, allow onDone to run directly on entering x.
-									const event = { fromStatus: oldTaskStatus, toStatus: taskStatus };
-									const hasDslTriggers = typeof (tagConnector as any)?.hasTrigger === 'function';
-									const dslHasOnTrigger = hasDslTriggers ? Boolean((tagConnector as any).hasTrigger('onTrigger')) : true;
-									console.log('[Trigger] completion detected (space -> x)', {
-										tag: taskTag,
-										oldTaskStatus,
-										taskStatus,
-										dvTaskStatus: (dvTask as any)?.status,
-										dvTaskCompleted: (dvTask as any)?.completed,
-										hasDslTriggers,
-										dslHasOnTrigger
-									});
-
-									// If this is a DSL connector (hasTrigger exists) and it does NOT define onTrigger,
-									// do NOT run the transaction pipeline. Instead, fire onDone via status-change hook.
-									if (hasDslTriggers && !dslHasOnTrigger) {
-										if (typeof (tagConnector as any)?.onStatusChange === 'function') {
-											console.log('[Trigger] DSL has no onTrigger; firing onStatusChange for onDone', { tag: taskTag });
-											await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
-											newTasks = await this.extractTaskLines(file);
-										}
-										continue;
-									}
-
-									// Otherwise run the normal transaction pipeline.
-									try {
-										await this.changeTaskStatus(dvTask, '/');
-										const response = await (tagConnector as any).onTrigger(dvTask, event);
-										// If delegated to another device, skip success/status flow
-										if (response?.__delegated) {
-											newTasks = await this.extractTaskLines(file);
-											continue;
-										}
-										await tagConnector.onSuccess(dvTask, response);
-										await this.changeTaskStatus(dvTask, 'x');
-										// if success updated the task, we need to sync our cache
-										newTasks = await this.extractTaskLines(file);
-									} catch (e) {
-										console.error(e);
-										await tagConnector.onError(dvTask, e);
-										await this.changeTaskStatus(dvTask, '!');
-										// if error updated the task, we need to sync our cache
-										newTasks = await this.extractTaskLines(file);
-									}
-								} else if (taskStatus === 'x' && oldTaskStatus === '/') {
-									// Finalization transition after successful transaction: / -> x.
-									// Fire onDone (and other status-based triggers) via connector hook if available.
-									if (typeof (tagConnector as any)?.onStatusChange === 'function') {
-										console.log('[Trigger] finalization detected (/ -> x); firing onStatusChange', { tag: taskTag });
-										await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
-										newTasks = await this.extractTaskLines(file);
-									}
-								} else if (taskStatus === 'x') {
-									// Safety net: if we see a completion transition we didn't explicitly handle,
-									// still try firing status-change triggers (e.g. ! -> x, - -> x, etc.)
-									if (typeof (tagConnector as any)?.onStatusChange === 'function') {
-										console.log('[Trigger] completion detected (other -> x); firing onStatusChange', {
-											tag: taskTag,
-											oldTaskStatus,
-											taskStatus,
-											dvTaskStatus: (dvTask as any)?.status,
-											dvTaskCompleted: (dvTask as any)?.completed
-										});
-										await (tagConnector as any).onStatusChange(dvTask, oldTaskStatus, taskStatus);
-										newTasks = await this.extractTaskLines(file);
-									} else {
-										console.log('[Trigger] completion detected but connector has no onStatusChange', { tag: taskTag });
-									}
-								}
-							}
-						}
-					}
-			  
-					// Update the cache
-					taskCache.set(file.path, newTasks);
 				}
 			})
 		);
@@ -769,6 +556,181 @@ export default class ObsidianPlus extends Plugin {
                         editor.setCursor({ line: insertLine + 1, ch: newLine.length });
                     }
                 }, { capture: true }); // Use capture phase
+
+                // Register CodeMirror extension for DSL onTab triggers
+                // Prec.highest ensures this runs before Obsidian's built-in Tab indent handler
+                this.registerEditorExtension(Prec.highest(EditorView.domEventHandlers({
+                    keydown: (evt: KeyboardEvent, view: EditorView) => {
+                        if (evt.key !== 'Tab') return false;
+                        console.log('[DSL] Tab key intercepted in CM domEventHandlers');
+                        if (evt.shiftKey || evt.ctrlKey || evt.altKey || evt.metaKey) return false;
+
+                        const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                        if (!activeView || !activeView.editor) {
+                            console.log('[DSL] Tab: no active editor');
+                            return false;
+                        }
+
+                        const editor = activeView.editor;
+                        const cursor = editor.getCursor();
+                        const currentLine = editor.getLine(cursor.line);
+                        console.log('[DSL] Tab: line=', JSON.stringify(currentLine), 'cursor.ch=', cursor.ch, 'len=', currentLine.length);
+
+                        if (cursor.ch !== currentLine.length) {
+                            console.log('[DSL] Tab: cursor not at end of line');
+                            return false;
+                        }
+
+                        const tagMatches = currentLine.match(/#[^\s#]+/g);
+                        console.log('[DSL] Tab: tagMatches=', tagMatches);
+                        if (!tagMatches || tagMatches.length === 0) return false;
+
+                        console.log('[DSL] Tab: available connectors=', Object.keys(this.settings.webTags));
+                        for (const tag of tagMatches) {
+                            const connector = this.settings.webTags[tag]
+                                || (tag.startsWith('#') ? this.settings.webTags[tag.substring(1)] : null);
+                            console.log('[DSL] Tab: tag=', tag, 'connector=', connector ? 'found' : 'null');
+                            if (!connector || !isDSLConnector(connector)) continue;
+                            const hasTrigger = connector.hasTrigger('onTab');
+                            console.log('[DSL] Tab: hasTrigger(onTab)=', hasTrigger);
+                            if (!hasTrigger) continue;
+
+                            console.log('[DSL] Tab: MATCHED! Preventing default and firing onTab');
+                            evt.preventDefault();
+
+                            const activeFile = this.app.workspace.getActiveFile();
+                            if (!activeFile) return true;
+
+                            connector.onTab(currentLine, activeFile, editor);
+                            return true;
+                        }
+                        console.log('[DSL] Tab: no matching onTab handler found');
+                        return false;
+                    }
+                })));
+
+                // Register mousedown handler for checkbox clicks on tagged tasks.
+                // Uses CAPTURE PHASE so we fire BEFORE CM6's checkbox widget processes
+                // the event. This lets us read the pre-toggle editor state reliably.
+                // We stopPropagation to prevent CM6 from toggling — we own the transition.
+                this.registerDomEvent(document, 'mousedown', (evt: MouseEvent) => {
+                    const target = evt.target as HTMLElement;
+                    if (!target?.matches('input.task-list-item-checkbox[type="checkbox"]')) {
+                        // Not a checkbox — don't log (too noisy for every mousedown)
+                        return;
+                    }
+
+                    console.log('[Checkbox] mousedown on checkbox element', {
+                        classes: target.className,
+                        tagName: target.tagName,
+                        parentClasses: target.parentElement?.className
+                    });
+
+                    // Skip our own custom Dataview checkboxes (handled separately)
+                    if (target.matches('.op-toggle-task')) {
+                        console.log('[Checkbox] skipping .op-toggle-task');
+                        return;
+                    }
+
+                    const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+                    if (!activeView?.editor) {
+                        console.log('[Checkbox] no active MarkdownView or editor');
+                        return;
+                    }
+                    const editor = activeView.editor;
+                    const activeFile = this.app.workspace.getActiveFile();
+                    if (!activeFile) {
+                        console.log('[Checkbox] no active file');
+                        return;
+                    }
+
+                    // Resolve line number via CM (element is still in document during mousedown)
+                    const cmView = (editor as any).cm as EditorView;
+                    if (!cmView) {
+                        console.log('[Checkbox] no CM6 view (Reading View?)');
+                        return;
+                    }
+
+                    let lineNumber: number;
+                    try {
+                        const pos = cmView.posAtDOM(target);
+                        const docLine = cmView.state.doc.lineAt(pos);
+                        lineNumber = docLine.number - 1; // CM 1-based -> 0-based
+                    } catch (e) {
+                        console.warn('[Checkbox] posAtDOM failed:', e);
+                        return;
+                    }
+
+                    // Read line BEFORE CM6 toggles (capture phase guarantees this)
+                    const lineText = editor.getLine(lineNumber);
+                    console.log('[Checkbox] resolved line', { lineNumber, lineText: lineText.substring(0, 80) });
+
+                    // Parse current (old) status
+                    const statusMatch = lineText.match(/^\s*[-*+]\s+\[(.)\]/);
+                    if (!statusMatch) {
+                        console.log('[Checkbox] no status match on line', lineNumber, ':', JSON.stringify(lineText.substring(0, 60)));
+                        return;
+                    }
+                    const oldStatus = statusMatch[1];
+
+                    // Extract tags
+                    const tagMatches = lineText.match(/#[^\s#]+/g);
+                    if (!tagMatches || tagMatches.length === 0) {
+                        console.log('[Checkbox] no tags on line', lineNumber, ':', JSON.stringify(lineText.substring(0, 60)));
+                        return;
+                    }
+
+                    // Find a connector (DSL or legacy) for any tag on this line
+                    let matchedTag: string | null = null;
+                    let matchedConnector: any = null;
+                    for (const tag of tagMatches) {
+                        const connector = this.settings.webTags[tag]
+                            || (tag.startsWith('#') ? this.settings.webTags[tag.substring(1)] : null);
+                        if (!connector) continue;
+                        matchedTag = tag;
+                        matchedConnector = connector;
+                        break;
+                    }
+
+                    if (!matchedConnector) {
+                        console.log('[Checkbox] no connector for tags', tagMatches, 'webTags keys:', Object.keys(this.settings.webTags));
+                        return;
+                    }
+
+                    // Stop the event from reaching CM6's widget handler —
+                    // we own the status transition entirely via the cycle.
+                    evt.preventDefault();
+                    evt.stopPropagation();
+
+                    // Also suppress the subsequent click event so the Tasks plugin's
+                    // ViewPlugin.handleClickEvent doesn't double-process the checkbox.
+                    // (preventDefault on mousedown does NOT prevent the click event.)
+                    target.addEventListener('click', (e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.stopImmediatePropagation();
+                    }, { once: true, capture: true });
+
+                    // Resolve the proper status cycle for this tag and advance
+                    const cycle = this.taskManager
+                        ? this.taskManager.resolveStatusCycle(matchedTag, tagMatches)
+                        : undefined;
+                    const newStatus = advanceStatus(oldStatus, cycle);
+
+                    // Re-entrancy guard
+                    const taskKey = `${activeFile.path}:${lineNumber}`;
+                    if (this._processingCheckbox.has(taskKey)) {
+                        console.log('[Checkbox] already processing, skipping', taskKey);
+                        return;
+                    }
+
+                    console.log('[Checkbox] triggering for', matchedTag, { oldStatus, newStatus });
+
+                    this.handleCheckboxTrigger(
+                        editor, activeFile, lineNumber, lineText,
+                        oldStatus, newStatus, matchedTag!, matchedConnector
+                    );
+                }, { capture: true });
 
 		function expandIfNeeded(evt: MouseEvent) {
 			const target = evt.target.closest('.op-expandable-item');
@@ -911,23 +873,10 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEvent(
 			this.app.workspace.on("file-open", async (file) => {
 				if (file instanceof TFile && file.extension === "md") {
-					// TODO: figure out when to clear task cache, doing it here breaks out getSummary links every time we change files
-					// if (this.taskManager) {
-					// 	this.taskManager.clearTaskCache();
-					// }
 					this.updateFlaggedLines(file);
-				}
-				if (file instanceof TFile && file.extension === "md") {
-					const oldTasks = await this.extractTaskLines(file);
-					taskCache.set(file.path, oldTasks);
 				}
 			})
 		);
-		const currentFile = this.app.workspace.getActiveFile();
-		if (currentFile instanceof TFile && currentFile.extension === "md") {
-			const oldTasks = await this.extractTaskLines(currentFile);
-			taskCache.set(currentFile.path, oldTasks);
-		}
 
 		// this.registerEditorSuggest(new TaskTagTrigger(this.app, this));
 	}
@@ -1520,6 +1469,105 @@ export default class ObsidianPlus extends Plugin {
 	}
 
 	/**
+	 * Handle checkbox trigger from CM mousedown interception.
+	 * Constructs a synthetic Task from editor state (no Dataview dependency).
+	 * Status advancement is cycle-driven: the mousedown handler computes newStatus
+	 * via advanceStatus, and this method writes it + fires the appropriate trigger.
+	 */
+	private async handleCheckboxTrigger(
+		editor: Editor, file: TFile, lineNumber: number, lineText: string,
+		oldStatus: string, newStatus: string, tag: string, connector: any
+	): Promise<void> {
+		const taskKey = `${file.path}:${lineNumber}`;
+		this._processingCheckbox.add(taskKey);
+
+		try {
+			// Extract task text (everything after the checkbox marker)
+			const textAfterCheckbox = lineText.replace(/^\s*[-*+]\s+\[.\]\s+/, '');
+			const tagMatches = lineText.match(/#[^\s#]+/g) || [];
+
+			// Build a synthetic Task object from editor state
+			const syntheticTask = {
+				text: textAfterCheckbox,
+				path: file.path,
+				line: lineNumber,
+				position: {
+					start: { line: lineNumber, col: 0 },
+					end: { line: lineNumber, col: lineText.length }
+				},
+				status: oldStatus,
+				completed: oldStatus === 'x',
+				tags: tagMatches,
+				children: [],
+				link: { path: file.path },
+				outlinks: []
+			} as any;
+
+			// Optionally enhance with Dataview if available (non-blocking)
+			if (this.taskManager) {
+				const dvTask = this.taskManager.findDvTask({
+					file, lineNumber, taskText: textAfterCheckbox,
+					tag: { name: tag }
+				});
+				if (dvTask) {
+					Object.assign(syntheticTask, dvTask);
+				}
+			}
+
+			console.log('[Checkbox] handling trigger', { tag, oldStatus, newStatus, taskKey });
+
+			// Determine if this connector has an onTrigger handler (transaction pipeline)
+			// Legacy connectors (webhook/http/ai) have no hasTrigger method but always
+			// implement onTrigger — they must run the pipeline, like the old modify listener did.
+			const hasDslTriggers = typeof connector?.hasTrigger === 'function';
+			const hasOnTrigger = hasDslTriggers
+				? Boolean(connector.hasTrigger('onTrigger'))
+				: typeof connector?.onTrigger === 'function';
+
+			if (newStatus === 'x' && (oldStatus === ' ' || oldStatus === '/') && hasOnTrigger) {
+				// Completion with onTrigger: run the transaction pipeline
+				// Override the cycle — go through [ ] -> [/] -> onTrigger -> [x]
+				const event = { fromStatus: oldStatus, toStatus: newStatus };
+				try {
+					await this.changeTaskStatus(syntheticTask, '/');
+					const response = await connector.onTrigger(syntheticTask, event);
+
+					if (response?.__delegated) {
+						return;
+					}
+
+					await connector.onSuccess(syntheticTask, response);
+					await this.changeTaskStatus(syntheticTask, 'x');
+
+					// Fire onDone via onStatusChange if available
+					if (typeof connector.onStatusChange === 'function') {
+						await connector.onStatusChange(syntheticTask, '/', 'x');
+					}
+				} catch (e) {
+					console.error('[Checkbox] trigger error:', e);
+					await connector.onError(syntheticTask, e);
+					await this.changeTaskStatus(syntheticTask, '!');
+				}
+			} else {
+				// Cycle-driven: write the cycle-computed status, then fire appropriate trigger
+				await this.changeTaskStatus(syntheticTask, newStatus);
+
+				if (newStatus === ' ') {
+					// Reset
+					if (typeof connector.onReset === 'function') {
+						await connector.onReset(syntheticTask);
+					}
+				} else if (typeof connector.onStatusChange === 'function') {
+					// Fire trigger based on destination status (onDone, onCancelled, etc.)
+					await connector.onStatusChange(syntheticTask, oldStatus, newStatus);
+				}
+			}
+		} finally {
+			this._processingCheckbox.delete(taskKey);
+		}
+	}
+
+	/**
 	 * Handle DSL onEnter triggers when user presses Enter at end of a tagged line
 	 * This is called after default behavior is prevented, with the pre-captured line state
 	 */
@@ -1957,20 +2005,6 @@ export default class ObsidianPlus extends Plugin {
 		};
 	}
 
-	// Helper to extract lines that contain a checkbox
-	private async extractTaskLines(file: string): TaskLineInfo[] {
-		const content = await this.app.vault.read(file);
-		const lines = content.split("\n");
-		const tasks: TaskLineInfo[] = [];
-		const taskRegex = /^\s*[-*+]\s+\[(x| )\]\s+/;
-		for (let i = 0; i < lines.length; i++) {
-			if (taskRegex.test(lines[i])) {
-				tasks.push({ lineNumber: i, text: lines[i] });
-			}
-		}
-		return tasks;
-	}
-
 	onunload() {
 		console.log('Unloading Obsidian Plus');
 		this.delegateManager?.stop();
@@ -2073,16 +2107,21 @@ export default class ObsidianPlus extends Plugin {
                 await this.configLoader.loadTaskTagsFromFile();
                 console.log("Loaded tags:", this.settings.taskTags);
 
-                // If tags failed to populate on the first attempt, retry once after
-                // a short delay. This mirrors the manual disable/enable workaround
-                // users have been performing when the app is freshly launched.
-                if (!this.settings.taskTags.length) {
-                        console.warn("Task tags empty after initial load; retrying shortly.");
+                // If tags failed to populate on the first attempt — or loaded only
+                // partially (tag lines indexed but their config children not yet) —
+                // retry once after a short delay. This mirrors the manual
+                // disable/enable workaround users have been performing when the app
+                // is freshly launched.
+                if (!this.settings.taskTags.length || this.configLoader.lastLoadIncomplete) {
+                        console.warn("Tag config empty or incomplete after initial load; retrying shortly.");
                         setTimeout(async () => {
                                 await this.waitForMetadataCache();
                                 await this.configLoader.loadTaskTagsFromFile();
                                 this.pollingManager?.reload();
                                 console.log("Retried loading tags:", this.settings.taskTags);
+                                if (this.configLoader.lastLoadIncomplete) {
+                                        new Notice("Obsidian Plus: some tag configs failed to load. Edit the tag config file or reload the plugin to retry.");
+                                }
                         }, 1500);
                 }
 

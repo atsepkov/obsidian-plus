@@ -259,8 +259,8 @@ export default class DSLConnector extends TagConnector {
         console.log(`[DSLConnector] ${this.tag} onReset`, task);
 
         // Allow future onDone executions after a reset.
-        this.handledDonePaths.delete(task.path);
-        
+        this.handledDonePaths.delete(`${task.path}:${task.line}`);
+
         const file = this.getTaskFile(task);
         if (!file) {
             console.error(`Could not find file for task: ${task.path}`);
@@ -322,6 +322,26 @@ export default class DSLConnector extends TagConnector {
     }
     
     /**
+     * Handle onTab trigger (user presses Tab at end of tagged line)
+     */
+    async onTab(line: string, file: TFile, editor: Editor, task?: Task): Promise<DSLExecutionResult | null> {
+        if (!this.hasTrigger('onTab')) {
+            return null;
+        }
+
+        const engine = this.getEngine();
+
+        return engine.onTab(
+            this.dslConfig,
+            line,
+            file,
+            editor,
+            task,
+            this.getDslInitialVars()
+        );
+    }
+
+    /**
      * Fires for specific status changes
      */
     async onStatusChange(task: Task, fromStatus: string, toStatus: string): Promise<DSLExecutionResult | null> {
@@ -343,14 +363,15 @@ export default class DSLConnector extends TagConnector {
 
         // Obsidian sometimes emits duplicate status-change events for the same transition.
         // Guard against running onDone twice for the same task while it remains completed.
+        const taskKey = `${task.path}:${task.line}`;
         if (toStatus === 'x') {
-            if (this.handledDonePaths.has(task.path)) {
-                console.log('[DSLConnector] Skipping duplicate onDone for task', { path: task.path, fromStatus, toStatus });
+            if (this.handledDonePaths.has(taskKey)) {
+                console.log('[DSLConnector] Skipping duplicate onDone for task', { path: task.path, line: task.line, fromStatus, toStatus });
                 return null;
             }
-            this.handledDonePaths.add(task.path);
+            this.handledDonePaths.add(taskKey);
         } else {
-            this.handledDonePaths.delete(task.path);
+            this.handledDonePaths.delete(taskKey);
         }
 
         const engine = this.getEngine();

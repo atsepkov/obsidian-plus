@@ -104,7 +104,8 @@ export type ActionType =
     | 'delay'
     | 'filter'
     | 'map'
-    | 'date';
+    | 'date'
+    | 'write';
 
 /**
  * Metadata exposed for resolved files/wikilinks
@@ -486,6 +487,17 @@ export interface MapActionNode extends BaseActionNode {
 }
 
 /**
+ * Write action - writes content to a file in the vault
+ */
+export interface WriteActionNode extends BaseActionNode {
+    type: 'write';
+    /** Template for content to write */
+    content: string;
+    /** Template for file path (relative to vault root) */
+    to: string;
+}
+
+/**
  * Date action - common date/time operations
  */
 export interface DateActionNode extends BaseActionNode {
@@ -527,7 +539,8 @@ export type ActionNode =
     | DelayActionNode
     | FilterActionNode
     | MapActionNode
-    | DateActionNode;
+    | DateActionNode
+    | WriteActionNode;
 
 // ============================================================================
 // Trigger Types
@@ -544,6 +557,7 @@ export type TriggerType =
     | 'onCancelled'  // Task marked cancelled (-)
     | 'onReset'      // Task unchecked
     | 'onEnter'      // User presses Enter at end of line
+    | 'onTab'        // User presses Tab at end of line
     | 'onData';      // Receives data from polling
 
 /**

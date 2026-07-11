@@ -35,6 +35,7 @@ import type {
     FilterActionNode,
     MapActionNode,
     DateActionNode,
+    WriteActionNode,
     ShellActionNode,
     WriteActionNode,
     AuthConfig
@@ -53,6 +54,7 @@ const TRIGGER_NAMES: TriggerType[] = [
     'onCancelled',
     'onReset',
     'onEnter',
+    'onTab',
     'onData'
 ];
 
@@ -83,7 +85,8 @@ const ACTION_TYPES: ActionType[] = [
     'delay',
     'filter',
     'map',
-    'date'
+    'date',
+    'write'
 ];
 
 /**

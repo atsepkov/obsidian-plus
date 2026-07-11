@@ -539,6 +539,26 @@ export class DSLEngine {
     }
     
     /**
+     * Execute onTab actions (user presses Tab at end of line)
+     */
+    async onTab(
+        config: DSLConfig,
+        line: string,
+        file: TFile,
+        editor: Editor,
+        task?: Task,
+        initialVars?: Record<string, any>
+    ): Promise<DSLExecutionResult> {
+        return this.execute(config, 'onTab', {
+            task,
+            line,
+            file,
+            editor,
+            initialVars
+        });
+    }
+
+    /**
      * Execute onData actions (for polling/subscribe)
      */
     async onData(
