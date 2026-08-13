@@ -44,6 +44,67 @@ Now type `- #podcast https://youtube.com/watch?v=xyz` and press **Enter**. The D
 
 ---
 
+## Recurring Task Tags
+
+A tag under `### Recurring Task Tags` in your tags config file becomes a task tag. Give it an
+`every:` and it also becomes a **repeating** task tag: the first bullet you write with it is
+the definition of a repeating task, and the plugin generates one fresh instance per period.
+
+```markdown
+### Recurring Task Tags
+- #followup something to revisit periodically
+- #weekly repeats every week
+	- config:
+		- every: week
+		- anchor: monday
+- #quarterly repeats every quarter
+	- config:
+		- every: quarter
+```
+
+`#followup` has no `every:`, so it stays a plain task tag. `#weekly` repeats.
+
+### Config keys
+
+| Key | Meaning |
+|-----|---------|
+| `every:` | Period length. `week`, `month`, `quarter`, `year`, `day`, or a count: `2 weeks`, `2w`. Use `M` or `month` for months; a bare `m` is rejected as ambiguous. **Required** for repeating. |
+| `anchor:` | Week boundary, `monday` (default) or `sunday`. Applies to `every: week` only. |
+| `target:` | Where instances go. Omit it to use the daily note you open. Set it to a period-note path such as `Weekly Notes/gggg-[W]WW`. The folder is literal text and only the filename is a moment format, so you do not need to bracket the folder. Missing folders and files are created. |
+| `section:` | Heading to append under, default `Tasks & Notes`. |
+
+### Definition vs instance
+
+```markdown
+- [ ] #weekly status updates for initiatives assigned to me ^wdu7b
+	- start: 2026-07-27
+	- end: 2026-12-31
+```
+
+`start:` and `end:` are optional children of the definition bullet, bounding the series.
+`start:` also anchors multi-unit periods, so `every: 2 weeks` knows which weeks pair up.
+
+Each period, the plugin appends an instance to the target note:
+
+```markdown
++ [ ] [[2026-07-27#^wdu7b|⇠]] #weekly *status updates for initiatives assigned to me*
+	+ 
+```
+
+The instance carries the same tags as the definition, and the `⇠` back-reference is what
+distinguishes the two: an instance always links back, a definition never does. Every instance
+points at the original definition, so opening the tree-of-thought view on it shows the whole
+series. Each instance has its own checkbox, so completing one week says nothing about the next.
+
+### When instances appear
+
+Generation runs when you open a daily note, and once when the plugin loads. An instance lands
+in the first daily note of the period that you actually open, so a week you take off produces
+no bullet at all. A definition marked cancelled `[-]` ends the series; checking a definition
+off `[x]` does not.
+
+---
+
 ## Triggers
 
 Triggers are entry points—they fire when specific events occur.

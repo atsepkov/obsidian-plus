@@ -1,5 +1,6 @@
 import { App, TFile } from "obsidian";
 import type { TaskEntry } from "./fuzzyFinder";
+import { STITCH_GLYPH } from "./blockRef";
 
 const DOCUMENT_PREVIEW_LINE_LIMIT = 40;
 
@@ -537,7 +538,7 @@ async function collectInternalLinkSections(
     }
 
     const display = (parsed.display ?? "").trim();
-    if (display === "⇠") {
+    if (display === STITCH_GLYPH) {
       continue;
     }
 

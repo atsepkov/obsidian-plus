@@ -7,6 +7,7 @@ import AiConnector from './connectors/aiConnector';
 import { parseStatusCycleConfig } from "./statusFilters";
 import { hasDSLTriggers, TriggerType } from './dsl';
 import { childTreeToRecord } from './utils/childTreeToRecord';
+import { buildRecurrenceConfig } from './recurrence';
 
 // Define ConnectorConfig interface locally for now
 interface ConnectorConfig {
@@ -227,6 +228,7 @@ export class ConfigLoader {
             this.plugin.settings.projects = [];
             this.plugin.settings.projectTags = [];
             this.plugin.settings.statusCycles = {};
+            this.plugin.settings.recurringTags = {};
 
             console.log("[ConfigLoader] No tag list file specified, reset tags to empty");
             // Trigger update for editor enhancer if needed (will be handled in main.ts)
@@ -252,6 +254,7 @@ export class ConfigLoader {
         this.plugin.settings.projects = [];
         this.plugin.settings.projectTags = [];
         this.plugin.settings.statusCycles = {};
+        this.plugin.settings.recurringTags = {};
 
         try {
             const file = this.app.vault.getAbstractFileByPath(path);
@@ -477,13 +480,32 @@ export class ConfigLoader {
                     }
                 }
 
-                // Process Recurring Tags (just add to taskTags)
+                // Process Recurring Tags: task tags that may also declare a repeat period.
+                // A tag with no `every:` stays a plain task tag (e.g. #followup).
                 for (const line of recurringTags) {
                      if (line.tags && line.tags.length > 0) {
                         const tag = line.tags[0];
                         addTaskTag(tag);
                         const config = await this.resolveConfigForLine(tag, line);
                         this.applyStatusCycle(tag, config);
+
+                        const hasConfigChild = (line.children ?? []).some((child: any) => {
+                            const text = normalizeConfigVal(child?.text ?? '', false);
+                            return typeof text === 'string' && text.startsWith('config:');
+                        });
+                        if (hasConfigChild && !Object.keys(config).length) {
+                            console.warn(`[ConfigLoader] Recurring tag "${tag}" resolved with empty config — Dataview children may not be indexed yet`);
+                            this.lastLoadIncomplete = true;
+                        }
+
+                        const recurrence = buildRecurrenceConfig(config);
+                        if (recurrence) {
+                            const normalized = this.plugin.normalizeTag(tag) ?? tag;
+                            this.plugin.settings.recurringTags[normalized] = recurrence;
+                            console.log(`[ConfigLoader] Recurring tag "${normalized}" repeats every ${recurrence.count} ${recurrence.unit}(s)`);
+                        } else if (config.every ?? config.period) {
+                            console.warn(`[ConfigLoader] Recurring tag "${tag}" has an unparseable every/period value:`, config.every ?? config.period);
+                        }
                     }
                 }
 

@@ -17,6 +17,8 @@ import { advanceStatus, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./stat
 import { isDSLConnector } from './connectorFactory';
 import DSLConnector from './connectors/dslConnector';
 import { DelegateManager } from './delegateManager';
+import { RecurrenceManager } from './recurrenceManager';
+import type { RecurrenceConfig } from './recurrence';
 
 type ResolvedTaskSearchContext = {
         path: string;
@@ -175,6 +177,8 @@ interface ObsidianPlusSettings {
         tagDescriptions: { [key: string]: string };
         subscribe: Record<string,{ connector:TagConnector; interval:number }>;
         statusCycles: Record<string, TaskStatusChar[]>;
+        /** recurring tags (### Recurring Task Tags) that declare a repeat period */
+        recurringTags: Record<string, RecurrenceConfig>;
 
         /** tags representing projects (root bullets) */
         projects: string[];
@@ -203,6 +207,7 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
         tagDescriptions: {},
         subscribe: {},
         statusCycles: {},
+        recurringTags: {},
 
         projects: [],
         projectTags: [],
@@ -245,6 +250,7 @@ export default class ObsidianPlus extends Plugin {
         public serverManager: ServerManager;
         public pollingManager: PollingManager;
         public delegateManager: DelegateManager;
+        public recurrenceManager: RecurrenceManager;
         public flaggedLines: number[] = [];
         private _processingCheckbox = new Set<string>();
         private tagColorCache: Map<string, { light?: string | null; dark?: string | null }> = new Map();
@@ -292,11 +298,14 @@ export default class ObsidianPlus extends Plugin {
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
 		this.registerMarkdownPostProcessor((el) => this.addIconsWithin(el));
 		this.registerEvent(
-				this.app.workspace.on('file-open', () => {
+				this.app.workspace.on('file-open', (file) => {
 						const view = this.app.workspace.getActiveViewOfType(MarkdownView);
 						if (view) {
 								this.addIconsWithin(view.containerEl);
 						}
+						// Generating repeating-task instances is keyed off opening a daily
+						// note, so a period only produces a bullet on a day you show up.
+						this.recurrenceManager?.scheduleSweep(file);
 				})
 		);
 		const initialView = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -2008,6 +2017,7 @@ export default class ObsidianPlus extends Plugin {
 	onunload() {
 		console.log('Unloading Obsidian Plus');
 		this.delegateManager?.stop();
+		this.recurrenceManager?.stop();
 		// Optional: Explicitly remove header from the last active view
 		const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
 		if (activeView) {
@@ -2043,7 +2053,8 @@ export default class ObsidianPlus extends Plugin {
                 this.settings.statusCycles = {};
                 this.settings.projects = [];
                 this.settings.projectTags = [];
- 
+                this.settings.recurringTags = {};
+
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
                 const activeFile = this.app.workspace.getActiveFile();
@@ -2122,6 +2133,8 @@ export default class ObsidianPlus extends Plugin {
                                 if (this.configLoader.lastLoadIncomplete) {
                                         new Notice("Obsidian Plus: some tag configs failed to load. Edit the tag config file or reload the plugin to retry.");
                                 }
+                                // Recurring tag configs only exist after a successful load.
+                                void this.recurrenceManager?.sweep(this.app.workspace.getActiveFile());
                         }, 1500);
                 }
 
@@ -2146,6 +2159,13 @@ export default class ObsidianPlus extends Plugin {
                         this.delegateManager = new DelegateManager(this);
                 }
                 this.delegateManager.start();
+
+                // Repeating tasks: sweep once at startup for the note already on screen,
+                // then on every daily-note open via the file-open handler.
+                if (!this.recurrenceManager) {
+                        this.recurrenceManager = new RecurrenceManager(this);
+                }
+                void this.recurrenceManager.sweep(this.app.workspace.getActiveFile());
 
                 if (!this._suggester) {
                         this._suggester = new TaskTagTrigger(this.app, this);
@@ -2178,6 +2198,7 @@ export default class ObsidianPlus extends Plugin {
 		delete sanitizedSettings.projects;
 		delete sanitizedSettings.projectTags;
 		delete sanitizedSettings.statusCycles;
+		delete sanitizedSettings.recurringTags;
 
 		try {
 			JSON.stringify(sanitizedSettings);

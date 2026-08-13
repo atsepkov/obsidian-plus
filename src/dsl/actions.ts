@@ -268,6 +268,25 @@ export type ActionHandler<T extends ActionNode = ActionNode> = (
     executeAction: (action: ActionNode, ctx: DSLContext) => Promise<DSLContext>
 ) => Promise<DSLContext>;
 
+/**
+ * Removes trailing task metadata tokens (e.g. completion/due dates like "✅ 2025-12-21").
+ * Keeps downstream consumers focused on the user-provided text instead of auto-appended
+ * status fields. Shared by DSL pattern matching and the recurrence manager.
+ */
+export function stripTaskMetadata(content: string): string {
+    // The `u` flag is required: 📅🔁🛫🛬🚩 are astral code points, and without it the
+    // character class holds their surrogate halves, so a match leaves mojibake behind
+    // (e.g. "review PRs 📅 2026-08-10" became "review PRs \ud83d").
+    const metadataPattern = /\s*(?:[✅⏳📅🔁🛫🛬🚩]\s+[^\s]+(?:\s+[^\s]+)*)$/u;
+    let result = content.trimEnd();
+
+    while (metadataPattern.test(result)) {
+        result = result.replace(metadataPattern, '').trimEnd();
+    }
+
+    return result;
+}
+
 function stripMarkdownListPrefix(line: string): { indent: string; bullet: '-' | null; content: string } {
     const indentMatch = line.match(/^(\s*)/);
     const indent = indentMatch?.[1] ?? '';
@@ -558,19 +577,6 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             text = context.line || '';
     }
     
-    const stripTaskMetadata = (content: string): string => {
-        // Remove trailing task metadata tokens (e.g., completion/due dates like "✅ 2025-12-21").
-        // This keeps pattern matching focused on the user-provided text rather than auto-appended status fields.
-        const metadataPattern = /\s*(?:[✅⏳📅🔁🛫🛬🚩]\s+[^\s]+(?:\s+[^\s]+)*)$/;
-        let result = content.trimEnd();
-
-        while (metadataPattern.test(result)) {
-            result = result.replace(metadataPattern, '').trimEnd();
-        }
-
-        return result;
-    };
-
     // Extract variables from text using pattern (skip for images - they're binary)
     if (action.pattern && source !== 'image') {
         // IMPORTANT: Do NOT interpolate patterns used for extraction.

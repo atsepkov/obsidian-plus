@@ -13,6 +13,7 @@ import {
   type ThoughtOriginSection
 } from "./treeOfThought";
 import { ExpandMode, TaskStatusChar, isActiveStatus, normalizeStatusChar, parseExpandFilter, parseStatusFilter, resolveExpandAlias, resolveStatusAlias } from "./statusFilters";
+import { buildStitchLink, ensureBlockIdAt } from "./blockRef";
   
 export interface TaskEntry {
   file:   TFile;
@@ -168,15 +169,10 @@ function escapeCssIdentifier(value: string): string {
             return entry.id ?? "";
         }
 
-        const existing = lines[lineIndex].match(/\^(\w+)\b/);
-        if (existing) {
-            entry.id = existing[1];
-            return entry.id;
+        const id = await ensureBlockIdAt(app, file, lineIndex);
+        if (!id) {
+            return entry.id ?? "";
         }
-
-        const id = Math.random().toString(36).slice(2, 7);
-        lines[lineIndex] = `${lines[lineIndex]} ^${id}`;
-        await app.vault.modify(file, lines.join("\n"));
 
         entry.id = id;
         return id;
@@ -1679,7 +1675,7 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const id = await ensureBlockId(this.app, task);
-        const link = `[[${this.app.metadataCache.fileToLinktext(file)}#^${id}|⇠]]`;
+        const link = buildStitchLink(this.app, file, id);
 
         const view = this.app.workspace.getActiveViewOfType(MarkdownView);
         if (!view) {
