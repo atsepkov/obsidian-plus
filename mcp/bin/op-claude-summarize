@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+set -e
+
+# op-claude-summarize: Wired to PreCompact + SessionEnd hooks to append periodic summaries
+# to the session folder-note. Designed to be fire-and-forget on SessionEnd (backgrounded).
+
+# Guard against recursive invocation if the summarizer itself spawns a Claude session
+[[ -n "$OP_SUMMARIZING" ]] && exit 0
+export OP_SUMMARIZING=1
+
+# Read hook event from stdin
+EVENT=$(cat)
+SESSION_ID=$(jq -r '.session_id' <<<"$EVENT")
+TRANSCRIPT_PATH=$(jq -r '.transcript_path' <<<"$EVENT")
+HOOK_TYPE=$(jq -r '.hook_event_name' <<<"$EVENT" | tr '[:upper:]' '[:lower:]')
+
+# Find the session folder by grepping Sessions/*/*.md for the UUID
+VAULT="${VAULT:-$HOME/work/vault/notebook}"
+FOLDER_NOTE=$(grep -l "resume: \`claude --resume $SESSION_ID\`" "$VAULT/Sessions"/*/*.md 2>/dev/null | head -1)
+
+# If no folder-note found, this session wasn't spawned by obsidian-plus; silently exit
+[[ -z "$FOLDER_NOTE" ]] && exit 0
+
+SESSION_DIR=$(dirname "$FOLDER_NOTE")
+TIMESTAMP=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+
+# Extract conversation from transcript (user + assistant turns only)
+CONVERSATION=$(jq -r '
+    select(.type == "user" or .type == "assistant")
+    | (.message.content) as $c
+    | ( if ($c|type)=="string" then $c
+        else ([$c[]? | select(.type=="text") | .text] | join("\n")) end ) as $t
+    | select($t != null and ($t|length) > 0)
+    | "\(.type|ascii_upcase): \($t)"
+  ' "$TRANSCRIPT_PATH" 2>/dev/null | tail -c 200000)
+
+# If transcript is empty or unavailable, skip
+[[ -z "$CONVERSATION" ]] && exit 0
+
+# Generate + append DETACHED, so a SessionEnd teardown can't kill the (multi-second) model
+# call mid-flight. `trap '' HUP` keeps the child alive when the parent session exits
+# (macOS has no setsid); a fast Haiku model + timeout keep it cheap and bounded.
+( trap '' HUP
+  # stdin = conversation (no file/tool perms needed); prompt = instruction.
+  SUMMARY=$(printf '%s' "$CONVERSATION" \
+    | timeout 150 claude -p --model "${OP_SUMMARY_MODEL:-claude-haiku-4-5-20251001}" \
+        "Summarize this Claude Code session in 4-8 bullets. Be concrete — name files, PRs, decisions, changes. Use '+' as the bullet marker. Output only the bullet list, no preamble." 2>/dev/null || echo "")
+  [[ -z "$SUMMARY" ]] && exit 0
+
+  # Append to folder-note under ## Log, with trigger label and timestamp.
+  {
+    echo
+    echo "+ **$HOOK_TYPE** @ $TIMESTAMP"
+    echo "$SUMMARY" | sed 's/^/  /'   # indent summary bullets under the entry
+  } >> "$FOLDER_NOTE"
+) >/dev/null 2>&1 </dev/null &
+disown 2>/dev/null || true
+
+exit 0

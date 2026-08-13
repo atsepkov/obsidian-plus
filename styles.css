@@ -47,7 +47,20 @@ Obsidian Plus Theme
     color: rgb(105, 151, 236);
 }
 
+/* Subject text before a colon in a bullet.
+ * Theme-aware default: a darker green on light backgrounds (readable on white),
+ * the lighter lime on dark backgrounds. Override either with the
+ * --op-colon-subject-color CSS variable (e.g. in a snippet or settings). */
 .cm-line .op-bullet-colon-subject {
+    color: var(--op-colon-subject-color, #a3e635);
+}
+
+.theme-light .cm-line .op-bullet-colon-subject {
+    /* color: var(--op-colon-subject-color, #4d7c0f); */
+    color: var(--op-colon-subject-color, #5dac0f);
+}
+
+.theme-dark .cm-line .op-bullet-colon-subject {
     color: var(--op-colon-subject-color, #a3e635);
 }
 
@@ -484,4 +497,71 @@ input[data-task="-"] {
 .tree-of-thought__empty {
     color: var(--text-muted);
     font-style: italic;
+}
+
+/* Inferred subject prefix (muted chip) in summary boards — see subjectInference.ts */
+.op-inferred-subject {
+    color: var(--text-muted);
+    font-size: 0.85em;
+    font-weight: 500;
+    padding: 0 0.4em;
+    margin-right: 0.35em;
+    border-radius: 4px;
+    background: var(--background-modifier-hover);
+    white-space: nowrap;
+    opacity: 0.9;
+}
+
+.op-inferred-subject[data-style="breadcrumb"] {
+    font-style: italic;
+}
+
+.op-inferred-subject[data-style="project"] {
+    color: var(--op-colon-subject-color, #5dac0f);
+}
+
+/* Dynamic board widget (Live Preview + Reading view) — see boardView.ts.
+ * No decorative box: render should match the getSummary list, just indented. */
+.op-board {
+    position: relative;
+    margin: 0.1em 0 0.1em 1.5em; /* indent like a nested list */
+}
+
+/* Tighten markdown-rendered list items to match the getSummary view. */
+.op-board-content ul {
+    margin: 0;
+    padding-inline-start: 1.4em;
+}
+.op-board-content li {
+    line-height: 1.6;
+}
+.op-board-content li > p,
+.op-board-content li p {
+    margin: 0;
+    display: inline;
+}
+
+/* Code-edit button: appears on hover in the top-right corner. */
+.op-board-edit {
+    position: absolute;
+    top: 0;
+    right: 0;
+    z-index: 2;
+    opacity: 0;
+    transition: opacity 0.15s;
+    padding: 1px 6px;
+    font-family: var(--font-monospace);
+    font-size: 0.72em;
+    line-height: 1.4;
+    cursor: pointer;
+    color: var(--text-muted);
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+}
+.op-board:hover .op-board-edit {
+    opacity: 1;
+}
+.op-board-edit:hover {
+    color: var(--text-normal);
 }

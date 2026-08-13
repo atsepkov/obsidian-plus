@@ -42,11 +42,22 @@ export class TaskOutlineView extends ItemView {
             return;
         }
         const items: any[] = await this.plugin.tagQuery.query(dv, tag, { onlyReturn: true }) as any[];
+        // Subject inference is ON by default in the outline view, where context matters most.
+        if (items) {
+            await this.plugin.tagQuery.attachInferredSubjects(items, { inferSubject: true });
+        }
         container.createEl('h3', { text: `Tasks for ${tag}` });
         const ul = container.createEl('ul');
         if (items) {
             for (const item of items) {
-                ul.createEl('li', { text: item.text });
+                const li = ul.createEl('li');
+                const subject = item.__subject?.subject;
+                if (subject) {
+                    li.createEl('span', { text: subject, cls: 'op-inferred-subject', attr: { 'data-style': item.__subject.style } });
+                    li.appendText(' ' + item.text);
+                } else {
+                    li.setText(item.text);
+                }
             }
         }
     }

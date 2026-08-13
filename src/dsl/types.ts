@@ -195,8 +195,8 @@ export interface ReadActionNode extends BaseActionNode {
     type: 'read';
     /** Pattern to match against (e.g., `#podcast {{url}}`) */
     pattern: string;
-    /** Source to read from: 'line', 'file', 'selection', 'children', 'wikilink', 'image' */
-    source?: 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image';
+    /** Source to read from: 'line', 'file', 'selection', 'children', 'wikilink', 'image', 'context' */
+    source?: 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image' | 'context';
     /**
      * Optional file reference (wikilink or path-like string) used when source = 'wikilink' or 'image'.
      * Examples: `[[My Post]]`, `[[My Post|alias]]`, `My Post`, `![[image.png]]`, `https://example.com/image.png`

@@ -573,10 +573,103 @@ export const readAction: ActionHandler<ReadActionNode> = async (action, context)
             }
             break;
         }
+        case 'context': {
+            // Rich context assembler for handing a bullet to an external agent (e.g. #claude).
+            // Produces: the bullet's own outline subtree (verbatim indentation) + inlined
+            // previews of every internal [[note]] link + absolute file paths for every ![[image]]
+            // embed. External http(s) URLs are intentionally left as-is (the agent fetches them).
+            if (!context.task || !context.file) {
+                throw new Error('read source=context requires a task + file context');
+            }
+
+            const fileText = await context.app.vault.read(context.file);
+            const allLines = fileText.split('\n');
+            const taskLine = (context.task as any)?.position?.start?.line ?? (context.task as any)?.line ?? 0;
+            const indentOf = (s: string) => (s.match(/^[\t ]*/)?.[0].length ?? 0);
+            const baseIndent = indentOf(allLines[taskLine] ?? '');
+
+            // Slice the subtree: the task line plus every following line indented deeper than it.
+            const subtree: string[] = [];
+            if (allLines[taskLine] !== undefined) subtree.push(allLines[taskLine]);
+            for (let i = taskLine + 1; i < allLines.length; i++) {
+                const l = allLines[i];
+                if (l.trim() === '') { subtree.push(l); continue; } // keep internal blank lines
+                if (indentOf(l) <= baseIndent) break;
+                subtree.push(l);
+            }
+            // Trim trailing blank lines from the slice.
+            while (subtree.length && subtree[subtree.length - 1].trim() === '') subtree.pop();
+
+            const outline = subtree.join('\n');
+
+            const imageExts = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp']);
+            const images: string[] = [];
+            const notePreviews: string[] = [];
+            const seen = new Set<string>();
+            let basePath = '';
+            try { basePath = getVaultBasePath(context); } catch { basePath = ''; }
+
+            const wikiRe = /(!?)\[\[([^\]]+)\]\]/g;
+            let m: RegExpExecArray | null;
+            while ((m = wikiRe.exec(outline)) !== null) {
+                const isEmbed = m[1] === '!';
+                const target = (m[2] || '').split('|')[0].split('#')[0].trim();
+                if (!target || seen.has(m[0])) continue;
+                seen.add(m[0]);
+                let file: TFile | null = null;
+                try {
+                    file = context.app.metadataCache.getFirstLinkpathDest(target, context.file.path);
+                } catch { file = null; }
+                if (!file) continue;
+                const ext = (file.extension || '').toLowerCase();
+                if (isEmbed && imageExts.has(ext)) {
+                    images.push(basePath ? `${basePath}/${file.path}` : file.path);
+                } else if (ext === 'md') {
+                    // Inline the linked note's body (capped) so the agent has it without a round-trip.
+                    try {
+                        const body = (await context.app.vault.read(file)).trim();
+                        const capped = body.length > 6000 ? body.slice(0, 6000) + '\n… (truncated)' : body;
+                        notePreviews.push(`<< NOTE: ${target} >>\n${capped}`);
+                    } catch { /* unreadable; skip */ }
+                }
+            }
+
+            let assembled = outline;
+            if (notePreviews.length) {
+                assembled += '\n\n--- Linked notes ---\n\n' + notePreviews.join('\n\n');
+            }
+
+            // Collect ancestor tags (walk up by decreasing indentation). Lets the spawn side
+            // resolve a project/working-dir from a #tag on a parent bullet, not just this line.
+            const parentTags: string[] = [];
+            {
+                let childIndent = baseIndent;
+                for (let i = taskLine - 1; i >= 0; i--) {
+                    const l = allLines[i];
+                    if (l.trim() === '') continue;
+                    const ind = indentOf(l);
+                    if (ind >= childIndent) continue; // not an ancestor of the task line
+                    childIndent = ind;
+                    const tagm = l.match(/#[A-Za-z0-9_/-]+/g);
+                    if (tagm) parentTags.push(...tagm);
+                    if (ind === 0) break;
+                }
+            }
+
+            context.vars.text = assembled;
+            context.vars.images = images;
+            context.vars.parentTags = parentTags.join(' ');
+            context.vars.childrenLines = subtree;
+            // Expose the resolved 0-indexed line of the bullet. {{task.line}} is unreliable in the
+            // status-change flow (often null), so downstream (handoff → spawn) should use {{taskLine}}.
+            context.vars.taskLine = taskLine;
+            if (action.as) context.vars[action.as] = assembled;
+            return context;
+        }
         default:
             text = context.line || '';
     }
-    
+
     // Extract variables from text using pattern (skip for images - they're binary)
     if (action.pattern && source !== 'image') {
         // IMPORTANT: Do NOT interpolate patterns used for extraction.

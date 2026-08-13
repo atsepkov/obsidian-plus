@@ -413,7 +413,7 @@ function parseReadAction(
     return {
         type: 'read',
         pattern: cleanTemplate(pattern),
-        source: options.source as 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image' | undefined,
+        source: options.source as 'line' | 'file' | 'selection' | 'children' | 'wikilink' | 'image' | 'context' | undefined,
         from: inlineKV.from ? cleanTemplate(inlineKV.from) : (options.from ? cleanTemplate(options.from) : undefined),
         as: inlineKV.as ? cleanTemplate(inlineKV.as) : (options.as ? cleanTemplate(options.as) : undefined),
         asFile: options.asFile ? cleanTemplate(options.asFile) : undefined,

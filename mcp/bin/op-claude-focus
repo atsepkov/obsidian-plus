@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+#
+# op-claude-focus <id> [<session-uuid> <dir> <desc>]   (e.g. c1337)
+#
+# <id> is the short handle (c<HHMM>); the tmux window is named "<id>: <desc>". Lookup matches
+# the id part (before ": "). On resume, <desc> is used to re-name the fresh window.
+#
+# Invoked by op-claude-spawn (auto-raise) and by the obsidian://op-claude-focus link handler.
+# Selects + zooms the session's tmux window and raises the ONE terminal attached to the session
+# (opening one only if none is attached yet) — it never spawns a terminal per task.
+#
+# If the window is no longer live (e.g. after a reboot, or the session exited and its window
+# closed) and a session uuid + dir are provided, it RESUMES the transcript
+# (`claude --resume <uuid>`) in a fresh window — so a dead session's ▶ open link reopens the
+# conversation instead of failing.
+#
+# Terminal is auto-detected so the same vault config works across machines (Ghostty on work,
+# Alacritty on home): OP_TERMINAL wins if set, else the first candidate that's running, else
+# the first that's installed.
+#
+# Env:
+#   OP_TMUX_SESSION  tmux session hosting the windows (default: obsidian-plus)
+#   OP_TERMINAL      force a specific macOS terminal app (e.g. Ghostty, Alacritty)
+#
+set -euo pipefail
+
+# Obsidian's shell action runs with a minimal launchd PATH; prepend the usual bin dirs
+# so tmux/open/pgrep resolve regardless of how Obsidian was launched.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+TMUX_SESSION="${OP_TMUX_SESSION:-obsidian-plus}"
+WINDOW="${1:-}"   # short handle, e.g. c1337
+UUID="${2:-}"     # optional: session id to resume with, if the window is dead
+DIR="${3:-}"      # optional: working dir to resume in
+DESC="${4:-}"     # optional: 2-4 word description used to name the window on resume
+CLAUDE_BIN="${OP_CLAUDE_BIN:-claude}"
+[ -n "$WINDOW" ] || { echo "usage: op-claude-focus <id> [<session-uuid> <dir> <desc>]"; exit 1; }
+
+# Candidate terminals, in preference order.
+TERM_CANDIDATES=(Ghostty Alacritty WezTerm kitty iTerm Terminal)
+
+detect_terminal() {
+  [ -n "${OP_TERMINAL:-}" ] && { printf '%s' "$OP_TERMINAL"; return; }
+  local app
+  for app in "${TERM_CANDIDATES[@]}"; do          # prefer one that's actually running
+    pgrep -i "$app" >/dev/null 2>&1 && { printf '%s' "$app"; return; }
+  done
+  for app in "${TERM_CANDIDATES[@]}"; do          # else the first installed
+    { [ -d "/Applications/$app.app" ] || [ -d "$HOME/Applications/$app.app" ]; } && { printf '%s' "$app"; return; }
+  done
+  printf 'Terminal'
+}
+TERMINAL="$(detect_terminal)"
+
+command -v tmux >/dev/null || { echo "op-claude-focus: tmux not found"; exit 1; }
+
+# The window is named "<id>: <desc>"; resolve its index by matching the id part (before ": ").
+win_idx() {
+  tmux list-windows -t "$TMUX_SESSION" -F '#{window_index}	#{window_name}' 2>/dev/null \
+    | awk -F'\t' -v id="$1" '{ n=$2; sub(/: .*/, "", n); if (n==id) { print $1; exit } }'
+}
+
+# Ensure the target window exists. If the session/window is gone (reboot, or the session exited
+# and its window closed), resume the transcript into a fresh window when we have the uuid + dir.
+tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n scratch
+IDX="$(win_idx "$WINDOW")"
+# The window may have just been created (spawn auto-raise) and not be visible for a beat — retry
+# briefly before concluding it's dead, so we never resume a window that actually exists.
+if [ -z "$IDX" ]; then
+  for _ in 1 2 3; do sleep 0.3; IDX="$(win_idx "$WINDOW")"; [ -n "$IDX" ] && break; done
+fi
+{ printf '%s focus id=%s resume-info=%s -> idx=%s\n' "$(date +%T)" "$WINDOW" \
+    "$([ -n "$UUID" ] && [ -n "$DIR" ] && echo yes || echo no)" "${IDX:-MISS}"; } \
+  >> "$HOME/.cache/op-claude/focus.log" 2>/dev/null || true
+if [ -z "$IDX" ]; then
+  if [ -n "$UUID" ] && [ -n "$DIR" ] && [ -d "$DIR" ]; then
+    if [ -n "$DESC" ]; then WNAME="$WINDOW: $DESC"; else WNAME="$WINDOW"; fi
+    tmux new-window -t "$TMUX_SESSION" -n "$WNAME" -c "$DIR" "$CLAUDE_BIN --resume '$UUID'; exec \$SHELL"
+    IDX="$(win_idx "$WINDOW")"
+  else
+    echo "op-claude-focus: window '$WINDOW' not live and no resume info (uuid/dir)"; exit 1
+  fi
+fi
+[ -n "$IDX" ] || { echo "op-claude-focus: could not resolve window for '$WINDOW'"; exit 1; }
+
+# Switch the session's active window to the target; the attached terminal follows it. Zoom the pane.
+tmux select-window -t "$TMUX_SESSION:$IDX"
+tmux resize-pane -Z -t "$TMUX_SESSION:$IDX" 2>/dev/null || true
+
+# ONE terminal hosts all obsidian-plus windows. If a client is already attached, just raise that
+# existing terminal — never open another. Only when nothing is attached do we open exactly one.
+if tmux list-clients -t "$TMUX_SESSION" 2>/dev/null | grep -q .; then
+  # `activate` raises the running app without spawning a window (unlike `open -a` / `open -na`).
+  osascript -e "tell application \"$TERMINAL\" to activate" 2>/dev/null || true
+else
+  # Nothing attached yet — open exactly one terminal window attached to the session. All later
+  # focuses take the branch above and reuse it.
+  open -na "$TERMINAL" --args -e tmux attach -t "$TMUX_SESSION" 2>/dev/null || true
+fi
+
+echo "focused $TMUX_SESSION:$WINDOW"

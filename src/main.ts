@@ -1,5 +1,6 @@
 import {
         App, Editor, EditorPosition, MarkdownView, MarkdownRenderer, MarkdownPostProcessorContext,
+        MarkdownRenderChild,
         Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
 } from 'obsidian';
 import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
@@ -13,10 +14,12 @@ import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyF
 import { PollingManager } from './pollingManager';
 import { ServerManager, type ServerCredentials } from './serverManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
-import { advanceStatus, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
+import { advanceStatus, normalizeStatusChar, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
 import { isDSLConnector } from './connectorFactory';
 import DSLConnector from './connectors/dslConnector';
 import { DelegateManager } from './delegateManager';
+import { buildBoardSpec } from './summaryBlock';
+import { boardStateField } from './boardView';
 import { RecurrenceManager } from './recurrenceManager';
 import type { RecurrenceConfig } from './recurrence';
 
@@ -177,13 +180,15 @@ interface ObsidianPlusSettings {
         tagDescriptions: { [key: string]: string };
         subscribe: Record<string,{ connector:TagConnector; interval:number }>;
         statusCycles: Record<string, TaskStatusChar[]>;
-        /** recurring tags (### Recurring Task Tags) that declare a repeat period */
-        recurringTags: Record<string, RecurrenceConfig>;
 
         /** tags representing projects (root bullets) */
         projects: string[];
         /** tags that should be scoped to a project */
         projectTags: string[];
+        /** board tags (### Boards) -> default option lines (summary-block grammar) */
+        boardTags: Record<string, string[]>;
+        /** recurring tags (### Recurring Task Tags) that declare a repeat period */
+        recurringTags: Record<string, RecurrenceConfig>;
 
         aiConnector: string;
         summarizeWithAi: boolean;
@@ -207,10 +212,11 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
         tagDescriptions: {},
         subscribe: {},
         statusCycles: {},
-        recurringTags: {},
 
         projects: [],
         projectTags: [],
+        boardTags: {},
+        recurringTags: {},
 
         aiConnector: null,
         summarizeWithAi: false,
@@ -297,6 +303,44 @@ export default class ObsidianPlus extends Plugin {
 		// render outline icon next to block IDs in both editor and preview
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
 		this.registerMarkdownPostProcessor((el) => this.addIconsWithin(el));
+
+		// Dynamic boards: render board bullets (### Boards tags) in Reading view.
+		this.registerMarkdownPostProcessor((el, ctx) => this.renderBoardsInReadingView(el, ctx));
+
+		// Click-to-focus for spawned claude sessions: the #claude bullet carries a
+		// [▶ open](obsidian://op-claude-focus?w=c<id>&s=<uuid>&d=<dir>&t=<desc>) link. Clicking it
+		// raises the terminal + selects that tmux window; if the window is dead it resumes the
+		// transcript (s=uuid, d=dir, t=desc) in a fresh window. Runs via .bin/op-claude-focus. Desktop only.
+		this.registerObsidianProtocolHandler('op-claude-focus', (params) => {
+			if (Platform.isMobileApp) return;
+			const w = String(params?.w ?? '').trim();
+			const s = String(params?.s ?? '').trim();
+			const d = String(params?.d ?? '').trim();
+			const t = String(params?.t ?? '').trim();
+			// Accept the new short handle (c<digits>) and the legacy claude-<digits> from older bullets.
+			if (!/^(c[0-9]+|claude-[0-9]+)$/.test(w)) {
+				new Notice(`op-claude: invalid session id`);
+				return;
+			}
+			// Pass uuid/dir/desc only if well-formed, so a hand-edited link can't inject args.
+			const args = [w];
+			if (/^[0-9a-fA-F-]{16,}$/.test(s) && d.startsWith('/') && !d.includes('\n')) {
+				const desc = t.replace(/[^\w \-.,]/g, '').slice(0, 40);
+				args.push(s, d, desc);
+			}
+			try {
+				const { execFile } = require('child_process');
+				const adapter = this.app.vault.adapter as any;
+				const base = typeof adapter?.getBasePath === 'function' ? adapter.getBasePath() : adapter?.basePath;
+				const home = process.env.HOME ?? '';
+				const env = { ...process.env, PATH: `${home}/.local/bin:/opt/homebrew/bin:/usr/local/bin:${process.env.PATH ?? ''}` };
+				execFile('.bin/op-claude-focus', args, { cwd: base, env }, (err: any) => {
+					if (err) new Notice(`op-claude focus failed: ${err.message}`);
+				});
+			} catch (e: any) {
+				new Notice(`op-claude: ${e?.message ?? String(e)}`);
+			}
+		});
 		this.registerEvent(
 				this.app.workspace.on('file-open', (file) => {
 						const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -877,6 +921,8 @@ export default class ObsidianPlus extends Plugin {
 		this.flaggedLines = [];
 		const extension = this.highlightFlaggedLinesExtension(() => this.flaggedLines);
 		this.registerEditorExtension(extension);
+		// Live Preview rendering for board bullets (### Boards tags).
+		this.registerEditorExtension(boardStateField(this));
 
 		// re-check flagged lines whenever a file is opened:
 		this.registerEvent(
@@ -2513,6 +2559,70 @@ export default class ObsidianPlus extends Plugin {
 
         getNextStatus(current: string | null | undefined, tag?: string | null): TaskStatusChar {
                 return advanceStatus(current, this.getStatusCycle(tag));
+        }
+
+        /**
+         * Sync any summary-board checkboxes that point at a given file line to a
+         * new status. Used to propagate note edits back to rendered task lists
+         * (and to keep duplicate renderings of the same task consistent).
+         */
+        refreshRenderedCheckboxes(path: string, line: number, status: string): void {
+                const normalized = normalizeStatusChar(status);
+                document.querySelectorAll<HTMLInputElement>('.op-toggle-task').forEach((cb) => {
+                        if (cb.dataset.path === path && cb.dataset.line === String(line)) {
+                                this.applyStatusToCheckbox(cb, normalized);
+                        }
+                });
+        }
+
+        /**
+         * Reading-view rendering for board bullets. Finds list items whose leading
+         * tag is a configured board tag, reads the option child bullets, and replaces
+         * the item with the rendered dynamic list.
+         */
+        async renderBoardsInReadingView(el: HTMLElement, ctx: MarkdownPostProcessorContext): Promise<void> {
+                const boardTags = this.settings.boardTags ?? {};
+                if (!Object.keys(boardTags).length) return;
+                const dvPlugin = (this.app.plugins.plugins as any)["dataview"];
+                if (!dvPlugin || typeof dvPlugin.localApi !== "function" || !this.tagQuery) return;
+
+                const items = Array.from(el.querySelectorAll("li")) as HTMLElement[];
+                for (const li of items) {
+                        if (!li.isConnected || (li as any).dataset?.opBoard) continue;
+                        const anchor = li.querySelector("a.tag") as HTMLAnchorElement | null;
+                        if (!anchor) continue;
+                        const tag = this.normalizeTag(anchor.getAttribute("href") || anchor.textContent || "");
+                        if (!tag || !(tag in boardTags)) continue;
+                        // The board tag must lead the bullet text (skip option bullets like "tag: #ask").
+                        const tagLabel = (anchor.textContent || "").trim();
+                        if (!(li.textContent || "").trimStart().startsWith(tagLabel)) continue;
+
+                        // Option child bullets from the nested list.
+                        const childLines: string[] = [];
+                        const sub = li.querySelector(":scope > ul, :scope > ol") as HTMLElement | null;
+                        sub?.querySelectorAll(":scope > li").forEach((c) => {
+                                const t = (c.textContent || "").trim();
+                                if (t) childLines.push(t);
+                        });
+
+                        // Inline remainder = li text minus the tag and the nested list.
+                        const clone = li.cloneNode(true) as HTMLElement;
+                        clone.querySelectorAll(":scope > ul, :scope > ol").forEach((n) => n.remove());
+                        const inline = (clone.textContent || "").replace(tagLabel, "").trim();
+
+                        const spec = buildBoardSpec({ defaults: boardTags[tag], inline, childLines });
+                        (li as any).dataset.opBoard = "1";
+                        li.empty();
+                        const container = li.createDiv({ cls: "op-board block-language-dataviewjs op-board-content" });
+                        const child = new MarkdownRenderChild(li);
+                        ctx.addChild(child);
+                        try {
+                                const dv = dvPlugin.localApi(ctx.sourcePath, child, container);
+                                await this.tagQuery.renderQuery(dv, spec.identifier, spec.options);
+                        } catch (e: any) {
+                                container.setText(`obsidian-plus: ${e?.message ?? String(e)}`);
+                        }
+                }
         }
 
         applyStatusToCheckbox(element: HTMLInputElement, status: TaskStatusChar): void {

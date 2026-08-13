@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+#
+# op-claude-prune — delete per-session artifact dirs under <vault>/Sessions/ older than
+# a retention window. Companion to op-claude-spawn (which creates them). Not auto-wired;
+# run it by hand or from cron so deletion stays deliberate.
+#
+#   op-claude-prune            # prune dirs older than 30d
+#   op-claude-prune --dry-run  # show what WOULD be removed, delete nothing
+#
+# Env:
+#   OP_VAULT                    vault root (default: ~/work/vault/notebook)
+#   OP_SESSION_RETENTION_DAYS   age threshold in days (default: 30)
+#
+set -euo pipefail
+
+VAULT="${OP_VAULT:-$HOME/work/vault/notebook}"
+DAYS="${OP_SESSION_RETENTION_DAYS:-30}"
+SESSIONS="$VAULT/Sessions"
+DRY_RUN=0
+[ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+
+# Safety: only ever operate inside a directory literally named Sessions.
+case "$SESSIONS" in */Sessions) : ;; *) echo "op-claude-prune: refusing, path not */Sessions: $SESSIONS"; exit 1 ;; esac
+[ -d "$SESSIONS" ] || { echo "op-claude-prune: nothing to do ($SESSIONS absent)"; exit 0; }
+
+n=0
+while IFS= read -r -d '' dir; do
+  n=$((n+1))
+  if [ "$DRY_RUN" -eq 1 ]; then
+    echo "would remove: $dir"
+  else
+    echo "removing: $dir"
+    rm -rf -- "$dir"
+  fi
+done < <(find "$SESSIONS" -mindepth 1 -maxdepth 1 -type d -mtime +"$DAYS" -print0)
+
+echo "op-claude-prune: $n session dir(s) older than ${DAYS}d$([ "$DRY_RUN" -eq 1 ] && echo ' (dry-run)')."

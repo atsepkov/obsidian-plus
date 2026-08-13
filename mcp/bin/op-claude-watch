@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+#
+# op-claude-watch <session-uuid> <note-abs-path> <marker>
+#
+# Detached watcher launched by op-claude-spawn. Waits for the claude session — identified by
+# its unique --session-id uuid — to terminate, then flips the originating bullet's checkbox
+# from [/] (or any active state) to [x] in the note. Uses process presence (pgrep -f <uuid>),
+# so it catches Ctrl-C, kill, and window-close too — unlike Claude's best-effort SessionEnd.
+#
+set -uo pipefail
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+
+UUID="${1:-}"; NOTE="${2:-}"; MARK="${3:-}"
+[ -n "$UUID" ] && [ -n "$NOTE" ] && [ -n "$MARK" ] || exit 0
+
+# Match the claude process specifically by its `--session-id <uuid>` argument. Matching the
+# bare uuid would also match THIS watcher (its own argv contains the uuid) → never-ending loop.
+PAT="session-id $UUID"
+# Wait (up to ~2 min) for the session process to appear, then poll until it exits. If it never
+# appears (failed/instant exit), the while loop is immediately false and we still flip below.
+for _ in $(seq 1 24); do pgrep -f "$PAT" >/dev/null 2>&1 && break; sleep 5; done
+while pgrep -f "$PAT" >/dev/null 2>&1; do sleep 5; done
+
+# Session ended — flip the originating bullet's checkbox to [x] (found via the marker line).
+python3 - "$NOTE" "$MARK" <<'PYEOF'
+import sys, re
+note, mark = sys.argv[1], sys.argv[2]
+try:
+    with open(note) as f:
+        lines = f.read().split('\n')
+except OSError:
+    sys.exit(0)
+mi = next((i for i, l in enumerate(lines) if mark in l), None)
+if mi is None:
+    sys.exit(0)
+indent = lambda s: len(re.match(r'^[\t ]*', s).group(0))
+mind = indent(lines[mi])
+checkbox = re.compile(r'^[\t ]*[-*+]\s+\[[ /xX!?-]\]')
+for i in range(mi, -1, -1):
+    if checkbox.match(lines[i]) and (i == mi or indent(lines[i]) < mind):
+        lines[i] = re.sub(r'\[[ /xX!?-]\]', '[x]', lines[i], count=1)
+        with open(note, 'w') as f:
+            f.write('\n'.join(lines))
+        break
+PYEOF

@@ -227,6 +227,7 @@ export class ConfigLoader {
             this.plugin.settings.aiConnector = null;
             this.plugin.settings.projects = [];
             this.plugin.settings.projectTags = [];
+            this.plugin.settings.boardTags = {};
             this.plugin.settings.statusCycles = {};
             this.plugin.settings.recurringTags = {};
 
@@ -253,6 +254,7 @@ export class ConfigLoader {
         this.plugin.settings.aiConnector = null;
         this.plugin.settings.projects = [];
         this.plugin.settings.projectTags = [];
+        this.plugin.settings.boardTags = {};
         this.plugin.settings.statusCycles = {};
         this.plugin.settings.recurringTags = {};
 
@@ -298,6 +300,9 @@ export class ConfigLoader {
                 const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
                 const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
                 const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
+                // Boards: each tagged line under ### Boards is a board trigger; its child
+                // bullets are the board's default options (summary-block grammar).
+                const boardSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Boards', hideChildren: true }) || [];
                 
                 // Tag Triggers section:
                 // IMPORTANT: We must NOT query by "#" here, because that would return nested tag *usages*
@@ -639,8 +644,25 @@ export class ConfigLoader {
                     }
                 }
 
+                // Boards: map each board tag to its default option lines (child bullets,
+                // with an optional `default:` wrapper stripped).
+                const boardTags: Record<string, string[]> = {};
+                for (const line of boardSection) {
+                    if (!line.tags || line.tags.length === 0) continue;
+                    const tag = this.plugin.normalizeTag(line.tags[0]) ?? line.tags[0];
+                    const optionLines: string[] = [];
+                    for (const child of (line.children ?? [])) {
+                        const raw = ((child as any)?.text ?? '').split('\n')[0].trim();
+                        if (!raw) continue;
+                        const stripped = raw.replace(/^default:\s*/i, '').trim();
+                        if (stripped) optionLines.push(stripped);
+                    }
+                    boardTags[tag] = optionLines;
+                }
+
                 this.plugin.settings.projects = projects;
                 this.plugin.settings.projectTags = projectTags;
+                this.plugin.settings.boardTags = boardTags;
                 this.plugin.settings.taskTags = taskTags;
                 console.log("[ConfigLoader] Loaded tags from file:", this.plugin.settings.taskTags);
                 console.log("[ConfigLoader] Configured connectors:", Object.keys(this.plugin.settings.webTags));

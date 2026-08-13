@@ -5,6 +5,7 @@ import { DataviewApi, ListItem } from 'obsidian-dataview'; // Use ListItem or sp
 import { TaskManager } from './taskManager'; // Import TaskManager
 import { generateId, getIconForUrl, escapeRegex, extractUrl, isUrl, lineHasUrl } from './utilities'; // Import necessary basic utils
 import { isActiveStatus, normalizeStatusChar, parseStatusFilter } from './statusFilters';
+import { inferSubject, escapeHtml, InferredSubject } from './subjectInference';
 
 // Define structure for child/parent entries (if needed internally, or import if defined elsewhere)
 interface TaskEntry {
@@ -51,6 +52,13 @@ interface QueryOptions {
     customSearch?: string;
     onlyReturn?: boolean;
     groupBy?: (item: ListItem) => string; // Add groupBy option
+    // Subject / context inference (see subjectInference.ts)
+    inferSubject?: boolean;            // master gate; off by default
+    subjectMaxLen?: number;
+    vagueWordThreshold?: number;
+    passthroughWordThreshold?: number;
+    acronymBlacklist?: string[];
+    subjectJoiners?: string[];
 }
 
 export class TagQuery {
@@ -265,6 +273,12 @@ export class TagQuery {
             return;
         }
 
+        // Attach inferred subjects before rendering/grouping so every render path
+        // (flat, grouped, search) carries the same enriched items.
+        if (options.inferSubject) {
+            await this.attachInferredSubjects(filtered, options);
+        }
+
         let groupedResults: Map<string, ListItem[]> | null = null;
         const groupBy = options.groupBy;
         if (groupBy) {
@@ -433,6 +447,71 @@ export class TagQuery {
     }
 
     /**
+     * Walk up from a line to collect ancestor bullet texts (root-first).
+     * Mirrors TaskManager.getDvTaskParents but works off a shared lines array
+     * so we can reuse one file read across many results.
+     */
+    private collectAncestorTexts(lines: string[], currentLineNum: number): string[] {
+        if (currentLineNum < 0 || currentLineNum >= lines.length) return [];
+        const currentIndent = (lines[currentLineNum].match(/^\s*/)?.[0] || "").length;
+        const parents: string[] = [];
+        let lastParentIndent = currentIndent;
+        for (let ln = currentLineNum - 1; ln >= 0; ln--) {
+            const m = lines[ln].match(/^(\s*)([-*+])\s+(.*)/);
+            if (!m) continue;
+            const indent = m[1].length;
+            if (indent < lastParentIndent) {
+                parents.push(m[3].trim());
+                lastParentIndent = indent;
+            }
+            if (indent === 0) break;
+        }
+        return parents.reverse(); // root-first
+    }
+
+    /**
+     * Compute and stash an inferred subject on each result (transient __subject).
+     * Done once here so formatItem stays synchronous and the checksum can include it.
+     */
+    public async attachInferredSubjects(items: ListItem[], options: QueryOptions): Promise<void> {
+        const settings = this.obsidianPlus.settings ?? {};
+        const inferOpts = {
+            projects: settings.projects ?? [],
+            projectTags: settings.projectTags ?? [],
+            subjectMaxLen: options.subjectMaxLen,
+            vagueWordThreshold: options.vagueWordThreshold,
+            passthroughWordThreshold: options.passthroughWordThreshold,
+            acronymBlacklist: options.acronymBlacklist,
+            subjectJoiners: options.subjectJoiners,
+        };
+
+        const linesCache = new Map<string, string[]>();
+        const getLines = async (path: string): Promise<string[]> => {
+            if (!linesCache.has(path)) {
+                try {
+                    linesCache.set(path, await this.taskManager.getFileLines(path));
+                } catch (e) {
+                    console.warn("Subject inference: could not read", path, e);
+                    linesCache.set(path, []);
+                }
+            }
+            return linesCache.get(path)!;
+        };
+
+        for (const item of items) {
+            const path = item.path;
+            const lineNum = item.position?.start?.line ?? item.line;
+            if (!path || lineNum == null) {
+                (item as any).__subject = null;
+                continue;
+            }
+            const lines = await getLines(path);
+            const ancestors = this.collectAncestorTexts(lines, lineNum);
+            (item as any).__subject = inferSubject(item.text, ancestors, inferOpts);
+        }
+    }
+
+    /**
      * Formats a single list item for rendering.
      * (Previously formatItem helper inside getSummary)
      * Requires TaskManager instance access.
@@ -449,6 +528,12 @@ export class TagQuery {
         let text = item.text;
         let icon = { url: '', icon: '' };
         let tasks = { total: 0, done: 0 };
+
+        // Inferred subject prefix (muted chip). Computed in attachInferredSubjects.
+        const inferred = (item as any).__subject as InferredSubject | null | undefined;
+        if (inferred && inferred.subject) {
+            text = `<span class="op-inferred-subject" data-style="${inferred.style}">${escapeHtml(inferred.subject)}</span> ${text}`;
+        }
 
         if (item.children) {
             item.children.forEach((child, i) => {
@@ -471,7 +556,7 @@ export class TagQuery {
             const statusChar = normalizeStatusChar((item as any).status ?? (item.checked ? "x" : " "));
             const ariaChecked = statusChar === "/" ? "mixed" : statusChar === "x" ? "true" : "false";
             const checkedAttr = statusChar !== " " ? "checked" : "";
-            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${statusChar}" ${checkedAttr} aria-checked="${ariaChecked}">` +
+            text = `<input type="checkbox" class="task-list-item-checkbox op-toggle-task" id="i${id}" data-task="${statusChar}" data-path="${escapeHtml(item.path ?? "")}" data-line="${item.line}" ${checkedAttr} aria-checked="${ariaChecked}">` +
                    `<span>${text}</span>`;
         }
 
@@ -500,7 +585,7 @@ export class TagQuery {
     }
 
     private checksum(items: ListItem[]): string {
-        const newItemsJSON = JSON.stringify(items.map(e => ({ text: e.text, children: e.children.map(c => ({ text: c.text })) })));
+        const newItemsJSON = JSON.stringify(items.map(e => ({ text: e.text, subject: (e as any).__subject?.subject ?? null, children: e.children.map(c => ({ text: c.text })) })));
 
         let hash = 5381;
         for (let i = 0; i < newItemsJSON.length; i++) {

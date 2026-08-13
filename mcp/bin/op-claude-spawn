@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+#
+# op-claude-spawn — launch a `claude` session in tmux from an obsidian-plus #claude bullet.
+#
+# Invoked by the DSL `shell:` action, which runs with cwd = vault root. The DSL first
+# writes config/op-claude-pending.json ({ "title": "<bullet text>", "context": "<child lines>" });
+# this script claims it, resolves the project directory, spawns a tmux window (named
+# "<id>: <desc>", e.g. "c1337: agent-skills dashboard"), and writes a session block under the
+# bullet carrying the short handle <id> (c<HHMM>) used by op-claude-focus / -watch.
+#
+# Env:
+#   OP_CLAUDE_CONF   project map (default ~/.config/op-claude/projects.conf)
+#   OP_TMUX_SESSION  tmux session to host windows (default: obsidian-plus)
+#
+set -euo pipefail
+
+# When invoked by Obsidian's shell action, PATH is the minimal launchd default
+# (/usr/bin:/bin:/usr/sbin:/sbin) — so tmux (homebrew), claude (~/.local/bin) etc. won't
+# resolve. Prepend the usual locations so the script works regardless of how Obsidian launched.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
+
+TMUX_SESSION="${OP_TMUX_SESSION:-obsidian-plus}"
+CONF="${OP_CLAUDE_CONF:-$HOME/.config/op-claude/projects.conf}"
+# Handoff is written by the DSL `write:` action (Obsidian vault API), so it must live at a
+# normal vault-relative path (cwd is the vault root). Working files go to ~/.cache to keep the vault clean.
+HANDOFF="${OP_CLAUDE_HANDOFF:-config/op-claude-pending.json}"
+CACHE="$HOME/.cache/op-claude"
+
+CLAUDE_BIN="${OP_CLAUDE_BIN:-claude}"   # override for testing (e.g. OP_CLAUDE_BIN=cat)
+
+command -v tmux       >/dev/null || { echo "op-claude: tmux not found on PATH"; exit 1; }
+command -v "$CLAUDE_BIN" >/dev/null || { echo "op-claude: '$CLAUDE_BIN' not found on PATH"; exit 1; }
+command -v jq        >/dev/null || { echo "op-claude: jq not found on PATH"; exit 1; }
+[ -f "$HANDOFF" ] || { echo "op-claude: missing $HANDOFF (DSL write step did not run)"; exit 1; }
+
+TITLE=$(jq -r '.title // ""' "$HANDOFF")
+# .context may be a string (joined child lines) or an array — normalize to newline-joined text.
+CONTEXT=$(jq -r '.context // "" | if type=="array" then join("\n") else . end' "$HANDOFF")
+PARENTTAGS=$(jq -r '.parentTags // ""' "$HANDOFF")
+# .images: absolute paths to referenced vault embeds (newline-separated).
+IMAGES=$(jq -r '.images // [] | .[]?' "$HANDOFF")
+NOTEPATH=$(jq -r '.notePath // ""' "$HANDOFF")   # vault-relative path to the originating note
+TASKLINE=$(jq -r '.taskLine // ""' "$HANDOFF")   # 0-indexed line of the #claude bullet
+NOTE_ABS="$PWD/$NOTEPATH"                         # cwd is the vault root at exec time
+HEADLINE=$(printf '%s' "$TITLE" | sed -E 's/(^| )#claude( |$)/\1/g; s/^[[:space:]]+//; s/[[:space:]]+$//')
+
+# Resolve project: first #tag on the #claude line OR any ancestor bullet that maps to a path.
+PROJECT=""; DIR=""
+for tag in $(printf '%s %s' "$TITLE" "$PARENTTAGS" | grep -oE '#[A-Za-z0-9_/-]+' | tr -d '#' || true); do
+  [ -f "$CONF" ] || break
+  p=$(grep -E "^${tag}=" "$CONF" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]*#.*$//; s/^[[:space:]]+//; s/[[:space:]]+$//' || true)
+  if [ -n "$p" ]; then PROJECT="$tag"; DIR="${p/#\~/$HOME}"; break; fi
+done
+
+# A project tag is REQUIRED — it's what tells us which repo/dir to open. If none of the bullet's
+# tags (its own or an ancestor's) maps to a configured project, don't guess ($HOME): revert the
+# bullet to [ ] and surface a helpful error so it can be fixed and re-clicked cleanly.
+if [ -z "$DIR" ]; then
+  CONFIGURED=$(grep -vE '^\s*#|^\s*$' "$CONF" 2>/dev/null | cut -d= -f1 | sed 's/^/#/' | tr '\n' ' ')
+  MSG="Error (op-claude): this #claude bullet needs a project tag so I know which repo to open. Nest it under one of: ${CONFIGURED}"
+  if [ -f "$NOTE_ABS" ]; then
+    python3 - "$NOTE_ABS" "$TASKLINE" "$HEADLINE" "$MSG" <<'PYEOF'
+import sys, re
+note, tl_s, headline, msg = sys.argv[1:5]
+try:
+    with open(note) as f:
+        lines = f.read().split('\n')
+except OSError:
+    sys.exit(0)
+tl = -1
+try:
+    n = int(tl_s)
+    if 0 <= n < len(lines) and '#claude' in lines[n]:
+        tl = n
+except ValueError:
+    pass
+if tl < 0 and headline:
+    for i, l in enumerate(lines):
+        if '#claude' in l and headline in l:
+            tl = i; break
+if tl < 0:
+    for i, l in enumerate(lines):
+        if '#claude' in l and re.match(r'^\s*[-*+]\s+\[', l):
+            tl = i; break
+if tl < 0:
+    sys.exit(0)
+ws = re.match(r'^[\t ]*', lines[tl]).group(0)
+base = len(ws)
+lines[tl] = re.sub(r'\[[ /xX!?-]\]', '[ ]', lines[tl], count=1)   # revert to unchecked
+# Reassemble: drop any prior op-claude error children in this bullet's subtree, add a fresh one.
+head = lines[:tl + 1]
+kept, i = [], tl + 1
+while i < len(lines):
+    l = lines[i]
+    if l.strip() != '' and len(re.match(r'^[\t ]*', l).group(0)) <= base:
+        break
+    if 'Error (op-claude)' not in l:
+        kept.append(l)
+    i += 1
+lines = head + [f"{ws}\t* {msg}"] + kept + lines[i:]
+with open(note, 'w') as f:
+    f.write('\n'.join(lines))
+PYEOF
+    exit 0   # error is now in the note (bullet reverted + * error child); keep the DSL quiet
+  fi
+  echo "$MSG"; exit 1
+fi
+[ -d "$DIR" ] || { echo "op-claude: dir for #${PROJECT} does not exist: $DIR"; exit 1; }
+
+# Short, human-friendly handle: c<HHMM> (e.g. c1337). Falls back to c<HHMMSS> on a same-minute
+# collision so the session folder / window / wikilink stay unique. This is the marker + ?w= id.
+ID="c$(date +%H%M)"
+if [ -e "$PWD/Sessions/$ID" ] || tmux list-windows -t "$TMUX_SESSION" -F '#{window_name}' 2>/dev/null | sed 's/: .*//' | grep -qx "$ID"; then
+  ID="c$(date +%H%M%S)"
+fi
+mkdir -p "$CACHE"
+ABS_PROMPT="$CACHE/$ID.prompt.md"
+
+# DESC = a 2-4 word summary (from HEADLINE, computed above). The tmux window is named
+# "<id>: <desc>" (e.g. "c1337: agent-skills dashboard") so sessions are easy to navigate.
+DESC=$(printf '%s' "$HEADLINE" | tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' | cut -d' ' -f1-4 | cut -c1-40 | sed -E 's/ +$//')
+if [ -n "$DESC" ]; then WNAME="$ID: $DESC"; else WNAME="$ID"; fi
+
+# Fixed claude session id → deterministic transcript path (~/.claude/projects/<enc-cwd>/<uuid>.jsonl),
+# and a stable id we can watch for termination and resume later.
+UUID=$(uuidgen | tr 'A-Z' 'a-z')
+DIR_REAL=$(cd "$DIR" && pwd -P)                     # resolve symlinks: claude encodes the REAL cwd
+PROJDIR_ENC=$(printf '%s' "$DIR_REAL" | sed 's#/#-#g')   # cwd → projects-dir encoding (each / becomes -)
+TRANSCRIPT="$HOME/.claude/projects/$PROJDIR_ENC/$UUID.jsonl"
+
+# Durable, browsable artifact dir for this session, inside the vault (cwd = vault root).
+# The /tmp scratchpad is ephemeral (OS-purged, per-uuid); this survives and is linkable
+# from the notebook. Seed a folder-note whose basename == the dir so [[<id>]]
+# resolves to it and the file explorer shows artifacts beside it (no folder-notes plugin).
+SESSION_DIR="$PWD/Sessions/$ID"
+mkdir -p "$SESSION_DIR"
+printf '# %s\n\nSession artifacts. resume: `claude --resume %s`\n\n## Artifacts\n\n## Log\n' \
+  "$ID" "$UUID" > "$SESSION_DIR/$ID.md"
+
+# Build the framed prompt: a parsing preamble + the note outline + any referenced image paths.
+{
+  echo "You were launched from a bullet in my Obsidian notes. The text below is an outline I"
+  echo "wrote as a task brief. Parse it, fetch any URLs it references (use your web/tools), open"
+  echo "any referenced images with Read. You are starting in plan mode: research, ask if"
+  echo "ambiguous, and present a plan for approval before implementing."
+  echo
+  [ -n "$HEADLINE" ] && { echo "# Task: $HEADLINE"; echo; }
+  printf '%s\n' "$CONTEXT"
+  if [ -n "$IMAGES" ]; then
+    echo
+    echo "## Referenced images (open with Read):"
+    while IFS= read -r img; do [ -n "$img" ] && echo "- $img"; done <<< "$IMAGES"
+  fi
+  echo
+  echo "Durable artifacts for this session go in: $SESSION_DIR"
+  echo "(Write anything you want to browse later in the notebook there, and add it under the"
+  echo "'## Artifacts' heading of $ID.md. Keep temp/working files in your scratchpad.)"
+} > "$ABS_PROMPT"
+
+mv "$HANDOFF" "$CACHE/$ID.json"   # consume the vault handoff so it doesn't linger
+
+# Ensure the host tmux session exists (detached is fine; a terminal attaches later).
+tmux has-session -t "$TMUX_SESSION" 2>/dev/null || tmux new-session -d -s "$TMUX_SESSION" -n scratch
+
+# Build the window command: run claude with our fixed session id, seeded with the prompt.
+# `exec $SHELL` keeps the window alive after claude exits so its output stays reviewable.
+if [ -s "$ABS_PROMPT" ] && [ -n "$(tr -d '[:space:]' < "$ABS_PROMPT")" ]; then
+  RUN="$CLAUDE_BIN --session-id '$UUID' --permission-mode plan \"\$(cat '$ABS_PROMPT')\"; exec \$SHELL"
+else
+  RUN="$CLAUDE_BIN --session-id '$UUID' --permission-mode plan; exec \$SHELL"
+fi
+
+tmux new-window -t "$TMUX_SESSION" -n "$WNAME" -c "$DIR" "$RUN"
+
+# Detached watcher: flips the bullet [/] -> [x] when this session's process exits (any exit path).
+# Marker is the distinctive [[<id>]] wikilink that appears on the session line in the note.
+if [ -n "$NOTE_ABS" ] && command -v op-claude-watch >/dev/null; then
+  nohup op-claude-watch "$UUID" "$NOTE_ABS" "[[$ID]]" >/dev/null 2>&1 </dev/null &
+  disown 2>/dev/null || true
+fi
+
+# Auto-raise: surface the session immediately (attaches/raises the terminal on the new window).
+# Pass ONLY the id — never uuid/dir here — so this can never take the resume path and spawn a
+# second window. The window was just created above; auto-raise only ever selects + raises it.
+command -v op-claude-focus >/dev/null && op-claude-focus "$ID" >/dev/null 2>&1 || true
+
+# Write the session block directly under the #claude bullet, as a nested structure:
+#   + session: claude-<id> [▶ open](obsidian://op-claude-focus?w=…&s=<uuid>&d=<dir>)
+#       + resume: `claude --resume <uuid>`
+#       + transcript: <path>
+# The ▶ open link carries the uuid + dir so it can RESUME the transcript if the window is dead.
+# Direct write (not the DSL's flat auto-append) lets us control the nested tab layout.
+if [ -n "$NOTE_ABS" ] && [ -f "$NOTE_ABS" ]; then
+  python3 - "$NOTE_ABS" "$TASKLINE" "$HEADLINE" "$ID" "$UUID" "$TRANSCRIPT" "$DIR" "$DESC" <<'PYEOF'
+import sys, re
+from urllib.parse import quote
+note, tl_s, headline, win, uuid, transcript, d, desc = sys.argv[1:9]
+try:
+    with open(note) as f:
+        lines = f.read().split('\n')
+except OSError:
+    sys.exit(0)
+
+# Resolve the #claude bullet line robustly: the passed taskLine hint (may be "null" — the
+# {{task.line}} var is unreliable), else the checkbox line matching this headline, else the
+# first #claude checkbox. This guarantees the nested block, never the old inline fallback.
+def is_claude_cb(s):
+    return '#claude' in s and re.match(r'^\s*[-*+]\s+\[', s) is not None
+
+tl = -1
+try:
+    n = int(tl_s)
+    if 0 <= n < len(lines) and '#claude' in lines[n]:
+        tl = n
+except ValueError:
+    pass
+if tl < 0 and headline:
+    for i, l in enumerate(lines):
+        if '#claude' in l and headline in l:
+            tl = i; break
+if tl < 0:
+    for i, l in enumerate(lines):
+        if is_claude_cb(l):
+            tl = i; break
+if tl < 0:
+    sys.exit(0)
+
+ws = lambda s: re.match(r'^[\t ]*', s).group(0)
+base = ws(lines[tl])
+# Drop any stale op-claude error children (e.g. a prior "needs a project tag" failure) in this
+# bullet's subtree, so a fixed + re-clicked bullet doesn't keep the old error alongside the block.
+kept, i = [], tl + 1
+while i < len(lines):
+    l = lines[i]
+    if l.strip() != '' and len(ws(l)) <= len(base):
+        break
+    if 'Error (op-claude)' not in l:
+        kept.append(l)
+    i += 1
+lines = lines[:tl + 1] + kept + lines[i:]
+end = tl                                   # last line of the (cleaned) bullet's subtree
+for i in range(tl + 1, len(lines)):
+    if lines[i].strip() == '':
+        continue
+    if len(ws(lines[i])) <= len(base):
+        break
+    end = i
+link = f"obsidian://op-claude-focus?w={win}&s={uuid}&d={quote(d, safe='')}&t={quote(desc, safe='')}"
+block = [
+    f"{base}\t+ session: [[{win}]] [▶ open]({link})",
+    f"{base}\t\t+ resume: `claude --resume {uuid}`",
+    f"{base}\t\t+ transcript: {transcript}",
+]
+lines[end + 1:end + 1] = block
+with open(note, 'w') as f:
+    f.write('\n'.join(lines))
+PYEOF
+fi
