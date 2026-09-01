@@ -329,8 +329,13 @@ export class TagQuery {
         }
 
         const safeIdentifier = identifier ? escapeRegex(identifier) : '';
+        // The trailing guard excludes `-` because it is a legal tag character: with `-`
+        // treated as a boundary, `#agent-skills` matched `#agent-skills-dashboard` and the
+        // parent tag's results absorbed the child's. `/` stays a boundary on purpose, so a
+        // parent tag still matches its nested `#tag/child` the way Obsidian does. The
+        // leading guard keeps `-` so the `- ` bullet marker still reads as a boundary.
         const pattern = identifier === '#' ? new RegExp(`(?:^|[^A-Za-z0-9_])${safeIdentifier}`, 'g')
-            : new RegExp(`(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_])`, 'g');
+            : new RegExp(`(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_-])`, 'g');
 
         const getFile = (dv: any) => typeof currentFile === 'string' ? dv.page(currentFile) : dv.current();
         const pages = currentFile ? [getFile(dv)?.file] : dv.pages(path || '""').file; // Ensure dv.pages gets a string path
@@ -377,7 +382,7 @@ export class TagQuery {
         const partialMatch = options.partialMatch ?? false;
         const safeIdentifier = escapeRegex(targetIdentifier);
         const pattern = targetIdentifier === '#' ? new RegExp(`(?:^|[^A-Za-z0-9_])${safeIdentifier}`, 'g')
-            : new RegExp(`(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_])`, 'g');
+            : new RegExp(`(?:^|[^A-Za-z0-9_])${safeIdentifier}(?:$|[^A-Za-z0-9_-])`, 'g');
 
         function searchRecursively(item: ListItem) {
             if (!item || typeof item.text !== 'string') return;
