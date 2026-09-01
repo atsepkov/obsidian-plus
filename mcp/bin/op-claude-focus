@@ -55,9 +55,17 @@ TERMINAL="$(detect_terminal)"
 command -v tmux >/dev/null || { echo "op-claude-focus: tmux not found"; exit 1; }
 
 # The window is named "<id>: <desc>"; resolve its index by matching the id part (before ": ").
+#
+# Deliberately space-separated and split on default whitespace. This used to put a literal
+# tab in the format and split on it with `awk -F'\t'`, but tmux 3.6b emits an underscore in
+# place of that tab, so every line arrived as one field, `$2` was empty, and the lookup
+# matched nothing. Every focus then took the "window is dead" branch and resumed the
+# transcript into a second window, so opening a live session duplicated it instead of
+# raising it. The window index is numeric and the id is the second whitespace field, so
+# splitting on whitespace needs no separator to survive tmux's formatter at all.
 win_idx() {
-  tmux list-windows -t "$TMUX_SESSION" -F '#{window_index}	#{window_name}' 2>/dev/null \
-    | awk -F'\t' -v id="$1" '{ n=$2; sub(/: .*/, "", n); if (n==id) { print $1; exit } }'
+  tmux list-windows -t "$TMUX_SESSION" -F '#{window_index} #{window_name}' 2>/dev/null \
+    | awk -v id="$1" '{ n=$2; sub(/:$/, "", n); if (n==id) { print $1; exit } }'
 }
 
 # Ensure the target window exists. If the session/window is gone (reboot, or the session exited
