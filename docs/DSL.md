@@ -44,6 +44,59 @@ Now type `- #podcast https://youtube.com/watch?v=xyz` and press **Enter**. The D
 
 ---
 
+## Per-tag drilldown defaults
+
+Every gear-menu setting can be a per-tag default in the tags file, so opening a tag's pane
+starts it where that tag is actually useful.
+
+```markdown
+### Project Tags
+- #claude
+	- config:
+		- status: any
+		- expand: focus
+		- sort: recent
+```
+
+| Key | Values | Default |
+|-----|--------|---------|
+| `status` | `any`, `active`, or any status alias (`done`, `open`, `cancelled`, `x`, `/`, …) | `active` |
+| `expand` | `none` (collapsed), `focus` (expand the selected row), `all` | `none` |
+| `sort` | `relevance` (best text match), `recent` (newest note first) | `relevance` |
+| `project` | `true` prefixes each result with the project tag it is filed under | `false` |
+
+`status` and `expand` mirror the gear menu exactly. `sort` is the one addition: `recent`
+suits a journal-shaped tag like `#1-1`, where the latest entry is nearly always the one you
+want, while `relevance` suits a large pool like `#todo`.
+
+`status: any` matters for tags whose entries are usually finished. A `#claude` session is
+`[x]` precisely because it completed, so without it those sessions stay hidden until you
+type something.
+
+`project: true` suits a tag that recurs across projects. `#claude` appears under
+`#agent-skills`, `#agent-skills-dashboard`, `#infra` and `#notebook`, and the same wording
+means different work depending on which. The project is the innermost ancestor tag listed
+under `### Projects`, resolved from Dataview's index, so it costs no extra file reads. It is
+omitted when it would repeat the tag you are searching.
+
+A configured `status` is a **preference, not an exclusion**. It filters the pane while the
+query is empty, which is the browsing view. As soon as you type, nothing is hidden and the
+configured status simply sorts to the top, because searching is recall. A `status:` token
+you type, or a status you pick from the gear menu, is an explicit instruction and keeps
+filtering.
+
+**Precedence**, most specific first:
+
+1. A `status:` or `expand:` token typed into the search box
+2. Whatever you pick from the gear menu, which holds for the rest of that session
+3. The tag's `config:`
+4. The global default
+
+A `config:` block works in **any** section, including Legend, Projects, and Project Tags,
+so a tag's settings do not depend on which list it happens to be written in.
+
+---
+
 ## Recurring Task Tags
 
 A tag under `### Recurring Task Tags` in your tags config file becomes a task tag. Give it an
@@ -87,11 +140,11 @@ the definition of a repeating task, and the plugin generates one fresh instance 
 Each period, the plugin appends an instance to the target note:
 
 ```markdown
-+ [ ] [[2026-07-27#^wdu7b|⇠]] #weekly *status updates for initiatives assigned to me*
++ [ ] [[2026-07-27#^wdu7b|‹]] #weekly *status updates for initiatives assigned to me*
 	+ 
 ```
 
-The instance carries the same tags as the definition, and the `⇠` back-reference is what
+The instance carries the same tags as the definition, and the `‹` back-reference is what
 distinguishes the two: an instance always links back, a definition never does. Every instance
 points at the original definition, so opening the tree-of-thought view on it shows the whole
 series. Each instance has its own checkbox, so completing one week says nothing about the next.
@@ -112,12 +165,68 @@ Triggers are entry points—they fire when specific events occur.
 | Trigger | When It Fires |
 |---------|--------------|
 | `onEnter` | User presses Enter at end of a tagged line |
+| `onSuggest` | User accepts a continuation suggestion while typing a tagged bullet |
 | `onTrigger` | Task enters “in progress” phase for a connector-driven transaction |
 | `onDone` | Task enters done `[x]` (fires even if `onTrigger` is not defined) |
 | `onError` | Task marked with error `[!]` |
 | `onInProgress` | Task marked in-progress `[/]` |
 | `onCancelled` | Task marked cancelled `[-]` |
 | `onReset` | Task checkbox cleared `[ ]` |
+
+### Continuation suggestions (`onSuggest`)
+
+Defining `onSuggest` opts a tag into continuation suggestions. As you type
+`- #tag some context`, the plugin looks for earlier bullets with that tag whose text is
+similar, and offers to continue one instead of starting fresh.
+
+```markdown
+- #meeting
+  - onSuggest:
+    - transform:
+      - {{match.link}} #meeting *{{match.text}}*
+        - {{cursor}}
+```
+
+Accepting rewrites the line and leaves the cursor on the seeded child. The text you typed
+was the search query, so it is discarded.
+
+The template above is the plain stitch format, the same shape the `??` finder writes. Put
+framing words in the template only when you want them on *every* continuation of that tag.
+Prose like "see …" or "based on …" varies with the situation and is better typed by hand.
+
+The action body is ordinary DSL, which is what lets each tag choose its own shape. A child
+template may lead with a bullet marker to override the default `-`, so a tag whose answers
+come from outside can seed a `+`:
+
+```markdown
+- #ask
+  - onSuggest:
+    - transform:
+      - {{match.link}} #ask *{{match.text}}*
+        - + {{cursor}}
+```
+
+**Variables**, available only in `onSuggest`:
+
+| Variable | Value |
+|----------|-------|
+| `{{match.link}}` | the back-reference, e.g. `[[2026-07-23#^83wx3\|‹]]` |
+| `{{match.text}}` | the earlier bullet's text, with tag, block anchor and task metadata removed |
+| `{{match.tag}}` | the earlier bullet's tag, which may differ from the one you typed |
+| `{{match.date}}` | ISO date of the note it lives in, when the filename carries one |
+| `{{match.path}}` | vault path of that note |
+| `{{match.blockId}}` | block anchor on the earlier bullet, created on demand |
+| `{{query}}` | the text you had typed after the tag |
+
+**Behavior worth knowing:**
+
+- The popup lists "Start new note" first and preselected, so Enter ends the line as usual.
+  Continuations sit below it.
+- Suggestions need at least 4 characters, and every word you type has to appear somewhere
+  in the candidate or its children. That filter is what keeps the popup quiet.
+- Ranking is fuzzy text match plus a whole-word bonus, with recent notes scoring higher.
+- Continuing never modifies the earlier bullet beyond giving it a block anchor if it has
+  none. It is not checked off, edited, or annotated.
 
 ### Example: Webhook on Task Completion
 

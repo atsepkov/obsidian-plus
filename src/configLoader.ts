@@ -157,7 +157,7 @@ export class ConfigLoader {
         const config: ConnectorConfig = { ...(baseConfig || {}) };
         const triggerNames: TriggerType[] = [
             'onTrigger', 'onDone', 'onError', 'onInProgress',
-            'onCancelled', 'onReset', 'onEnter', 'onTab', 'onData'
+            'onCancelled', 'onReset', 'onEnter', 'onTab', 'onSuggest', 'onData'
         ];
         
         console.log('[ConfigLoader][parseTriggersForLine] Parsing triggers for tag:', tag, 'children:', line.children?.length || 0);
@@ -230,6 +230,7 @@ export class ConfigLoader {
             this.plugin.settings.boardTags = {};
             this.plugin.settings.statusCycles = {};
             this.plugin.settings.recurringTags = {};
+            this.plugin.settings.tagConfigs = {};
 
             console.log("[ConfigLoader] No tag list file specified, reset tags to empty");
             // Trigger update for editor enhancer if needed (will be handled in main.ts)
@@ -257,6 +258,7 @@ export class ConfigLoader {
         this.plugin.settings.boardTags = {};
         this.plugin.settings.statusCycles = {};
         this.plugin.settings.recurringTags = {};
+        this.plugin.settings.tagConfigs = {};
 
         try {
             const file = this.app.vault.getAbstractFileByPath(path);
@@ -298,8 +300,14 @@ export class ConfigLoader {
                 const recurringTags = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Recurring Task Tags' }) || [];
                 const tagDescriptions = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Legend' }) || [];
                 const subscribeSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Subscribe' }) || [];
-                const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects' }) || [];
-                const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags' }) || [];
+                // hideChildren is required, not cosmetic: a bullet whose text is exactly a
+                // tag is a "lonely tag", and without this the query swaps it for its
+                // children (tagQuery.ts:192). Every entry in these two sections is that
+                // shape, so both lists came back all but empty, and anything keyed off a
+                // project (subject inference, project scoping, the project prefix) silently
+                // had nothing to work with.
+                const projectSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Projects', hideChildren: true }) || [];
+                const projectTagSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Project Tags', hideChildren: true }) || [];
                 // Boards: each tagged line under ### Boards is a board trigger; its child
                 // bullets are the board's default options (summary-block grammar).
                 const boardSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Boards', hideChildren: true }) || [];
@@ -362,6 +370,53 @@ export class ConfigLoader {
                     return Number.isFinite(min) ? min : 0;
                 })();
                 console.log('[ConfigLoader] Tag Triggers min indentation col:', tagTriggersMinCol);
+
+                // Resolve `config:` once per tag, for every section.
+                //
+                // Config used to be honoured only where a section happened to ask for it,
+                // so Legend, Projects and Project Tags loaded their children and dropped
+                // them. A tag's settings should not depend on which list it was written
+                // in, so this pass covers all of them and later sections read from here.
+                // Boards are excluded: their children are option lines, not a config block.
+                // These are re-queried with `hideChildren: true` rather than reusing the
+                // section arrays above. A bullet whose text is exactly the tag is a
+                // "lonely tag", and the default query swaps it for its children
+                // (tagQuery.ts:192). `- #claude` with only a `config:` child underneath is
+                // exactly that shape, so the tag line never came back and its config was
+                // invisible here. `hideChildren` keeps the tag line, children attached.
+                const configHeaders = [
+                    '### Basic Task Tags',
+                    '### Automated Task Tags',
+                    '### Recurring Task Tags',
+                    '### Legend',
+                    '### Subscribe',
+                    '### Projects',
+                    '### Project Tags',
+                ];
+
+                const configLines: any[] = [];
+                for (const header of configHeaders) {
+                    const lines = this.plugin.query(dataview, '#', {
+                        ...commonOptions,
+                        header,
+                        hideChildren: true,
+                    }) || [];
+                    configLines.push(...(lines as any[]));
+                }
+                // Tag Triggers is queried with a null identifier, which skips the
+                // lonely-tag rewrite entirely, so those items are already the right shape.
+                configLines.push(...(tagTriggersSection as any[]));
+
+                for (const line of configLines) {
+                    if (!line?.tags?.length) continue;
+                    const tag = this.plugin.normalizeTag(line.tags[0]) ?? line.tags[0];
+                    if (!tag || this.plugin.settings.tagConfigs[tag]) continue;
+
+                    const resolved = await this.resolveConfigForLine(tag, line);
+                    if (Object.keys(resolved).length) {
+                        this.plugin.settings.tagConfigs[tag] = resolved;
+                    }
+                }
 
                 // Process Tag Descriptions
                 [
@@ -665,6 +720,8 @@ export class ConfigLoader {
                 this.plugin.settings.boardTags = boardTags;
                 this.plugin.settings.taskTags = taskTags;
                 console.log("[ConfigLoader] Loaded tags from file:", this.plugin.settings.taskTags);
+                console.log("[ConfigLoader] Per-tag config resolved for:", Object.keys(this.plugin.settings.tagConfigs));
+                console.log("[ConfigLoader] Projects:", this.plugin.settings.projects, "Project tags:", this.plugin.settings.projectTags);
                 console.log("[ConfigLoader] Configured connectors:", Object.keys(this.plugin.settings.webTags));
                 console.log("[ConfigLoader] ===== loadTaskTagsFromFile completed successfully ===== ");
 

@@ -296,6 +296,13 @@ export interface TransformActionNode extends BaseActionNode {
 export interface TransformChild {
     /** Template string for this child */
     template: string;
+    /**
+     * Bullet marker the template asked for, when it led with one.
+     *
+     * Lets a template opt into the plugin's marker convention, e.g. a continuation whose
+     * answer comes from outside seeding a `+` child. Defaults to `-` when absent.
+     */
+    bullet?: '-' | '+' | '*';
     /** Nested children */
     children?: TransformChild[];
     /** Indentation level */
@@ -558,6 +565,7 @@ export type TriggerType =
     | 'onReset'      // Task unchecked
     | 'onEnter'      // User presses Enter at end of line
     | 'onTab'        // User presses Tab at end of line
+    | 'onSuggest'    // User accepts a continuation suggestion while typing
     | 'onData';      // Receives data from polling
 
 /**

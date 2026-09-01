@@ -3,14 +3,14 @@ import {
         MarkdownRenderChild,
         Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, WorkspaceLeaf, setIcon, Platform
 } from 'obsidian';
-import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin } from "@codemirror/view";
+import { EditorView, Decoration, DecorationSet, ViewUpdate, ViewPlugin, WidgetType } from "@codemirror/view";
 import { TaskManager } from './taskManager';
 import { TagQuery } from './tagQuery';
 import { normalizeConfigVal } from './utilities';
 import { SettingTab } from './settings';
 import { ConfigLoader } from './configLoader';
 import { EditorState, RangeSetBuilder, StateField, StateEffect, Prec } from "@codemirror/state";
-import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions } from './fuzzyFinder';
+import { TaskTagTrigger, TaskTagModal, TreeOfThoughtOpenOptions, invalidateTaskCache } from './fuzzyFinder';
 import { PollingManager } from './pollingManager';
 import { ServerManager, type ServerCredentials } from './serverManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
@@ -20,6 +20,8 @@ import DSLConnector from './connectors/dslConnector';
 import { DelegateManager } from './delegateManager';
 import { buildBoardSpec } from './summaryBlock';
 import { boardStateField } from './boardView';
+import { isStitchAlias, LEGACY_STITCH_GLYPHS, STITCH_GLYPH, STITCH_TREE_GLYPH } from './blockRef';
+import { ContinuationSuggest, prioritizeSuggest } from './continuationSuggest';
 import { RecurrenceManager } from './recurrenceManager';
 import type { RecurrenceConfig } from './recurrence';
 
@@ -36,6 +38,57 @@ const dimLineDecoration = Decoration.line({
 });
 
 const colonSubjectMark = Decoration.mark({ class: 'op-bullet-colon-subject' });
+
+/**
+ * Finds stitch links in raw line text, capturing the block id and the link path.
+ * Built from the shared glyph list so legacy notes keep their icon.
+ */
+const STITCH_LINK_SCAN = new RegExp(
+	`\\[\\[([^\\]|#]*?)#\\^([^\\]|]+)\\|\\s*(?:${[STITCH_GLYPH, ...LEGACY_STITCH_GLYPHS].join('|')})\\s*\\]\\]`,
+	'g'
+);
+
+/**
+ * The clickable tree glyph rendered after a stitch link in Live Preview.
+ *
+ * `ignoreEvent` returns true so the click reaches this handler instead of being taken by
+ * the editor, matching how BoardWidget handles its own controls.
+ */
+class StitchTreeWidget extends WidgetType {
+	constructor(
+		private plugin: ObsidianPlus,
+		private linkpath: string,
+		private blockId: string,
+		private hostLine: string
+	) {
+		super();
+	}
+
+	eq(other: StitchTreeWidget): boolean {
+		return other.linkpath === this.linkpath
+			&& other.blockId === this.blockId
+			&& other.hostLine === this.hostLine;
+	}
+
+	toDOM(): HTMLElement {
+		const el = document.createElement('span');
+		el.classList.add('op-stitch-tree');
+		el.setAttribute('role', 'button');
+		el.setAttribute('aria-label', 'Open tree of thought');
+		el.title = 'Open tree of thought';
+		el.textContent = STITCH_TREE_GLYPH;
+		el.addEventListener('mousedown', (ev: MouseEvent) => {
+			ev.preventDefault();
+			ev.stopPropagation();
+			void this.plugin.openTreeOfThoughtForStitch(this.linkpath, this.blockId, this.hostLine);
+		});
+		return el;
+	}
+
+	ignoreEvent(): boolean {
+		return true;
+	}
+}
 
 const BULLET_MARKERS = ['-', '+', '*'] as const;
 const BULLET_MARKER_PATTERN = /^(\s*(?:>\s*)*)([-+*])(\s+)/;
@@ -189,6 +242,8 @@ interface ObsidianPlusSettings {
         boardTags: Record<string, string[]>;
         /** recurring tags (### Recurring Task Tags) that declare a repeat period */
         recurringTags: Record<string, RecurrenceConfig>;
+        /** every tag's resolved `config:` block, from whichever section defined it */
+        tagConfigs: Record<string, Record<string, any>>;
 
         aiConnector: string;
         summarizeWithAi: boolean;
@@ -217,6 +272,7 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
         projectTags: [],
         boardTags: {},
         recurringTags: {},
+        tagConfigs: {},
 
         aiConnector: null,
         summarizeWithAi: false,
@@ -249,6 +305,7 @@ export default class ObsidianPlus extends Plugin {
 	settings: ObsidianPlusSettings;
 	private stickyHeaderMap: WeakMap<MarkdownView, HTMLElement> = new WeakMap();
 	private _suggester: TaskTagTrigger;
+	private _continuationSuggester: ContinuationSuggest;
         public configLoader: ConfigLoader;
         public taskManager: TaskManager;
         public tagQuery: TagQuery;
@@ -302,7 +359,7 @@ export default class ObsidianPlus extends Plugin {
 
 		// render outline icon next to block IDs in both editor and preview
 		this.registerView(TASK_OUTLINE_VIEW, (leaf) => new TaskOutlineView(leaf, this));
-		this.registerMarkdownPostProcessor((el) => this.addIconsWithin(el));
+		this.registerMarkdownPostProcessor((el) => this.addStitchIconsWithin(el));
 
 		// Dynamic boards: render board bullets (### Boards tags) in Reading view.
 		this.registerMarkdownPostProcessor((el, ctx) => this.renderBoardsInReadingView(el, ctx));
@@ -343,19 +400,13 @@ export default class ObsidianPlus extends Plugin {
 		});
 		this.registerEvent(
 				this.app.workspace.on('file-open', (file) => {
-						const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-						if (view) {
-								this.addIconsWithin(view.containerEl);
-						}
+						// Reading view is covered by the markdown post-processor and Live
+						// Preview by the CodeMirror widget, so nothing walks the view DOM here.
 						// Generating repeating-task instances is keyed off opening a daily
 						// note, so a period only produces a bullet on a day you show up.
 						this.recurrenceManager?.scheduleSweep(file);
 				})
 		);
-		const initialView = this.app.workspace.getActiveViewOfType(MarkdownView);
-		if (initialView) {
-				this.addIconsWithin(initialView.containerEl);
-		}
 
 		// Instantiate ConfigLoader
 		this.configLoader = new ConfigLoader(this.app, this);
@@ -472,6 +523,12 @@ export default class ObsidianPlus extends Plugin {
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
 					await this.configLoader.loadTaskTagsFromFile();
 					this.pollingManager.reload();
+				}
+				// The per-tag task cache is built once and never expires on its own. The
+				// continuation suggester outlives any single modal, so without this it would
+				// keep offering a stale view of the vault.
+				if (file instanceof TFile && file.extension === 'md') {
+					invalidateTaskCache();
 				}
 			})
 		);
@@ -1308,6 +1365,26 @@ export default class ObsidianPlus extends Plugin {
                                 );
                         }
 
+                        // Tree affordance beside every stitch link. Decoration only, so the
+                        // markdown keeps just the link and the icon can change freely.
+                        if (!inCodeFence && line.includes('|')) {
+                                const cmLine = state.doc.line(i + 1);
+                                STITCH_LINK_SCAN.lastIndex = 0;
+                                let stitchMatch: RegExpExecArray | null;
+                                while ((stitchMatch = STITCH_LINK_SCAN.exec(line)) !== null) {
+                                        // Group 1 is the note path, group 2 is the block id.
+                                        const linkpath = stitchMatch[1];
+                                        const blockId = stitchMatch[2];
+                                        const end = cmLine.from + stitchMatch.index + stitchMatch[0].length;
+                                        decorations.push(
+                                                Decoration.widget({
+                                                        widget: new StitchTreeWidget(this, linkpath, blockId, line),
+                                                        side: 1
+                                                }).range(end)
+                                        );
+                                }
+                        }
+
                         if (!inCodeFence && bulletMatch && bulletMatch[2] === '-') {
                                 const afterBullet = line.slice(bulletMatch[0].length);
                                 const cmLine = state.doc.line(i + 1);
@@ -1464,7 +1541,9 @@ export default class ObsidianPlus extends Plugin {
 				}
 			}
 		}
-		return Decoration.set(decorations);
+		// Sorted: inline widgets are pushed per line after that line's line-decorations,
+		// so the accumulated ranges are not already in document order.
+		return Decoration.set(decorations, true);
 	}
 
 	// our convention is to use - for user bullets, + for responses, and * for errors
@@ -1734,53 +1813,86 @@ export default class ObsidianPlus extends Plugin {
 		}
 	}
 
-	private addIconsWithin(container: HTMLElement): void {
-		const spans = container.querySelectorAll('span.cm-blockid, span.task-block-link');
-		// console.log({ container, spans });
-		spans.forEach((span: Element) => {
-				const text = span.textContent || '';
-				const blockId = text.replace(/^\^/, '');
-				if (!blockId) {
-						return;
-				}
-				if (!this.hasBlockBacklinks(blockId)) {
-						return;
-				}
-				const li = span.closest('li') as HTMLElement | null;
-				if (!li || li.querySelector('.task-outline-button')) {
-						return;
-				}
-				const button = document.createElement('span');
-				button.classList.add('task-outline-button');
-				setIcon(button, 'list-check');
-				button.addEventListener('click', (ev: MouseEvent) => {
-						ev.stopPropagation();
-						this.openTaskOutline(blockId);
-				});
-				li.insertBefore(button, li.firstChild);
+	/**
+	 * Hangs a tree affordance off every rendered stitch link, in Reading view and in the
+	 * Live Preview DOM at file-open time.
+	 *
+	 * The glyph is never written to the note: the markdown stays `[[date#^id|‹]]` and this
+	 * adds the `⦿` beside it purely as decoration.
+	 */
+	public addStitchIconsWithin(container: HTMLElement): void {
+		const links = container.querySelectorAll('a.internal-link');
+		links.forEach((link: Element) => {
+			const anchor = link as HTMLAnchorElement;
+			if (!isStitchAlias(anchor.textContent)) return;
+			if (anchor.dataset.opStitchBound === 'true') return;
+			// Live Preview is served by the CodeMirror widget instead. Injecting into the
+			// editor's own DOM here would double the icon and put a node inside a tree
+			// CodeMirror owns, which is what made the glyph feel stuck and uneditable.
+			if (anchor.closest('.cm-editor')) return;
+
+			const href = anchor.getAttribute('data-href') ?? anchor.getAttribute('href') ?? '';
+			const blockId = href.includes('#^') ? href.slice(href.indexOf('#^') + 2).trim() : '';
+			if (!blockId) return;
+
+			anchor.dataset.opStitchBound = 'true';
+
+			const icon = document.createElement('span');
+			icon.classList.add('op-stitch-tree');
+			icon.setAttribute('role', 'button');
+			icon.setAttribute('aria-label', 'Open tree of thought');
+			icon.title = 'Open tree of thought';
+			icon.textContent = STITCH_TREE_GLYPH;
+			const [linkpath] = href.split('#^');
+			const host = anchor.closest('li') ?? anchor.parentElement;
+			const tagSource = host?.textContent ?? '';
+
+			icon.addEventListener('click', (ev: MouseEvent) => {
+				ev.preventDefault();
+				ev.stopPropagation();
+				void this.openTreeOfThoughtForStitch(linkpath, blockId, tagSource);
+			});
+
+			anchor.insertAdjacentElement('afterend', icon);
 		});
 	}
 
-        private hasBlockBacklinks(blockId: string): boolean {
-                const file = this.app.workspace.getActiveFile();
-                if (!file) {
-                                return false;
-                }
-		const backlinks = this.app.metadataCache.getBacklinksForFile(file);
-		if (!backlinks) {
-				return false;
+	/**
+	 * Opens the tree rooted at whatever a stitch link points to.
+	 *
+	 * `matchesTaskHint` resolves on path plus blockId alone, so the link supplies
+	 * everything except the tag, which is read off the bullet the link sits on. Shared by
+	 * the Live Preview widget and the Reading view icon.
+	 */
+	public async openTreeOfThoughtForStitch(
+		linkpath: string,
+		blockId: string,
+		tagSource: string
+	): Promise<void> {
+		if (!blockId) return;
+
+		const sourcePath = this.app.workspace.getActiveFile()?.path ?? '';
+		const target = this.app.metadataCache.getFirstLinkpathDest(linkpath, sourcePath);
+		if (!target) {
+			console.warn('[Stitch] could not resolve link target', linkpath);
+			return;
 		}
-		const data: Record<string, { link: string }[]> = backlinks.data;
-		for (const key in data) {
-				const links = data[key];
-				for (const link of links) {
-						if (link.link && link.link.includes(`#^${blockId}`)) {
-								return true;
-						}
-				}
-                }
-                return false;
-        }
+
+		const tag = tagSource.match(/#[A-Za-z0-9_/-]+/)?.[0]?.trim() ?? '';
+		if (!tag) {
+			console.warn('[Stitch] no tag beside the link; cannot root the tree');
+			return;
+		}
+
+		new TaskTagModal(this.app, this, null, {
+			allowInsertion: false,
+			initialThought: {
+				tag,
+				taskHint: { path: target.path, blockId, line: null, text: null },
+				search: null
+			}
+		}).open();
+	}
 
         private canOpenTreeOfThoughtUnderCursor(): boolean {
                 const view = this.app.workspace.getActiveViewOfType(MarkdownView);
@@ -2100,6 +2212,7 @@ export default class ObsidianPlus extends Plugin {
                 this.settings.projects = [];
                 this.settings.projectTags = [];
                 this.settings.recurringTags = {};
+                this.settings.tagConfigs = {};
 
 		// Update styles and editor based on loaded persistent settings
 		this.updateTagStyles();
@@ -2204,7 +2317,12 @@ export default class ObsidianPlus extends Plugin {
                 if (!this.delegateManager) {
                         this.delegateManager = new DelegateManager(this);
                 }
-                this.delegateManager.start();
+                // Not awaited on purpose (it installs a poll loop), but an unhandled
+                // rejection here surfaced as a bare "Uncaught (in promise)" with nothing
+                // naming the feature that had silently stopped working.
+                void this.delegateManager.start().catch(err => {
+                        console.error('[Delegate] start failed; delegation is off for this session', err);
+                });
 
                 // Repeating tasks: sweep once at startup for the note already on screen,
                 // then on every daily-note open via the file-open handler.
@@ -2212,6 +2330,17 @@ export default class ObsidianPlus extends Plugin {
                         this.recurrenceManager = new RecurrenceManager(this);
                 }
                 void this.recurrenceManager.sweep(this.app.workspace.getActiveFile());
+
+                if (!this._continuationSuggester) {
+                        // Registered before TaskTagTrigger so its `- #tag text` pattern is
+                        // offered first. The two never contend: TaskTagTrigger only handles
+                        // the `??` and `- ?` macros and always returns null from onTrigger.
+                        this._continuationSuggester = new ContinuationSuggest(this.app, this);
+                        this.registerEditorSuggest(this._continuationSuggester);
+                        // Claim the first slot, or the Tasks plugin's popup shadows ours on
+                        // any `- [ ] #tag …` line, which is most tagged bullets here.
+                        prioritizeSuggest(this.app, this._continuationSuggester);
+                }
 
                 if (!this._suggester) {
                         this._suggester = new TaskTagTrigger(this.app, this);
@@ -2245,6 +2374,7 @@ export default class ObsidianPlus extends Plugin {
 		delete sanitizedSettings.projectTags;
 		delete sanitizedSettings.statusCycles;
 		delete sanitizedSettings.recurringTags;
+		delete sanitizedSettings.tagConfigs;
 
 		try {
 			JSON.stringify(sanitizedSettings);

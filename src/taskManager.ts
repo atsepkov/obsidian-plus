@@ -7,6 +7,7 @@ import { generateId } from './utilities';
 import ObsidianPlus from './main';
 import { advanceStatus, normalizeStatusChar, type TaskStatusChar } from './statusFilters';
 import type { ThoughtLinkPreview } from './treeOfThought';
+import { fencedLineFlags } from './utils/codeFence';
 
 // Define TaskInfo structure used by findDvTask
 interface TaskInfo {
@@ -738,11 +739,21 @@ export class TaskManager {
             }
         }
 
+        // The metadata index above already answers this for every link Obsidian knows
+        // about, and it is the whole vault's worth of parsing done once at startup rather
+        // than per lookup. Only fall back to reading every file when the index gave us
+        // nothing, which happens if it has not warmed up yet.
+        if (backlinks.length > 0) {
+            return backlinks;
+        }
+
         const pattern = new RegExp(`\\^${this.escapeRegex(blockId)}\\b`);
         for (const markdownFile of this.app.vault.getMarkdownFiles()) {
             const fileLines = await this.getFileLines(markdownFile.path);
+            // A block id quoted in a fenced example is documentation, not a reference.
+            const fenced = fencedLineFlags(fileLines);
             for (let i = 0; i < fileLines.length; i++) {
-                if (!pattern.test(fileLines[i])) {
+                if (fenced[i] || !pattern.test(fileLines[i])) {
                     continue;
                 }
                 const entry = this.collectBacklinkEntry(markdownFile, fileLines, i, blockId, seen, sourceFile.path, originLine);

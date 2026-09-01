@@ -14,6 +14,7 @@ import {
 } from "./treeOfThought";
 import { ExpandMode, TaskStatusChar, isActiveStatus, normalizeStatusChar, parseExpandFilter, parseStatusFilter, resolveExpandAlias, resolveStatusAlias } from "./statusFilters";
 import { buildStitchLink, ensureBlockIdAt } from "./blockRef";
+import { parseTagViewDefaults, type TagSortMode } from "./tagViewDefaults";
   
 export interface TaskEntry {
   file:   TFile;
@@ -28,6 +29,10 @@ export interface TaskEntry {
   tags?: string[];
   tagHint?: string | null;
   project?: string | null;
+  /** Innermost ancestor tag listed under `### Projects`, resolved once during the scan. */
+  projectTag?: string | null;
+  /** Carried through from the underlying list item; used to locate ancestors. */
+  position?: { start: { line: number; col: number }; end?: { line: number; col: number } };
   searchChildren?: string[];
 }
 
@@ -388,6 +393,32 @@ function escapeCssIdentifier(value: string): string {
 
     const pending: Record<string, boolean> = {};       // tag -> scan in‑progress
     const cache:   Record<string, TaskEntry[]> = {};   // tag -> tasks[]
+    /**
+     * Bumped whenever a key is invalidated. A scan that is mid-flight compares the
+     * generation it started under before writing, so a rebuild triggered while chunks are
+     * still feeding cannot interleave stale rows into the fresh list.
+     */
+    const generation: Record<string, number> = {};
+
+    /**
+     * Drops cached tasks so the next lookup rescans. Pass a tag to clear just that tag
+     * (including its per-project variants), or nothing to clear everything.
+     *
+     * The modal builds its cache once per session and never needed this. The continuation
+     * suggester lives for as long as the workspace does, so without invalidation it would
+     * never see a bullet written after its first query for a tag.
+     */
+    export function invalidateTaskCache(tag?: string): void {
+        const keys = tag
+            ? Object.keys(cache).filter(k => k === tag || k.endsWith(`|${tag}`))
+            : Object.keys(cache);
+
+        for (const key of keys) {
+            delete cache[key];
+            pending[key] = false;
+            generation[key] = (generation[key] ?? 0) + 1;
+        }
+    }
 
     function toTaskEntry(row: any): TaskEntry {
       const explodeLines = (current: any): string[] => {
@@ -413,7 +444,99 @@ function escapeCssIdentifier(value: string): string {
       } as TaskEntry;
     }
 
-    function collectTasksLazy(
+    /**
+     * Finds the project tag a bullet is filed under by walking its ancestors.
+     *
+     * Uses Dataview's own list index and its `parent` line pointers, so this costs no file
+     * reads. The alternative, collectAncestorTexts, re-reads each note, and anything on the
+     * suggestion path has to stay cheap enough to run while typing.
+     */
+    /** Per-file ancestry, built once from Obsidian's metadata cache. */
+    interface ProjectLookup {
+      /** line of a list item -> line of its parent, or -1 at the root */
+      parentOf: Map<number, number>;
+      /** line -> tags recorded on that line */
+      tagsOn: Map<number, string[]>;
+    }
+
+    /**
+     * Finds the project tag a bullet is filed under by walking its ancestors.
+     *
+     * Reads Obsidian's own metadata cache rather than Dataview's list objects. Both the
+     * hierarchy (`ListItemCache.parent`, documented as "parentItem.position.start.line ===
+     * childItem.parent") and the tag positions come from a synchronous, documented API, so
+     * this works without file reads and without depending on Dataview's internal shape.
+     */
+    export function resolveProjectTag(
+      app: App,
+      plugin: ObsidianPlus,
+      entry: TaskEntry,
+      lookupCache: Map<string, ProjectLookup>
+    ): string | null {
+      const projects = plugin.settings.projects ?? [];
+      if (!projects.length) {
+        if (!(resolveProjectTag as any).__warnedNoProjects) {
+          (resolveProjectTag as any).__warnedNoProjects = true;
+          console.warn('[ProjectTag] settings.projects is empty; nothing can resolve. Check the ### Projects section parsed.');
+        }
+        return null;
+      }
+
+      const path = entry.path ?? entry.file?.path;
+      if (!path) return null;
+
+      const ownLine = entry.position?.start?.line ?? entry.line;
+      if (typeof ownLine !== 'number') return null;
+
+      let lookup = lookupCache.get(path);
+      if (!lookup) {
+        lookup = { parentOf: new Map(), tagsOn: new Map() };
+        const file = app.vault.getAbstractFileByPath(path);
+        const cache = file instanceof TFile ? app.metadataCache.getFileCache(file) : null;
+
+        for (const item of (cache?.listItems ?? [])) {
+          const line = item?.position?.start?.line;
+          if (typeof line === 'number') lookup.parentOf.set(line, item.parent);
+        }
+        for (const tag of (cache?.tags ?? [])) {
+          const line = tag?.position?.start?.line;
+          if (typeof line !== 'number' || !tag.tag) continue;
+          const existing = lookup.tagsOn.get(line);
+          if (existing) existing.push(tag.tag);
+          else lookup.tagsOn.set(line, [tag.tag]);
+        }
+        lookupCache.set(path, lookup);
+      }
+      if (!lookup.parentOf.size) {
+        if (!(resolveProjectTag as any).__warnedNoList) {
+          (resolveProjectTag as any).__warnedNoList = true;
+          console.warn(`[ProjectTag] no listItems cached for ${path}; metadata may still be indexing`);
+        }
+        return null;
+      }
+
+      const normalizedProjects = new Set(projects.map(p => plugin.normalizeTag(p) ?? p));
+
+      let line = ownLine;
+      const seen = new Set<number>();
+      for (let hops = 0; hops < 64; hops++) {
+        const parent = lookup.parentOf.get(line);
+        // Negative parent means this item is a list root, so there is nothing above it.
+        if (typeof parent !== 'number' || parent < 0 || seen.has(parent)) break;
+        seen.add(parent);
+
+        for (const raw of (lookup.tagsOn.get(parent) ?? [])) {
+          const normalized = plugin.normalizeTag(raw) ?? raw;
+          if (normalizedProjects.has(normalized)) return normalized;
+        }
+
+        line = parent;
+      }
+
+      return null;
+    }
+
+    export function collectTasksLazy(
         tag: string,
         plugin: ObsidianPlus,
         onReady: () => void,
@@ -429,6 +552,7 @@ function escapeCssIdentifier(value: string): string {
         /* 3️⃣  Kick off background build */
         pending[key] = true;
         cache[key]   = [];                 // start with empty list
+        const scanGeneration = generation[key] ?? 0;
 
         /* Fetch Dataview API + user options */
         const dv  = (plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
@@ -453,10 +577,14 @@ function escapeCssIdentifier(value: string): string {
         }
 
         /* Chunk the rows into the cache without blocking the UI */
+        const lineIndexCache = new Map<string, ProjectLookup>();
         const CHUNK = 50;
         let i = 0;
 
         const feed = () => {
+          // Abandon quietly if this key was invalidated after the scan started.
+          if ((generation[key] ?? 0) !== scanGeneration) return;
+
           const slice = rows.slice(i, i + CHUNK);
           /* inside collectTasksLazy – while pushing rows into cache[key] */
           slice.forEach(r => {
@@ -473,6 +601,7 @@ function escapeCssIdentifier(value: string): string {
             }
 
             entry.tags = tags;
+            entry.projectTag = resolveProjectTag(plugin.app, plugin, entry, lineIndexCache);
             if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
               entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
             }
@@ -540,6 +669,27 @@ function escapeCssIdentifier(value: string): string {
     private expandMode: ExpandMode = "none";
     private expandSetting: ExpandMode = "none";
     private statusFilter: TaskStatusChar | null = null;
+    /**
+     * Where `statusFilter` came from. A tag's config is a preference, so it orders results
+     * while searching instead of hiding them; a token you typed or a gear-menu pick is an
+     * explicit instruction and still filters.
+     */
+    private statusFilterSource: 'user' | 'config' | null = null;
+    /** Status to float to the top while searching, without excluding anything. */
+    private preferredStatus: TaskStatusChar | null = null;
+    /**
+     * Set once the user picks a filter from the gear menu, so switching tags afterwards
+     * does not quietly overwrite a deliberate choice with that tag's configured default.
+     */
+    private filtersTouchedByUser = false;
+    /** True when the active tag asked to start unfiltered rather than active-only. */
+    private showAllStatuses = false;
+    /** Result ordering for the active tag. */
+    private sortMode: TagSortMode = 'relevance';
+    /** Prefix results with the project tag they are filed under. */
+    private showProjectTag = false;
+    /** Tag whose defaults are currently applied, so we only reapply on a real change. */
+    private appliedDefaultsFor: string | null = null;
     private previewMetadata = new WeakMap<HTMLElement, SuggestionPreviewMetadata>();
     private expandRefreshScheduled = false;
     private pointerExpandListener: ((evt: Event) => void) | null = null;
@@ -593,6 +743,23 @@ function escapeCssIdentifier(value: string): string {
     }
 
     /** Determine the project tag for the current cursor location */
+    /**
+     * Project scope for a tag's query, currently always null.
+     *
+     * `detectProject()` used to return null almost always, because settings.projects was
+     * emptied by the lonely-tag rewrite. Loading it properly switched this scoping on for
+     * the first time and the pane went blank, so it is off until it can be built and tested
+     * deliberately.
+     *
+     * It also cuts against the rule we settled on elsewhere: searching is recall, so a
+     * result should be ranked or labelled by its project, never hidden because the cursor
+     * happened to sit under a different one. Seeing the project is what `project: true`
+     * gives you, and that needs no scoping at all.
+     */
+    private projectScopeFor(_tag: string | null | undefined): string | null {
+      return null;
+    }
+
     private detectProject(): string | null {
       const view = this.app.workspace.getActiveViewOfType(MarkdownView);
       if (!view) return null;
@@ -704,6 +871,18 @@ function escapeCssIdentifier(value: string): string {
         });
       }
 
+      menu.addSeparator();
+
+      // Parity with the tags file: anything a tag can configure should also be reachable
+      // here for a one-off look, and vice versa.
+      menu.addItem(item => {
+        item.setTitle("Show project tag");
+        item.setChecked(this.showProjectTag);
+        item.onClick(() => {
+          this.setShowProjectTag(!this.showProjectTag);
+        });
+      });
+
       this.propertyButtonEl.setAttr("aria-expanded", "true");
       menu.onHide(() => {
         this.propertyButtonEl?.setAttr("aria-expanded", "false");
@@ -712,24 +891,138 @@ function escapeCssIdentifier(value: string): string {
       menu.showAtMouseEvent(evt);
     }
 
-    private setStatusFilterSetting(value: TaskStatusChar | null): void {
+    /**
+     * Starts the pane where the active tag wants it, mirroring the gear menu.
+     *
+     * Precedence, most specific first: a typed `status:`/`expand:` token, then whatever the
+     * user picked from the gear menu this session, then the tag's `config:`, then the
+     * global default. That is why an explicit gear choice pins `filtersTouchedByUser` and
+     * stops this from running on the next tag switch.
+     */
+    private applyTagViewDefaults(tag: string | null | undefined): void {
+      const normalized = (tag ?? '').trim();
+      if (!normalized || normalized === '#') return;
+      if (this.filtersTouchedByUser) return;
+      // Idempotent rather than one-shot: detectMode runs per keystroke and other paths
+      // reset these fields, so re-deriving is both cheap and the only way to survive a
+      // reset. Only the tag changing warrants re-announcing it in the log.
+      const isNewTag = this.appliedDefaultsFor !== normalized;
+      this.appliedDefaultsFor = normalized;
+
+      const config = this.plugin.settings.tagConfigs?.[normalized]
+        ?? this.plugin.settings.tagConfigs?.[this.plugin.normalizeTag(normalized) ?? normalized];
+      const defaults = parseTagViewDefaults(config);
+
+      // Reset to the global default first, so leaving one tag's config behind does not
+      // leak its settings into a tag that configures nothing.
+      this.statusFilter = null;
+      this.showAllStatuses = false;
+      this.sortMode = 'relevance';
+      this.expandSetting = 'none';
+      this.showProjectTag = false;
+
+      this.statusFilterSource = null;
+      if (defaults?.status) {
+        if (defaults.status.kind === 'char') {
+          this.statusFilter = defaults.status.value;
+          this.statusFilterSource = 'config';
+        } else if (defaults.status.kind === 'any') {
+          this.showAllStatuses = true;
+        }
+      }
+      if (defaults?.expand) {
+        this.expandSetting = defaults.expand;
+      }
+      if (defaults?.sort) {
+        this.sortMode = defaults.sort;
+      }
+      if (defaults?.showProject != null) {
+        this.showProjectTag = defaults.showProject;
+      }
+
+      this.applyExpandMode(this.expandSetting);
+      this.updatePhaseControls();
+    }
+
+    /**
+     * Orders results for the active tag.
+     *
+     * `relevance` keeps the historic behaviour, best text match first. `recent` leads with
+     * the newest note, which suits a journal-shaped tag where the latest entry is almost
+     * always the one you want; score still breaks ties within a day.
+     */
+    private sortSuggestionsForTag<T extends { sourceIdx: number; item: TaskEntry }>(
+      list: T[]
+    ): T[] {
+      // `score` is attached at runtime; FuzzyMatch does not declare it.
+      const scoreOf = (entry: T): number => (entry as any).score ?? 0;
+      // A configured status leads the list rather than emptying it. Primary key, so the
+      // preferred rows genuinely come first instead of relying on a score nudge that a
+      // strong text match could out-weigh.
+      const preferred = this.preferredStatus;
+      const rank = (entry: T): number =>
+        preferred != null && (entry.item?.status ?? ' ') === preferred ? 0 : 1;
+
+      if (this.sortMode !== 'recent') {
+        return list.sort((a, b) =>
+          rank(a) - rank(b) || scoreOf(b) - scoreOf(a) || a.sourceIdx - b.sourceIdx);
+      }
+
+      const dateOf = (entry: TaskEntry): string => {
+        const path = entry?.path ?? entry?.file?.path ?? '';
+        return path.match(/\b(\d{4}-\d{2}-\d{2})\b/)?.[1] ?? '';
+      };
+
+      return list.sort((a, b) => {
+        const byPreference = rank(a) - rank(b);
+        if (byPreference !== 0) return byPreference;
+        const da = dateOf(a.item);
+        const db = dateOf(b.item);
+        // Undated notes sort last rather than pretending to be ancient.
+        if (da !== db) {
+          if (!da) return 1;
+          if (!db) return -1;
+          return db.localeCompare(da);
+        }
+        return scoreOf(b) - scoreOf(a) || a.sourceIdx - b.sourceIdx;
+      });
+    }
+
+    private setStatusFilterSetting(value: TaskStatusChar | null, byUser = true): void {
       if (this.statusFilter === value) {
         this.updatePhaseControls();
         return;
       }
 
       this.statusFilter = value;
+      this.statusFilterSource = byUser ? 'user' : null;
+      // Only a deliberate gear-menu pick should pin the session. navigateBack clears the
+      // filters programmatically, and treating that as intent silently disabled per-tag
+      // defaults for the rest of the session.
+      if (byUser) this.filtersTouchedByUser = true;
+      // Choosing a concrete status supersedes a tag's "show everything" default.
+      this.showAllStatuses = false;
       this.scheduleSuggestionRefresh();
       this.updatePhaseControls();
     }
 
-    private setExpandSetting(mode: ExpandMode): void {
+    private setShowProjectTag(value: boolean): void {
+      if (this.showProjectTag === value) return;
+      this.showProjectTag = value;
+      // A deliberate pick, so a later tag switch does not overwrite it.
+      this.filtersTouchedByUser = true;
+      this.scheduleSuggestionRefresh();
+      this.updatePhaseControls();
+    }
+
+    private setExpandSetting(mode: ExpandMode, byUser = true): void {
       if (this.expandSetting === mode) {
         this.updatePhaseControls();
         return;
       }
 
       this.expandSetting = mode;
+      if (byUser) this.filtersTouchedByUser = true;
       this.applyExpandMode(mode);
       this.scheduleSuggestionRefresh();
       this.updatePhaseControls();
@@ -770,11 +1063,12 @@ function escapeCssIdentifier(value: string): string {
         return;
       }
 
-      const active = this.statusFilter !== null || this.expandSetting !== "none";
+      const active = this.statusFilter !== null || this.expandSetting !== "none" || this.showProjectTag;
       this.propertyButtonEl.toggleClass("is-active", active);
       this.propertyButtonEl.setAttr("aria-pressed", active ? "true" : "false");
 
-      const summary = `${this.describeStatusFilter(this.statusFilter)} · ${this.describeExpandMode(this.expandSetting)}`;
+      const summary = `${this.describeStatusFilter(this.statusFilter)} · ${this.describeExpandMode(this.expandSetting)}`
+        + (this.showProjectTag ? " · Project tag" : "");
       this.propertyButtonEl.setAttr("aria-label", summary);
       this.propertyButtonEl.setAttr("title", summary);
     }
@@ -839,11 +1133,15 @@ function escapeCssIdentifier(value: string): string {
         const hadExpandSetting = this.expandSetting !== "none";
 
         if (hadStatusFilter) {
-          this.setStatusFilterSetting(null);
+          this.setStatusFilterSetting(null, false);
         }
         if (hadExpandSetting) {
-          this.setExpandSetting("none");
+          this.setExpandSetting("none", false);
         }
+        // Clearing filters is a request to start over, so let the tag's configured
+        // defaults apply again on the next activation.
+        this.filtersTouchedByUser = false;
+        this.appliedDefaultsFor = null;
 
         if (hadInput) {
           this.inputEl.value = "";
@@ -953,14 +1251,9 @@ function escapeCssIdentifier(value: string): string {
 
       const statusInvalid = statusParse.hadStatusFilter && statusParse.statusChar == null;
       let statusFilter = this.statusFilter;
-      let enforceActiveOnly = false;
 
-      if (statusParse.hadStatusFilter) {
-        if (statusParse.statusChar != null) {
-          statusFilter = statusParse.statusChar;
-        }
-      } else if (statusFilter == null) {
-        enforceActiveOnly = true;
+      if (statusParse.hadStatusFilter && statusParse.statusChar != null) {
+        statusFilter = statusParse.statusChar;
       }
 
       const expandParse = parseExpandFilter(body);
@@ -973,9 +1266,36 @@ function escapeCssIdentifier(value: string): string {
       this.applyExpandMode(expandMode);
 
       const normalizedBody = body.replace(/\s{2,}/g, " ").trim();
+
+      // Hiding completed work is right for an empty query, where this reads as a list of
+      // what is still open. It is wrong the moment a query is typed, because that is a
+      // recall: a #claude session is [x] precisely because it finished, so the sessions
+      // most worth finding were the only ones that could never be found.
+      // An explicit `status:` or a sticky filter still wins over both.
+      const searching = normalizedBody.length > 0;
+
+      // Searching is recall, so nothing is hidden once you type. A tag's configured status
+      // becomes an ordering preference instead of an exclusion; a typed `status:` token or
+      // a gear-menu pick is an explicit instruction and keeps filtering.
+      let effectiveStatus = statusFilter;
+      let preferredStatus: TaskStatusChar | null = null;
+      if (searching && effectiveStatus != null
+          && !statusParse.hadStatusFilter && this.statusFilterSource === 'config') {
+        preferredStatus = effectiveStatus;
+        effectiveStatus = null;
+      }
+      this.preferredStatus = preferredStatus;
+
+      const enforceActiveOnly =
+        !statusParse.hadStatusFilter
+        && effectiveStatus == null
+        && !searching
+        // A tag configured with `status: any` starts unfiltered even before you type.
+        && !this.showAllStatuses;
+
       return {
         body: normalizedBody,
-        statusFilter: statusFilter,
+        statusFilter: effectiveStatus,
         enforceActiveOnly,
         statusInvalid,
         expandMode
@@ -1223,10 +1543,9 @@ function escapeCssIdentifier(value: string): string {
         } else if (tagMatch && hasTaskSpace) {
           this.tagMode   = false;
           this.activeTag = tagMatch[0];
+          this.applyTagViewDefaults(this.activeTag);
 
-          const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
-              ? this.projectTag
-              : null;
+          const project = this.projectScopeFor(this.activeTag);
           const key = project ? `${project}|${this.activeTag}` : this.activeTag;
 
           if (key !== this.cachedTag) {
@@ -1238,6 +1557,7 @@ function escapeCssIdentifier(value: string): string {
         } else {
           this.tagMode   = true;
           this.activeTag = tagMatch ? tagMatch[0] : "#";
+          this.applyTagViewDefaults(this.activeTag);
           this.exitThoughtMode();
         }
 
@@ -1300,9 +1620,7 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const tag = this.normalizeTag(this.initialThoughtRequest.tag);
-        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
-          ? this.projectTag
-          : null;
+        const project = this.projectScopeFor(tag);
         const key = project ? `${project}|${tag}` : tag;
 
         if (!this.taskCache[key] && cache[key]?.length) {
@@ -1529,9 +1847,7 @@ function escapeCssIdentifier(value: string): string {
 
     private getTaskCacheKey(): string | null {
         if (this.tagMode) return null;
-        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
-          ? this.projectTag
-          : null;
+        const project = this.projectScopeFor(this.activeTag);
         return project ? `${project}|${this.activeTag}` : this.activeTag;
     }
 
@@ -1586,14 +1902,13 @@ function escapeCssIdentifier(value: string): string {
         this.previousTaskSearchValue = previousValue;
 
         const nextActiveTag = normalizedTag;
-        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(nextActiveTag)
-          ? this.projectTag
-          : null;
+        const project = this.projectScopeFor(nextActiveTag);
         const projectScope = project ?? undefined;
         const key = project ? `${project}|${nextActiveTag}` : nextActiveTag;
         if (key) {
           this.tagMode = false;
           this.activeTag = nextActiveTag;
+          this.applyTagViewDefaults(this.activeTag);
         }
         if (key && key !== this.cachedTag) {
           this.taskCache[key] = this.collectTasks(nextActiveTag, projectScope);
@@ -1774,6 +2089,7 @@ function escapeCssIdentifier(value: string): string {
         const activeTag = this.extractTagFromCacheKey(key);
         if (activeTag) {
           this.activeTag = activeTag;
+          this.applyTagViewDefaults(this.activeTag);
         }
 
         this.thoughtCacheKey = key;
@@ -2293,9 +2609,7 @@ function escapeCssIdentifier(value: string): string {
     /* ---------- data ---------- */
     getItems() {
       if (this.tagMode) return getAllTags(this.app);
-      const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(this.activeTag)
-        ? this.projectTag
-        : null;
+      const project = this.projectScopeFor(this.activeTag);
       return this.collectTasks(this.activeTag, project);
     }
   
@@ -2384,6 +2698,14 @@ function escapeCssIdentifier(value: string): string {
         let textBody = body.trim();
         if (!textBody.length && displayTag) {
           textBody = displayTag;
+        }
+
+        // Lead with the project this bullet was filed under, when the tag asks for it.
+        // Skipped when the project is already the tag being searched, which would just
+        // repeat itself, and when the text already names it.
+        const projectTag = this.showProjectTag ? (task.projectTag ?? null) : null;
+        if (projectTag && projectTag !== displayTag && !startsWithNormalizedTag(textBody, projectTag)) {
+          textBody = `${projectTag} ${textBody}`.trim();
         }
 
         const showCheckbox = displayTag ? isTaskTag(this.plugin, displayTag) : false;
@@ -3783,6 +4105,8 @@ function escapeCssIdentifier(value: string): string {
         }
 
         const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
+        const lineIndexCache = new Map<string, ProjectLookup>();
+        const diag = { total: 0, resolved: 0 };
         if (!dv || typeof (this.plugin as any).query !== "function") {
             this.globalTaskCache = [];
             this.globalTaskCacheReady = true;
@@ -3820,6 +4144,9 @@ function escapeCssIdentifier(value: string): string {
 
                     const normalizedTag = tags.find(tag => preferredTags.has(tag)) ?? tags[0];
                     entry.tags = tags;
+                    entry.projectTag = resolveProjectTag(this.plugin.app, this.plugin, entry, lineIndexCache);
+              diag.total++;
+              if (entry.projectTag) diag.resolved++;
                     entry.tagHint = normalizedTag;
 
                     if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
@@ -3889,19 +4216,31 @@ function escapeCssIdentifier(value: string): string {
     /* ---------- gather tasks with a given tag ---------- */
     private collectTasks(tag: string, project?: string): TaskEntry[] {
         const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
+        // Shared across this scan so each file's list index is built once.
+        const lineIndexCache = new Map<string, ProjectLookup>();
+        const diag = { total: 0, resolved: 0 };
 
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
           try {
             const includeCheckboxes = isTaskTag(this.plugin, tag);
-            const rows = (this.plugin as any)
-              .query(dv, project ? [project, tag] : tag, {
+            const queryOptions = {
                 path: '""',
                 onlyOpen: includeCheckboxes ? false : !this.plugin.settings.webTags[tag],
                 onlyPrefixTags: true,
                 includeCheckboxes
-            }) as any[];
-            return (rows ?? []).map(r => {
+            };
+
+            // Scoping to the project under the cursor should narrow the list, never empty
+            // it. This nested path was unreachable until settings.projects started loading,
+            // so it has never really run; if it yields nothing, fall back to the whole tag
+            // rather than showing a blank pane.
+            let rows = (this.plugin as any).query(dv, project ? [project, tag] : tag, queryOptions) as any[];
+            if (project && !(rows ?? []).length) {
+              console.warn(`[ProjectScope] ${project}|${tag} matched nothing; falling back to all ${tag}`);
+              rows = (this.plugin as any).query(dv, tag, queryOptions) as any[];
+            }
+            const mapped = (rows ?? []).map(r => {
               const entry = toTaskEntry(r);
               const normalizedTag = normalizeTagForSearch(this.plugin, tag);
               const tags = resolveNormalizedTaskTags(this.plugin, entry);
@@ -3915,6 +4254,9 @@ function escapeCssIdentifier(value: string): string {
               }
 
               entry.tags = tags;
+              entry.projectTag = resolveProjectTag(this.plugin.app, this.plugin, entry, lineIndexCache);
+              diag.total++;
+              if (entry.projectTag) diag.resolved++;
               if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
                 entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
               }
@@ -3926,6 +4268,11 @@ function escapeCssIdentifier(value: string): string {
               }
               return entry;
             });
+            console.log(
+              `[ProjectTag] ${tag}: ${diag.resolved}/${diag.total} entries resolved a project`,
+              { showProjectTag: this.showProjectTag, knownProjects: this.plugin.settings.projects }
+            );
+            return mapped;
           } catch (e) { console.error("Dataview query failed", e); }
         }
 
@@ -4061,7 +4408,7 @@ function escapeCssIdentifier(value: string): string {
           } as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })];
         }) as (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[];
 
-        suggestions.sort((a, b) => b.score - a.score || a.sourceIdx - b.sourceIdx);
+        this.sortSuggestionsForTag(suggestions);
 
         const seen = new Map<string, (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })>();
         const deduped: (FuzzyMatch<TaskEntry> & { matchLine?: string; sourceIdx: number })[] = [];
@@ -4136,9 +4483,7 @@ function escapeCssIdentifier(value: string): string {
         body = filters.body;
         const desiredStatus = filters.statusFilter;
         const enforceActiveOnly = filters.enforceActiveOnly;
-        const project = this.projectTag && (this.plugin.settings.projectTags || []).includes(tag)
-          ? this.projectTag
-          : null;
+        const project = this.projectScopeFor(tag);
         const key = project ? `${project}|${tag}` : tag;
 
         /* ①  sync local cache with global one (if available)  */

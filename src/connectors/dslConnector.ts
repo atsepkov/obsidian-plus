@@ -342,6 +342,34 @@ export default class DSLConnector extends TagConnector {
     }
 
     /**
+     * Handle onSuggest trigger (user accepted a continuation suggestion).
+     *
+     * `matchVars` carries the matched bullet as `match.*` plus the typed `query`. No
+     * delegation path: the suggestion was accepted in this editor, so it has to be
+     * written here.
+     */
+    async onSuggest(
+        line: string,
+        file: TFile,
+        editor: Editor,
+        matchVars: Record<string, any>
+    ): Promise<DSLExecutionResult | null> {
+        if (!this.hasTrigger('onSuggest')) {
+            return null;
+        }
+
+        const engine = this.getEngine();
+
+        return engine.onSuggest(
+            this.dslConfig,
+            line,
+            file,
+            editor,
+            { ...this.getDslInitialVars(), ...matchVars }
+        );
+    }
+
+    /**
      * Fires for specific status changes
      */
     async onStatusChange(task: Task, fromStatus: string, toStatus: string): Promise<DSLExecutionResult | null> {

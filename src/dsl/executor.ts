@@ -559,6 +559,27 @@ export class DSLEngine {
     }
 
     /**
+     * Execute onSuggest actions (user accepted a continuation suggestion).
+     *
+     * `initialVars` carries the matched bullet as `match.*` plus the text the user had
+     * typed as `query`, so a tag's template can compose its own continuation format.
+     */
+    async onSuggest(
+        config: DSLConfig,
+        line: string,
+        file: TFile,
+        editor: Editor,
+        initialVars?: Record<string, any>
+    ): Promise<DSLExecutionResult> {
+        return this.execute(config, 'onSuggest', {
+            line,
+            file,
+            editor,
+            initialVars
+        });
+    }
+
+    /**
      * Execute onData actions (for polling/subscribe)
      */
     async onData(

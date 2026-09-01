@@ -1075,9 +1075,11 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
     const cursor = editor.getCursor();
     const currentLine = editor.getLine(cursor.line);
     const indent = currentLine.match(/^(\s*)/)?.[1] || '';
-    // Only preserve "-" bullets for transform output. If the line isn't a "-" bullet, default to "-".
-    const bulletMatch = currentLine.match(/^(\s*)-\s+/);
-    const bullet = bulletMatch ? '-' : '-';
+    // Preserve whichever marker the line already uses so a transform on a `+` response
+    // bullet stays a response. Anything unrecognized falls back to a user bullet.
+    const bulletMatch = currentLine.match(/^\s*([-+*])\s+/);
+    const bullet = bulletMatch ? bulletMatch[1] : '-';
+    const indentUnit = getIndentUnit(context.app);
     
     console.log('[DSL][transform] Current line context', {
         cursorLine: cursor.line,
@@ -1122,7 +1124,7 @@ async function transformWithEditor(action: TransformActionNode, context: DSLCont
     
     // Add children
     if (childTemplates && childTemplates.length > 0) {
-        const childLines = buildTransformChildrenAsLines(childTemplates, context, indent);
+        const childLines = buildTransformChildrenAsLines(childTemplates, context, indent, indentUnit);
         newLines.push(...childLines);
     }
     
@@ -1224,39 +1226,66 @@ function buildTransformChildren(
 }
 
 /**
+ * One indent level, taken from the user's own editor settings rather than guessed.
+ * A vault written with hard tabs gets a tab; a space vault gets its configured width.
+ */
+export function getIndentUnit(app: App): string {
+    const getConfig = (app.vault as any)?.getConfig;
+    if (typeof getConfig !== 'function') return '\t';
+
+    try {
+        const useTab = getConfig.call(app.vault, 'useTab');
+        if (useTab === false) {
+            const size = Number(getConfig.call(app.vault, 'tabSize'));
+            return ' '.repeat(Number.isFinite(size) && size > 0 ? size : 4);
+        }
+    } catch {
+        // Fall through to the tab default.
+    }
+
+    return '\t';
+}
+
+/**
  * Build transform children as plain text lines
  * NOTE: This preserves {{cursor}} markers - caller is responsible for finding position and removing them
  */
 function buildTransformChildrenAsLines(
     templates: TransformChild[],
     context: DSLContext,
-    baseIndent: string
+    baseIndent: string,
+    indentUnit: string
 ): string[] {
     const lines: string[] = [];
-    const indentUnit = '  '; // 2 spaces per indent level
-    
+
     for (const template of templates) {
-        const text = interpolate(template.template, context.vars);
-        const indent = baseIndent + indentUnit.repeat(template.indent + 1);
-        
+        const content = interpolate(template.template, context.vars);
+        // The template names its own marker when it led with one; `-` otherwise.
+        const bullet = template.bullet ?? '-';
+        // Exactly one level per call. The recursion below already carries accumulated
+        // depth in baseIndent, so also adding the parse-time `template.indent` here
+        // compounded it, nesting a grandchild five levels deep instead of two.
+        const indent = baseIndent + indentUnit;
+
         // For standalone {{cursor}} line, create an empty bullet where cursor will land
-        if (text === '{{cursor}}') {
-            lines.push(`${indent}- {{cursor}}`);
-        } else if (text !== '') {
+        if (content === '{{cursor}}') {
+            lines.push(`${indent}${bullet} {{cursor}}`);
+        } else if (content !== '') {
             // Preserve {{cursor}} in the line for position calculation (don't strip here)
-            lines.push(`${indent}- ${text}`);
+            lines.push(`${indent}${bullet} ${content}`);
         }
-        
+
         if (template.children && template.children.length > 0) {
             const childLines = buildTransformChildrenAsLines(
                 template.children,
                 context,
-                indent
+                indent,
+                indentUnit
             );
             lines.push(...childLines);
         }
     }
-    
+
     return lines;
 }
 

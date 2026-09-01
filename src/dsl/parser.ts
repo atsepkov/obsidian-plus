@@ -55,6 +55,7 @@ const TRIGGER_NAMES: TriggerType[] = [
     'onReset',
     'onEnter',
     'onTab',
+    'onSuggest',
     'onData'
 ];
 
@@ -249,9 +250,13 @@ function parseTransformChildren(children: RawConfigItem[] | undefined, baseInden
     if (!children) return [];
     
     return children.map(child => {
+        // Dataview hands us the content without its own list marker, so a marker still
+        // present here was typed deliberately and names the output bullet.
+        const markerMatch = child.text.match(/^([-+*])\s*/);
         const template = child.text.replace(/^[-+*]\s*/, '').trim();
         return {
             template,
+            bullet: markerMatch ? (markerMatch[1] as '-' | '+' | '*') : undefined,
             children: child.children ? parseTransformChildren(child.children, baseIndent + 1) : undefined,
             indent: baseIndent
         };

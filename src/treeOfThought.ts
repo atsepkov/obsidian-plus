@@ -1,6 +1,7 @@
 import { App, TFile } from "obsidian";
 import type { TaskEntry } from "./fuzzyFinder";
-import { STITCH_GLYPH } from "./blockRef";
+import { isStitchAlias } from "./blockRef";
+import { blankCodeFences } from "./utils/codeFence";
 
 const DOCUMENT_PREVIEW_LINE_LIMIT = 40;
 
@@ -389,13 +390,26 @@ async function buildBacklinkSections(
     compareBacklinkChronology(app, a[0], b[0])
   );
 
+  // Read every backlinked note at once. The rest of this loop is synchronous, so awaiting
+  // one file at a time serialized what the filesystem is happy to do concurrently, and a
+  // tree spanning a couple of months pays that latency once per note.
+  const backlinkLines = new Map<string, string[]>();
+  await Promise.all(
+    groupedEntries.map(async ([path]) => {
+      const file = app.vault.getAbstractFileByPath(path);
+      if (file instanceof TFile) {
+        backlinkLines.set(path, await readFileLines(app, file));
+      }
+    })
+  );
+
   for (const [path, entries] of groupedEntries) {
     const file = app.vault.getAbstractFileByPath(path);
     if (!(file instanceof TFile)) {
       continue;
     }
 
-    const lines = await readFileLines(app, file);
+    const lines = backlinkLines.get(path) ?? [];
     const orderedEntries = [...entries].sort((a, b) => {
       const lineA = Number.isFinite(a?.line) ? a!.line : Number.POSITIVE_INFINITY;
       const lineB = Number.isFinite(b?.line) ? b!.line : Number.POSITIVE_INFINITY;
@@ -486,6 +500,13 @@ async function injectInternalLinkSections(
     }
   }
 
+  // Resolve every link preview up front, in parallel. The loop below stays sequential
+  // because `used` dedupes links across sections and order decides which section owns a
+  // shared link, but by then each preview is already in `previewMap`, so the awaits in
+  // there no longer each cost a round trip. This was the dominant cost of opening a tree:
+  // sections times links, all strictly serialized.
+  await prefetchLinkPreviews(app, sections, previewMap);
+
   const used = new Set<string>();
   let modified = false;
   const result: ThoughtSection[] = [];
@@ -503,6 +524,57 @@ async function injectInternalLinkSections(
   return modified ? result : sections;
 }
 
+/**
+ * Warms `previewMap` for every internal link across every section, concurrently.
+ *
+ * Purely an optimization: it changes nothing about which links are expanded, since the
+ * sequential pass still decides that. Links already present are skipped, and a failure to
+ * resolve one is left for the sequential pass to handle as before.
+ */
+async function prefetchLinkPreviews(
+  app: App,
+  sections: ThoughtSection[],
+  previewMap: Map<string, string>
+): Promise<void> {
+  const wanted = new Map<string, { file: TFile; parsed: ParsedThoughtLink }>();
+
+  for (const section of sections) {
+    const searchTexts = [section.markdown, section.sourceMarkdown].filter(
+      (t): t is string => typeof t === "string" && t.length > 0
+    );
+
+    for (const text of searchTexts) {
+      for (const match of blankCodeFences(text).matchAll(/!?\[\[[^\]]+\]\]/g)) {
+        const raw = match[0];
+        if (wanted.has(raw)) continue;
+        const existing = previewMap.get(raw);
+        if (existing && existing.trim()) continue;
+
+        const parsed = parseThoughtWikiLink(raw);
+        if (!parsed || parsed.isEmbed || isStitchAlias(parsed.display)) continue;
+
+        const file = resolveThoughtLinkFile(app, section.file, parsed.path);
+        if (file) wanted.set(raw, { file, parsed });
+      }
+    }
+  }
+
+  if (!wanted.size) return;
+
+  await Promise.all(
+    Array.from(wanted.entries()).map(async ([raw, { file, parsed }]) => {
+      try {
+        const resolved = await resolveThoughtLinkPreview(app, file, parsed);
+        if (typeof resolved === "string" && resolved.trim()) {
+          previewMap.set(raw, resolved.trim());
+        }
+      } catch {
+        // Leave it unset; the sequential pass will retry and handle the failure.
+      }
+    })
+  );
+}
+
 async function collectInternalLinkSections(
   app: App,
   section: ThoughtSection,
@@ -518,7 +590,9 @@ async function collectInternalLinkSections(
 
   const linkMatches: RegExpMatchArray[] = [];
   for (const text of searchTexts) {
-    const iterator = text.matchAll(/!?\[\[[^\]]+\]\]/g);
+    // A wikilink shown inside a fenced example is being quoted, not referenced, so it
+    // must not pull that note into the tree.
+    const iterator = blankCodeFences(text).matchAll(/!?\[\[[^\]]+\]\]/g);
     for (const match of iterator) {
       linkMatches.push(match);
     }
@@ -537,8 +611,7 @@ async function collectInternalLinkSections(
       continue;
     }
 
-    const display = (parsed.display ?? "").trim();
-    if (display === STITCH_GLYPH) {
+    if (isStitchAlias(parsed.display)) {
       continue;
     }
 

@@ -565,3 +565,57 @@ input[data-task="-"] {
 .op-board-edit:hover {
     color: var(--text-normal);
 }
+
+/* ── Stitch tree affordance ─────────────────────────────────────────────
+   The `⦿` rendered beside a back-reference link. Present in both Live Preview
+   (inline CM widget) and Reading view (post-processor), never in the markdown. */
+.op-stitch-tree {
+    display: inline-block;
+    /* Hugs the chevron it belongs to; the pair reads as one affordance. */
+    margin-left: 0.1em;
+    margin-right: 0.25em;
+    font-size: 1em;
+    line-height: 1;
+    vertical-align: baseline;
+    color: var(--text-faint);
+    cursor: pointer;
+    opacity: 0.7;
+    /* Not part of the document, so it must never be caught by a text selection. */
+    user-select: none;
+    -webkit-user-select: none;
+    transition: opacity 0.15s ease, color 0.15s ease;
+}
+.op-stitch-tree:hover {
+    color: var(--text-accent);
+    opacity: 1;
+}
+
+/* ── Continuation suggestions ───────────────────────────────────────────
+   Rows in the popup offered while typing a tagged bullet. */
+.op-continuation-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.45em;
+    overflow: hidden;
+}
+.op-continuation-new .op-continuation-label {
+    color: var(--text-muted);
+    font-style: italic;
+}
+.op-continuation-arrow {
+    color: var(--text-faint);
+    flex: 0 0 auto;
+}
+.op-continuation-label {
+    flex: 1 1 auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.op-continuation-date,
+.op-continuation-hint {
+    flex: 0 0 auto;
+    color: var(--text-faint);
+    font-size: 0.8em;
+    font-variant-numeric: tabular-nums;
+}

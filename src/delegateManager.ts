@@ -292,15 +292,21 @@ export class DelegateManager {
     private async ensureDir(): Promise<void> {
         const vault = this.plugin.app.vault;
 
-        // Ensure .obsidian-plus exists
-        const parentPath = '.obsidian-plus';
-        if (!vault.getAbstractFileByPath(parentPath)) {
-            await vault.createFolder(parentPath);
-        }
-
-        // Ensure delegate dir exists
-        if (!vault.getAbstractFileByPath(DELEGATE_DIR)) {
-            await vault.createFolder(DELEGATE_DIR);
+        // Both of these are dotfolders, and `getAbstractFileByPath` does not index hidden
+        // paths: it reports missing for a folder that is plainly on disk. The old guard
+        // therefore always failed, `createFolder` threw "Folder already exists", and since
+        // this is the first await in start(), the poll loop below it never ran at all.
+        // Ask the adapter instead, which goes to the filesystem.
+        for (const path of ['.obsidian-plus', DELEGATE_DIR]) {
+            try {
+                if (await vault.adapter.exists(path)) continue;
+                await vault.createFolder(path);
+            } catch (err) {
+                // Tolerate a folder that appeared between the check and the create, on
+                // this device or another one syncing underneath us.
+                const message = String((err as any)?.message ?? err);
+                if (!/already exists/i.test(message)) throw err;
+            }
         }
     }
 
