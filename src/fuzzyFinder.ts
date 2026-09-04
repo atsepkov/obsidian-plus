@@ -474,13 +474,7 @@ function escapeCssIdentifier(value: string): string {
       lookupCache: Map<string, ProjectLookup>
     ): string | null {
       const projects = plugin.settings.projects ?? [];
-      if (!projects.length) {
-        if (!(resolveProjectTag as any).__warnedNoProjects) {
-          (resolveProjectTag as any).__warnedNoProjects = true;
-          console.warn('[ProjectTag] settings.projects is empty; nothing can resolve. Check the ### Projects section parsed.');
-        }
-        return null;
-      }
+      if (!projects.length) return null;
 
       const path = entry.path ?? entry.file?.path;
       if (!path) return null;
@@ -507,13 +501,7 @@ function escapeCssIdentifier(value: string): string {
         }
         lookupCache.set(path, lookup);
       }
-      if (!lookup.parentOf.size) {
-        if (!(resolveProjectTag as any).__warnedNoList) {
-          (resolveProjectTag as any).__warnedNoList = true;
-          console.warn(`[ProjectTag] no listItems cached for ${path}; metadata may still be indexing`);
-        }
-        return null;
-      }
+      if (!lookup.parentOf.size) return null;
 
       const normalizedProjects = new Set(projects.map(p => plugin.normalizeTag(p) ?? p));
 
@@ -4106,7 +4094,6 @@ function escapeCssIdentifier(value: string): string {
 
         const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
         const lineIndexCache = new Map<string, ProjectLookup>();
-        const diag = { total: 0, resolved: 0 };
         if (!dv || typeof (this.plugin as any).query !== "function") {
             this.globalTaskCache = [];
             this.globalTaskCacheReady = true;
@@ -4145,8 +4132,6 @@ function escapeCssIdentifier(value: string): string {
                     const normalizedTag = tags.find(tag => preferredTags.has(tag)) ?? tags[0];
                     entry.tags = tags;
                     entry.projectTag = resolveProjectTag(this.plugin.app, this.plugin, entry, lineIndexCache);
-              diag.total++;
-              if (entry.projectTag) diag.resolved++;
                     entry.tagHint = normalizedTag;
 
                     if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
@@ -4218,7 +4203,6 @@ function escapeCssIdentifier(value: string): string {
         const dv = (this.plugin.app as any)?.plugins?.plugins?.["dataview"]?.api;
         // Shared across this scan so each file's list index is built once.
         const lineIndexCache = new Map<string, ProjectLookup>();
-        const diag = { total: 0, resolved: 0 };
 
         /* 1️⃣  Dataview-powered query (sync) */
         if (dv && (this.plugin as any).query) {
@@ -4231,15 +4215,7 @@ function escapeCssIdentifier(value: string): string {
                 includeCheckboxes
             };
 
-            // Scoping to the project under the cursor should narrow the list, never empty
-            // it. This nested path was unreachable until settings.projects started loading,
-            // so it has never really run; if it yields nothing, fall back to the whole tag
-            // rather than showing a blank pane.
-            let rows = (this.plugin as any).query(dv, project ? [project, tag] : tag, queryOptions) as any[];
-            if (project && !(rows ?? []).length) {
-              console.warn(`[ProjectScope] ${project}|${tag} matched nothing; falling back to all ${tag}`);
-              rows = (this.plugin as any).query(dv, tag, queryOptions) as any[];
-            }
+            const rows = (this.plugin as any).query(dv, project ? [project, tag] : tag, queryOptions) as any[];
             const mapped = (rows ?? []).map(r => {
               const entry = toTaskEntry(r);
               const normalizedTag = normalizeTagForSearch(this.plugin, tag);
@@ -4255,8 +4231,6 @@ function escapeCssIdentifier(value: string): string {
 
               entry.tags = tags;
               entry.projectTag = resolveProjectTag(this.plugin.app, this.plugin, entry, lineIndexCache);
-              diag.total++;
-              if (entry.projectTag) diag.resolved++;
               if (!Array.isArray(entry.searchLines) || !entry.searchLines.length) {
                 entry.searchLines = (entry.lines ?? []).map(line => (typeof line === "string" ? line.toLowerCase() : ""));
               }
@@ -4268,10 +4242,6 @@ function escapeCssIdentifier(value: string): string {
               }
               return entry;
             });
-            console.log(
-              `[ProjectTag] ${tag}: ${diag.resolved}/${diag.total} entries resolved a project`,
-              { showProjectTag: this.showProjectTag, knownProjects: this.plugin.settings.projects }
-            );
             return mapped;
           } catch (e) { console.error("Dataview query failed", e); }
         }

@@ -721,7 +721,6 @@ export class ConfigLoader {
                 this.plugin.settings.taskTags = taskTags;
                 console.log("[ConfigLoader] Loaded tags from file:", this.plugin.settings.taskTags);
                 console.log("[ConfigLoader] Per-tag config resolved for:", Object.keys(this.plugin.settings.tagConfigs));
-                console.log("[ConfigLoader] Projects:", this.plugin.settings.projects, "Project tags:", this.plugin.settings.projectTags);
                 console.log("[ConfigLoader] Configured connectors:", Object.keys(this.plugin.settings.webTags));
                 console.log("[ConfigLoader] ===== loadTaskTagsFromFile completed successfully ===== ");
 
