@@ -1,0 +1,21 @@
+# op-claude project map (example)
+#
+# Copy to ~/.config/op-claude/projects.conf (or point OP_CLAUDE_CONF at it).
+# This file is intentionally NOT tracked with real values: it maps your tags to
+# local directories, so it is specific to one machine and one set of checkouts.
+#
+# Format: <tag>=<path>, one per line, without the leading '#' of the tag.
+# `~` expands to $HOME. A trailing '# comment' is stripped.
+#
+# op-claude-spawn requires a match here. It reads the tags on the #claude bullet
+# and on its ancestor bullets, takes the first that maps to a directory, and opens
+# the session there. With no match it reverts the checkbox to [ ] and writes the
+# list of configured tags into the note, so nothing is guessed.
+
+webapp=~/code/webapp
+infra=~/code/infra
+docs=~/code/docs
+
+# A tag may also point at a plain directory that holds no repo. This suits
+# miscellaneous work, where the session can reach sibling checkouts via ../
+# scratch=~/code/scratch

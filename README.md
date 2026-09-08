@@ -100,6 +100,51 @@ The fuzzy finder accepts lightweight search flags to narrow or expand task previ
 
 You can combine these flags with regular keywords, and the fuzzy finder will trim them from the query before ranking results.
 
+### Spawning a Claude Code session from a bullet
+
+The helper scripts in `mcp/bin/` launch a `claude` session in tmux from a tagged bullet, so a
+task brief written as an outline becomes a running session. Symlink them onto your `PATH`:
+
+```sh
+ln -s "$PWD/mcp/bin/op-claude-spawn" ~/.local/bin/
+ln -s "$PWD/mcp/bin/op-claude-focus" ~/.local/bin/
+ln -s "$PWD/mcp/bin/op-claude-watch" ~/.local/bin/
+```
+
+They need `tmux`, `jq`, `python3` and `claude` on `PATH`. Then map your project tags to local
+directories, which is the one piece of required configuration:
+
+```sh
+mkdir -p ~/.config/op-claude
+cp mcp/config/projects.conf.example ~/.config/op-claude/projects.conf
+$EDITOR ~/.config/op-claude/projects.conf
+```
+
+Wire a `#claude` tag trigger whose `shell:` action writes the handoff and runs the spawner. With
+that in place, checking off a bullet nested under a mapped project tag:
+
+```markdown
+- #infra
+	- [ ] #claude audit the terraform modules for unused variables
+		- start with the networking module
+```
+
+resolves `#infra` to its directory, opens a tmux window named `c<HHMM>: <summary>`, and writes a
+session block back under the bullet:
+
+```markdown
+		+ session: [[c1337]] [▶ open](obsidian://op-claude-focus?w=c1337&s=<uuid>&d=<dir>)
+			+ resume: `claude --resume <uuid>`
+			+ transcript: ~/.claude/projects/<enc-cwd>/<uuid>.jsonl
+```
+
+The `▶ open` link raises that window. If the session has exited and its window is gone, the link
+resumes the transcript in a fresh one. `op-claude-watch` flips the checkbox to `[x]` when the
+session ends, and `op-claude-prune` clears out session folders past a retention age.
+
+A bullet with no mapped project tag is left unchecked, with the list of configured tags written
+into the note as a child. The spawner never guesses a directory.
+
 ## Manually installing the plugin
 
 - Copy over `main.js`, `styles.css`, `manifest.json` to your vault `VaultFolder/.obsidian/plugins/your-plugin-id/`.

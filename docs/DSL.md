@@ -73,13 +73,13 @@ want, while `relevance` suits a large pool like `#todo`.
 `[x]` precisely because it completed, so without it those sessions stay hidden until you
 type something.
 
-`project: true` suits a tag that recurs across projects. `#claude` appears under
-`#agent-skills`, `#agent-skills-dashboard`, `#infra` and `#notebook`, and the same wording
-means different work depending on which. The project is the innermost ancestor tag listed
+`project: true` suits a tag that recurs across projects. A `#claude` session might appear
+under `#webapp`, `#infra` or `#docs`, and the same wording means different work depending on
+which. The project is the innermost ancestor tag listed
 under `### Projects`, resolved from Dataview's index, so it costs no extra file reads. It is
 omitted when it would repeat the tag you are searching.
 
-A configured `status` is a **preference, not an exclusion**. It filters the pane while the
+A configured `status` is a **preference**, and it never excludes. It filters the pane while the
 query is empty, which is the browsing view. As soon as you type, nothing is hidden and the
 configured status simply sorts to the top, because searching is recall. A `status:` token
 you type, or a status you pick from the gear menu, is an explicit instruction and keeps
@@ -177,7 +177,7 @@ Triggers are entry points—they fire when specific events occur.
 
 Defining `onSuggest` opts a tag into continuation suggestions. As you type
 `- #tag some context`, the plugin looks for earlier bullets with that tag whose text is
-similar, and offers to continue one instead of starting fresh.
+similar, and offers to continue one.
 
 ```markdown
 - #meeting
