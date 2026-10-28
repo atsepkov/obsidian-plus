@@ -83,7 +83,7 @@ fi
 if [ -z "$IDX" ]; then
   if [ -n "$UUID" ] && [ -n "$DIR" ] && [ -d "$DIR" ]; then
     if [ -n "$DESC" ]; then WNAME="$WINDOW: $DESC"; else WNAME="$WINDOW"; fi
-    tmux new-window -t "$TMUX_SESSION" -n "$WNAME" -c "$DIR" "$CLAUDE_BIN --resume '$UUID'; exec \$SHELL"
+    tmux new-window -t "$TMUX_SESSION" -n "$WNAME" -c "$DIR" -e "OP_VAULT=${OP_VAULT:-$PWD}" "$CLAUDE_BIN --resume '$UUID'; exec \$SHELL"
     IDX="$(win_idx "$WINDOW")"
   else
     echo "op-claude-focus: window '$WINDOW' not live and no resume info (uuid/dir)"; exit 1

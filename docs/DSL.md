@@ -274,6 +274,9 @@ Reads the current line (or file/selection) and extracts variables using patterns
 - `source: children` — read child bullets
 - `source: wikilink` — read the contents of another note by wikilink
 - `source: image` — read image file (wikilink or URL) and convert to base64
+- `source: context`: read the task bullet's whole subtree, with linked notes inlined and embedded images
+  as absolute paths; sets `{{text}}`, `{{images}}`, `{{parentTags}}` (tags on ancestor bullets) and
+  `{{taskLine}}`. Built for handing a bullet to an external agent, as the `#claude` trigger does
 - `asFile: fromFile` — when reading another file/image, also expose its metadata (path, name, basename, extension, resourcePath)
 - `format: markdown` — when reading a wikilink/file, also populate markdown metadata on the file variable (frontmatter, links, images, sections)
 - `includeFrontmatter: true` — when reading another Markdown note by wikilink, also expose its YAML frontmatter

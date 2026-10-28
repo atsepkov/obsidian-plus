@@ -120,8 +120,42 @@ cp mcp/config/projects.conf.example ~/.config/op-claude/projects.conf
 $EDITOR ~/.config/op-claude/projects.conf
 ```
 
-Wire a `#claude` tag trigger whose `shell:` action writes the handoff and runs the spawner. With
-that in place, checking off a bullet nested under a mapped project tag:
+The plugin runs the spawner and the `▶ open` handler as `.bin/<script>` from the vault root, so
+the vault needs the same symlinks under `.bin/` (and a `config/` folder for the handoff file):
+
+```sh
+VAULT=~/path/to/vault
+mkdir -p "$VAULT/.bin" "$VAULT/config"
+ln -s "$PWD/mcp/bin/op-claude-spawn" "$PWD/mcp/bin/op-claude-focus" "$PWD/mcp/bin/op-claude-watch" "$VAULT/.bin/"
+```
+
+Then add the `#claude` trigger to your tag config file (the plugin's "tag list file" setting, e.g.
+`Tags.md`). `onInProgress` fires when the checkbox moves to `[/]`: it gathers the bullet's subtree,
+writes it to `config/op-claude-pending.json`, and runs the spawner. `onSuggest` is optional and
+offers earlier `#claude` bullets as continuations.
+
+```markdown
+- #claude
+	- onInProgress:
+		- read: ``
+			- source: context
+		- build: `handoff`
+			- title: `{{task.text}}`
+			- context: `{{text}}`
+			- images: `{{images}}`
+			- parentTags: `{{parentTags}}`
+			- notePath: `{{file.path}}`
+			- taskLine: `{{taskLine}}`
+		- write: `{{handoff}}`
+			- to: `config/op-claude-pending.json`
+		- shell: `.bin/op-claude-spawn`
+	- onSuggest:
+		- transform:
+			- {{match.link}} #claude *{{match.text}}*
+				- {{cursor}}
+```
+
+With that in place, clicking the checkbox on a bullet nested under a mapped project tag:
 
 ```markdown
 - #infra
@@ -144,6 +178,25 @@ session ends, and `op-claude-prune` clears out session folders past a retention 
 
 A bullet with no mapped project tag is left unchecked, with the list of configured tags written
 into the note as a child. The spawner never guesses a directory.
+
+Sessions start in plan mode, with the bullet's subtree as the first prompt. Each one gets a folder
+note at `<vault>/Sessions/<id>/<id>.md`. To have a short summary appended to that note's `## Log`
+when the session compacts or ends, add `op-claude-summarize` as a Claude Code hook in
+`~/.claude/settings.json`. It finds the vault through `OP_VAULT`, which the spawner sets on every
+window it opens, and exits silently for sessions it did not spawn. It also needs `timeout`, which
+on macOS comes from `brew install coreutils`:
+
+```json
+"hooks": {
+  "PreCompact": [{ "hooks": [{ "type": "command", "command": "bash /path/to/obsidian-plus/mcp/bin/op-claude-summarize", "timeout": 15 }] }],
+  "SessionEnd": [{ "hooks": [{ "type": "command", "command": "bash /path/to/obsidian-plus/mcp/bin/op-claude-summarize", "timeout": 15 }] }]
+}
+```
+
+`op-claude-prune` is not wired to anything; run it by hand or from cron with `OP_VAULT` set.
+Raising the terminal uses `osascript`, so `op-claude-focus` is macOS only (the tmux side works
+anywhere). The hooks under `mcp/hooks/` belong to the separate `op-tasks` integration and are
+not needed for `#claude`.
 
 ## Manually installing the plugin
 

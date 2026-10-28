@@ -15,7 +15,8 @@ TRANSCRIPT_PATH=$(jq -r '.transcript_path' <<<"$EVENT")
 HOOK_TYPE=$(jq -r '.hook_event_name' <<<"$EVENT" | tr '[:upper:]' '[:lower:]')
 
 # Find the session folder by grepping Sessions/*/*.md for the UUID
-VAULT="${VAULT:-$HOME/work/vault/notebook}"
+# OP_VAULT is set on windows op-claude-spawn/-focus open; VAULT is the older name.
+VAULT="${OP_VAULT:-${VAULT:-$HOME/work/vault/notebook}}"
 FOLDER_NOTE=$(grep -l "resume: \`claude --resume $SESSION_ID\`" "$VAULT/Sessions"/*/*.md 2>/dev/null | head -1)
 
 # If no folder-note found, this session wasn't spawned by obsidian-plus; silently exit

@@ -170,7 +170,8 @@ else
   RUN="$CLAUDE_BIN --session-id '$UUID' --permission-mode plan; exec \$SHELL"
 fi
 
-tmux new-window -t "$TMUX_SESSION" -n "$WNAME" -c "$DIR" "$RUN"
+# OP_VAULT rides into the window so the summarize hook can find Sessions/ on any machine.
+tmux new-window -t "$TMUX_SESSION" -n "$WNAME" -c "$DIR" -e "OP_VAULT=$PWD" "$RUN"
 
 # Detached watcher: flips the bullet [/] -> [x] when this session's process exits (any exit path).
 # Marker is the distinctive [[<id>]] wikilink that appears on the session line in the note.
