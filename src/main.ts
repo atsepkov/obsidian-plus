@@ -16,6 +16,8 @@ import { ServerManager, type ServerCredentials } from './serverManager';
 import { TaskOutlineView, TASK_OUTLINE_VIEW } from './taskOutline';
 import { advanceStatus, normalizeStatusChar, DEFAULT_STATUS_CYCLE, type TaskStatusChar } from "./statusFilters";
 import { isDSLConnector } from './connectorFactory';
+import { expansionExtension } from './expansionExtension';
+import type { ExpansionRule } from './utils/expand';
 import DSLConnector from './connectors/dslConnector';
 import { DelegateManager } from './delegateManager';
 import { buildBoardSpec } from './summaryBlock';
@@ -240,6 +242,8 @@ interface ObsidianPlusSettings {
         projectTags: string[];
         /** board tags (### Boards) -> default option lines (summary-block grammar) */
         boardTags: Record<string, string[]>;
+        /** text expansions (### Expansions): regex pattern -> replacement, applied on leaving a bullet */
+        expansionRules: ExpansionRule[];
         /** recurring tags (### Recurring Task Tags) that declare a repeat period */
         recurringTags: Record<string, RecurrenceConfig>;
         /** every tag's resolved `config:` block, from whichever section defined it */
@@ -271,6 +275,7 @@ const DEFAULT_SETTINGS: ObsidianPlusSettings = {
         projects: [],
         projectTags: [],
         boardTags: {},
+        expansionRules: [],
         recurringTags: {},
         tagConfigs: {},
 
@@ -994,6 +999,8 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEditorExtension(extension);
 		// Live Preview rendering for board bullets (### Boards tags).
 		this.registerEditorExtension(boardStateField(this));
+		// Text expansions (### Expansions) applied to a bullet once the cursor leaves it.
+		this.registerEditorExtension(expansionExtension(this));
 
 		// re-check flagged lines whenever a file is opened:
 		this.registerEvent(
@@ -2426,6 +2433,7 @@ export default class ObsidianPlus extends Plugin {
 		delete sanitizedSettings.statusCycles;
 		delete sanitizedSettings.recurringTags;
 		delete sanitizedSettings.tagConfigs;
+		delete sanitizedSettings.expansionRules;
 
 		try {
 			JSON.stringify(sanitizedSettings);

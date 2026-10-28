@@ -8,6 +8,7 @@ import { parseStatusCycleConfig } from "./statusFilters";
 import { hasDSLTriggers, TriggerType } from './dsl';
 import { childTreeToRecord } from './utils/childTreeToRecord';
 import { buildRecurrenceConfig } from './recurrence';
+import { compileRule, parseExpansionRule, type ExpansionRule } from './utils/expand';
 
 // Define ConnectorConfig interface locally for now
 interface ConnectorConfig {
@@ -228,6 +229,7 @@ export class ConfigLoader {
             this.plugin.settings.projects = [];
             this.plugin.settings.projectTags = [];
             this.plugin.settings.boardTags = {};
+            this.plugin.settings.expansionRules = [];
             this.plugin.settings.statusCycles = {};
             this.plugin.settings.recurringTags = {};
             this.plugin.settings.tagConfigs = {};
@@ -256,6 +258,7 @@ export class ConfigLoader {
         this.plugin.settings.projects = [];
         this.plugin.settings.projectTags = [];
         this.plugin.settings.boardTags = {};
+        this.plugin.settings.expansionRules = [];
         this.plugin.settings.statusCycles = {};
         this.plugin.settings.recurringTags = {};
         this.plugin.settings.tagConfigs = {};
@@ -311,6 +314,8 @@ export class ConfigLoader {
                 // Boards: each tagged line under ### Boards is a board trigger; its child
                 // bullets are the board's default options (summary-block grammar).
                 const boardSection = this.plugin.query(dataview, '#', { ...commonOptions, header: '### Boards', hideChildren: true }) || [];
+                // Expansions: untagged bullets, one rule each, so query every list item (null).
+                const expansionSection = this.plugin.query(dataview, null, { currentFile: file.path, onlyReturn: true, header: '### Expansions' }) || [];
                 
                 // Tag Triggers section:
                 // IMPORTANT: We must NOT query by "#" here, because that would return nested tag *usages*
@@ -718,6 +723,16 @@ export class ConfigLoader {
                 this.plugin.settings.projects = projects;
                 this.plugin.settings.projectTags = projectTags;
                 this.plugin.settings.boardTags = boardTags;
+
+                // Expansions: each bullet's first two code spans are pattern and replacement.
+                const expansionRules: ExpansionRule[] = [];
+                for (const item of expansionSection) {
+                    const rule = parseExpansionRule(((item as any)?.text ?? '').split('\n')[0]);
+                    if (!rule) continue;
+                    if (compileRule(rule.pattern)) expansionRules.push(rule);
+                    else new Notice(`Obsidian Plus: invalid expansion pattern ${rule.pattern}`);
+                }
+                this.plugin.settings.expansionRules = expansionRules;
                 this.plugin.settings.taskTags = taskTags;
                 console.log("[ConfigLoader] Loaded tags from file:", this.plugin.settings.taskTags);
                 console.log("[ConfigLoader] Per-tag config resolved for:", Object.keys(this.plugin.settings.tagConfigs));

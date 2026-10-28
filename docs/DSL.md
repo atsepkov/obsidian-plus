@@ -164,6 +164,35 @@ off `[x]` does not.
 
 ---
 
+## Expansions
+
+Bullets under `### Expansions` in your tags config file define text that rewrites itself. The
+first inline-code span on each bullet is a JavaScript regex, the second is its replacement;
+anything else on the line is ignored. Code spans keep `#` and brackets in a pattern from being
+read as tags or links.
+
+```markdown
+### Expansions
+- `\b(?:PROJ|OPS)-\d+\b` → `[$0](https://jira.example.com/browse/$0)`
+- `\bPR (\d+)\b` → `[PR $1](https://github.com/me/repo/pull/$1)`
+```
+
+The replacement takes `$0` or `$&` (whole match), `$1`..`$99`, `$<name>`, and `$$` for a literal `$`.
+
+A rule applies to a line when the cursor leaves it (Enter, arrow keys, a click elsewhere) or when
+the editor loses focus, so it never rewrites text you are still typing. On focus loss, a line
+whose cursor sits right after a letter or digit waits until you leave it.
+
+- Only bullet and task lines expand. Paragraphs, fenced code, frontmatter, and the tags config
+  file itself are left alone.
+- A match inside inline code, a markdown link, a wikilink, or a bare URL stays as written, so an
+  expansion that produces a link is never expanded twice. Backticks are the escape hatch for a
+  one-off.
+- Undo reverts an expansion in one step, and that line is not expanded again unless you edit it.
+- An invalid regex is skipped with a notice. Rules reload when you save the tags config file.
+
+---
+
 ## Triggers
 
 Triggers are entry points—they fire when specific events occur.
