@@ -577,6 +577,11 @@ function escapeCssIdentifier(value: string): string {
           /* inside collectTasksLazy – while pushing rows into cache[key] */
           slice.forEach(r => {
             const entry = toTaskEntry(r);
+            // The tag-list config file defines tags (e.g. `- #todo …`); those lines are
+            // definitions, not real tasks. Immune everywhere (see isTagConfigFile).
+            if (plugin.isTagConfigFile(entry.path ?? entry.file?.path)) {
+              return;
+            }
             const normalizedTag = normalizeTagForSearch(plugin, tag);
             const tags = resolveNormalizedTaskTags(plugin, entry);
 
@@ -2724,6 +2729,10 @@ function escapeCssIdentifier(value: string): string {
             this.plugin
         );
 
+        if (showCheckbox) {
+          this.wireResultCheckbox(el, task, displayTag || null, file ?? null);
+        }
+
         const normalizedHit = typeof hit === "string" ? hit.trim() : "";
         const normalizedRoot = (task.text ?? "").trim();
         const matchLine = normalizedHit && normalizedHit !== normalizedRoot ? normalizedHit : null;
@@ -3140,7 +3149,13 @@ function escapeCssIdentifier(value: string): string {
         }
 
         for (const input of inputs) {
-            const initial = input.getAttribute('data-task') ?? (input.checked ? 'x' : ' ');
+            // The task's own status is authoritative. Inferring it from the rendered
+            // checkbox is fragile for custom statuses: a renderer that emits a natively
+            // checked box for `[-]` makes the data-task/checked fallback read it as `x`,
+            // which then re-checks the box. Prefer state.task.status when we have it.
+            const initial = state.task?.status
+              ?? input.getAttribute('data-task')
+              ?? (input.checked ? 'x' : ' ');
             this.plugin.applyStatusToCheckbox(input, normalizeStatusChar(initial));
             input.addEventListener('click', evt => {
                 evt.preventDefault();
@@ -3228,6 +3243,96 @@ function escapeCssIdentifier(value: string): string {
             console.error('Failed to toggle task status from thought header', error);
         } finally {
             input.disabled = false;
+        }
+    }
+
+    /**
+     * Wire the checkbox on a top-level task row so a click cycles the task's status
+     * and writes it back to the note, rather than drilling into the thought view.
+     * Reuses the same cycle machinery as the thought view and the on-page click, so
+     * all three advance through the tag-resolved status cycle identically.
+     */
+    private wireResultCheckbox(el: HTMLElement, task: TaskEntry, tagHint: string | null, file: TFile | null): void {
+        const input = el.querySelector<HTMLInputElement>('input[type="checkbox"]');
+        if (!input) {
+          return;
+        }
+        this.plugin.applyStatusToCheckbox(input, normalizeStatusChar(task.status ?? ' '));
+        // Capture phase + stopImmediatePropagation so the row's drilldown pointer
+        // handlers do not also fire and expand the task.
+        input.addEventListener('click', evt => {
+          evt.preventDefault();
+          evt.stopPropagation();
+          if (typeof evt.stopImmediatePropagation === 'function') {
+            evt.stopImmediatePropagation();
+          }
+          void this.handleResultCheckboxToggle(input, task, tagHint, file);
+        }, { capture: true });
+    }
+
+    private async handleResultCheckboxToggle(input: HTMLInputElement, task: TaskEntry, tagHint: string | null, file: TFile | null): Promise<void> {
+        const manager = this.plugin.taskManager;
+        if (!manager || !task) {
+          return;
+        }
+
+        const resolvedFile = file ?? this.resolveTaskFile(task);
+        const path = resolvedFile?.path ?? task.path ?? task.file?.path ?? null;
+        if (!path) {
+          console.warn('Unable to resolve task path for result checkbox toggle', task);
+          return;
+        }
+
+        let lineIndex = typeof task.line === 'number' ? task.line : null;
+        if (lineIndex == null) {
+          try {
+            const fileToRead = resolvedFile ?? this.app.vault.getAbstractFileByPath(path);
+            if (fileToRead instanceof TFile) {
+              const contents = await this.app.vault.read(fileToRead);
+              const resolved = resolveTaskLineIndex(task, contents.split(/\r?\n/));
+              if (resolved != null) {
+                lineIndex = resolved;
+                task.line = resolved;
+              }
+            }
+          } catch (error) {
+            console.error('Failed to resolve task line for result checkbox toggle', error);
+          }
+        }
+        if (lineIndex == null) {
+          console.warn('Unable to determine task line for result checkbox toggle', task);
+          return;
+        }
+
+        input.disabled = true;
+        try {
+          const tags = resolveNormalizedTaskTags(this.plugin, task)
+            .map(tag => this.plugin.normalizeTag(tag) ?? tag)
+            .filter((tag): tag is string => typeof tag === 'string' && tag.length > 0);
+          const result = await manager.cycleTaskLine({
+            file: resolvedFile ?? undefined,
+            path,
+            lineNumber: lineIndex,
+            tagHint: this.plugin.normalizeTag(tagHint ?? this.activeTag) ?? tagHint ?? this.activeTag,
+            extraTags: tags,
+          });
+          if (!result) {
+            return;
+          }
+          this.plugin.applyStatusToCheckbox(input, result.status);
+          task.status = result.status;
+          task.line = lineIndex;
+          if (result.lineText) {
+            if (Array.isArray(task.lines) && task.lines.length) {
+              task.lines[0] = result.lineText;
+            } else {
+              task.lines = [result.lineText];
+            }
+          }
+        } catch (error) {
+          console.error('Failed to toggle task status from result row', error);
+        } finally {
+          input.disabled = false;
         }
     }
 
@@ -4242,7 +4347,8 @@ function escapeCssIdentifier(value: string): string {
               }
               return entry;
             });
-            return mapped;
+            // The tag-list config file defines tags, not tasks — keep it out of results.
+            return mapped.filter(entry => !this.plugin.isTagConfigFile(entry.path ?? entry.file?.path));
           } catch (e) { console.error("Dataview query failed", e); }
         }
 
@@ -4483,6 +4589,8 @@ function escapeCssIdentifier(value: string): string {
           .filter((value): value is RegExp => value instanceof RegExp);
 
         const suggestions = this.taskCache[key]!.flatMap((t, idx) => {
+            // Backstop: the config file is immune even if a stale cache still holds it.
+            if (this.plugin.isTagConfigFile(t.path ?? t.file?.path)) return [];
             const statusChar = t.status ?? " ";
 
             if (desiredStatus != null) {

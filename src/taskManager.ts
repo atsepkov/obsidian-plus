@@ -231,6 +231,14 @@ export class TaskManager {
             }
         }
 
+        // Cycling off a done state to anything other than done (e.g. x -> -) must drop the
+        // Tasks-plugin completion date. The Tasks API only manages it for x/space, so for
+        // the other statuses we strip it here; otherwise Tasks still treats the line as
+        // done and renders the checkbox completed despite the [-]/[/] status char.
+        if (nextStatus !== 'x') {
+            updatedLine = updatedLine.replace(/\s*✅\s*\d{4}-\d{2}-\d{2}/gu, '').replace(/\s+$/u, '');
+        }
+
         lines[index] = updatedLine;
         await this.saveFileLines(file.path, lines);
         return { status: nextStatus, lineText: updatedLine };

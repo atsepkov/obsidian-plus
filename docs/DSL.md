@@ -64,6 +64,12 @@ starts it where that tag is actually useful.
 | `expand` | `none` (collapsed), `focus` (expand the selected row), `all` | `none` |
 | `sort` | `relevance` (best text match), `recent` (newest note first) | `relevance` |
 | `project` | `true` prefixes each result with the project tag it is filed under | `false` |
+| `statusCycle` | ordered statuses a checkbox advances through, e.g. `[ ] > [x] > [-]` | `[ ] > [/] > [x] > [-] > [?] > [!]` |
+
+`statusCycle` sets the order a task's checkbox steps through, both on the page and in the
+tag-search menu, wrapping back to the first after the last. Write it as bracketed statuses
+joined by `>` (`[ ] > [x] > [-]`), a comma list (`[ ], [x], [-]`), or a JSON array
+(`[" ", "x", "-"]`). A tag with no `statusCycle` uses the global default above.
 
 `status` and `expand` mirror the gear menu exactly. `sort` is the one addition: `recent`
 suits a journal-shaped tag like `#1-1`, where the latest entry is nearly always the one you

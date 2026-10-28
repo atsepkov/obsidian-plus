@@ -521,14 +521,28 @@ export default class ObsidianPlus extends Plugin {
 		this.registerEvent(
 			this.app.vault.on("modify", async (file) => {
 				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
-					await this.configLoader.loadTaskTagsFromFile();
-					this.pollingManager.reload();
+					// A save fires before Dataview has re-indexed the file, so an
+					// immediate read can miss a freshly-added tag. Reload through the
+					// debounced helper, which retries once the index catches up.
+					this.scheduleTaskTagReload('tag file modified');
 				}
 				// The per-tag task cache is built once and never expires on its own. The
 				// continuation suggester outlives any single modal, so without this it would
 				// keep offering a stale view of the vault.
 				if (file instanceof TFile && file.extension === 'md') {
 					invalidateTaskCache();
+				}
+			})
+		);
+
+		// Dataview re-indexes asynchronously after a save, so the "modify" handler
+		// above can read a stale index and drop a just-added tag. Reload again once
+		// Dataview reports it has re-indexed the tag config file. This closes the
+		// race for plain tags, which leave no "incomplete" signal to retry on.
+		this.registerEvent(
+			(this.app.metadataCache as any).on("dataview:metadata-change", (_type: string, file: any) => {
+				if (file instanceof TFile && file.path === this.settings.tagListFilePath && this.configLoader) {
+					this.scheduleTaskTagReload('dataview reindex');
 				}
 			})
 		);
@@ -2223,6 +2237,43 @@ export default class ObsidianPlus extends Plugin {
                 console.log('Settings loaded');
         }
 
+        private taskTagReloadTimer: ReturnType<typeof setTimeout> | null = null;
+
+        /**
+         * Reload task tags from the config file, debounced so a burst of file and
+         * Dataview index events coalesces into one reload. If the load comes back
+         * empty or incomplete (Dataview index not caught up), retry once after a
+         * short delay. Shared by the vault "modify" and Dataview "metadata-change"
+         * listeners, mirroring the initial-load retry so a save survives a stale index.
+         */
+        private scheduleTaskTagReload(reason: string, delayMs = 300): void {
+                if (this.taskTagReloadTimer !== null) {
+                        clearTimeout(this.taskTagReloadTimer);
+                }
+                this.taskTagReloadTimer = setTimeout(async () => {
+                        this.taskTagReloadTimer = null;
+                        await this.waitForMetadataCache();
+                        await this.configLoader.loadTaskTagsFromFile();
+                        this.pollingManager?.reload();
+                        console.log(`Loaded tags (${reason}):`, this.settings.taskTags);
+
+                        if (!this.settings.taskTags.length || this.configLoader.lastLoadIncomplete) {
+                                console.warn(`Tag config empty or incomplete after ${reason}; retrying shortly.`);
+                                this.taskTagReloadTimer = setTimeout(async () => {
+                                        this.taskTagReloadTimer = null;
+                                        await this.waitForMetadataCache();
+                                        await this.configLoader.loadTaskTagsFromFile();
+                                        this.pollingManager?.reload();
+                                        console.log(`Retried loading tags (${reason}):`, this.settings.taskTags);
+                                        if (this.configLoader.lastLoadIncomplete) {
+                                                new Notice("Obsidian Plus: some tag configs failed to load. Edit the tag config file or reload the plugin to retry.");
+                                        }
+                                        void this.recurrenceManager?.sweep(this.app.workspace.getActiveFile());
+                                }, 1500);
+                        }
+                }, delayMs);
+        }
+
         private async waitForMetadataCache(timeoutMs = 10000, pollIntervalMs = 250) {
                 const start = Date.now();
 
@@ -2674,6 +2725,18 @@ export default class ObsidianPlus extends Plugin {
                 }
 
                 return color;
+        }
+
+        /**
+         * True when a path is the configured tag-list file. That file defines the tags
+         * (its `- #todo …` lines are configuration, not tasks), so it is immune
+         * everywhere: never flagged/colored, and never surfaced as a task result.
+         */
+        isTagConfigFile(path: string | null | undefined): boolean {
+                const configured = this.settings.tagListFilePath;
+                if (!path || !configured) return false;
+                const norm = (p: string) => p.replace(/^\.?\//, '').trim();
+                return norm(path) === norm(configured);
         }
 
         getStatusCycle(tag?: string | null): TaskStatusChar[] {
